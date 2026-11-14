@@ -14,6 +14,7 @@ Supports:
 
 import argparse
 import ctypes
+from contextlib import contextmanager
 import glob
 import hashlib
 import json
@@ -119,7 +120,7 @@ def get_adb_exe() -> str:
 
 def check_usb_device() -> dict:
     """Detect Amlogic 1B8E:C003 purely via Windows PnP (never open libusb handles during polling)."""
-    info = {"usb_connected": False, "usb_stage": "none", "usb_desc": "", "usb_service": ""}
+    info = {"usb_connected": False, "usb_stage": "none", "usb_desc": "", "usb_service": "", "usb_status": ""}
     if os.name == "nt":
         try:
             ps = (
@@ -141,6 +142,7 @@ def check_usb_device() -> dict:
                 svc = str(data.get("Service") or "")
                 info["usb_connected"] = True
                 info["usb_service"] = svc
+                info["usb_status"] = status
                 svc_tag = f", {svc}" if svc else ""
                 info["usb_desc"] = f"{name} ({status}{svc_tag})".strip()
                 info["usb_stage"] = "rom_or_uboot"
@@ -153,6 +155,9 @@ def check_worldcup_driver() -> bool:
     if os.name != "nt":
         return True
     try:
+        device = check_usb_device()
+        if device.get("usb_connected") and device.get("usb_status", "").lower() == "ok" and device.get("usb_service", "").lower() in ("libusbk", "winusb", "libusb0"):
+            return True
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
         sys_libusb = os.path.join(sysroot, "System32", "drivers", "libusb0.sys")
         if os.path.isfile(sys_libusb):
@@ -270,22 +275,16 @@ def install_driver() -> bool:
 
 
 def aml_bulkcmd(cmd: str, timeout: int = 30, ignore_error: bool = False) -> str:
-    update = get_update_exe()
-    p = subprocess.run(
-        [update, "bulkcmd", cmd],
-        cwd=SCRIPT_DIR,
-        capture_output=True,
-        timeout=timeout,
-        **hidden_subprocess_kwargs(),
-    )
-    out = safe_decode((p.stdout or b"") + (p.stderr or b"")).strip()
-    for ln in out.splitlines():
-        s = ln.strip()
-        if s:
-            emit(f"  [USB] {s}")
-    if _update_output_failed(out, p.returncode) and not ignore_error:
-        raise RuntimeError(f"Ошибка U-Boot '{cmd}': {out[:240]}")
-    return out
+    try:
+        with open_worldcup() as soc:
+            reply = soc.bulkCmd(cmd, timeout * 1000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(safe_decode(reply) or "пустой ответ")
+        return safe_decode(reply)
+    except Exception as ex:
+        if not ignore_error:
+            raise RuntimeError(f"Ошибка U-Boot '{cmd}': {ex}") from ex
+        return ""
 
 
 def apply_unlock_minimum():
@@ -351,19 +350,12 @@ def _update_output_failed(out: str, returncode: int) -> bool:
     )
 
 
-def is_uboot_alive(timeout: int = 8) -> bool:
-    """Return True if U-Boot WorldCup burn mode accepts a bulkcmd."""
+def is_uboot_alive(timeout: int = 4) -> bool:
     try:
-        update = get_update_exe()
-        p = subprocess.run(
-            [update, "bulkcmd", "mmc dev 1"],
-            cwd=SCRIPT_DIR,
-            capture_output=True,
-            timeout=timeout,
-            **hidden_subprocess_kwargs(),
-        )
-        out = safe_decode((p.stdout or b"") + (p.stderr or b""))
-        return not _update_output_failed(out, p.returncode)
+        with open_worldcup() as soc:
+            return usb_boot_stage(soc.identify()) == "uboot" and soc.bulkCmd(
+                "mmc dev 1", timeout * 1000
+            ).startswith(b"success")
     except Exception:
         return False
 
@@ -554,7 +546,8 @@ def get_pyusb_backends(preferred_service: str = "") -> list:
             backends.append(("libusb0", be))
 
     def try_libusb1():
-        be = libusb1_be.get_backend()
+        dll = os.path.join(SCRIPT_DIR, "Drivers", "amd64" if _IS_PY_64 else "x86", "libusb-1.0.dll")
+        be = libusb1_be.get_backend(find_library=lambda _n: dll) if os.path.isfile(dll) else libusb1_be.get_backend()
         if be is not None:
             backends.append(("libusb1", be))
 
@@ -565,6 +558,45 @@ def get_pyusb_backends(preferred_service: str = "") -> list:
         try_libusb0()
         try_libusb1()
     return backends
+
+
+def usb_boot_stage(socid: str) -> str:
+    if len(socid) < 4:
+        raise ValueError("Неполный ответ WorldCup identify")
+    version = tuple(map(ord, socid[:4]))
+    if version == (0, 7, 0, 16):
+        # TPL on Station Max reports stage 0.16 despite sharing the BootROM VID/PID.
+        return "uboot"
+    if version[2:] == (1, 8):
+        return "bl2"
+    if version[2:] == (0, 0):
+        return "rom"
+    return "unknown"
+
+
+@contextmanager
+def open_worldcup():
+    from pyamlboot_local import proto
+    from usb.core import USBError
+
+    last_error = None
+    preferred = check_usb_device().get("usb_service", "")
+    for _, backend in get_pyusb_backends(preferred):
+        soc = None
+        try:
+            soc = proto.AmlogicSoC(backend=backend)
+            soc.dev.set_configuration()
+        except (USBError, ValueError) as ex:
+            last_error = ex
+            if soc is not None:
+                soc.close()
+            continue
+        try:
+            yield soc
+        finally:
+            soc.close()
+        return
+    raise RuntimeError("Не удалось открыть устройство WorldCup через libusb") from last_error
 
 
 def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
@@ -816,58 +848,43 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
     return extract_dir
 
 
+def download_image(target, name, img_path, image_format="normal", progress=None):
+    size = os.path.getsize(img_path)
+    if size == 0:
+        raise ValueError(f"Пустой образ: {img_path}")
+
+    with open(img_path, "rb") as image, open_worldcup() as soc:
+        reply = soc.start_download(target, name, image_format, size, timeout=30000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(f"WorldCup отклонил загрузку {name}: {reply!r}")
+
+        written = 0
+        for seq, data in enumerate(iter(lambda: image.read(65536), b"")):
+            soc.write_download_block(seq, data, timeout=50000)
+            written += len(data)
+            if progress:
+                progress(written * 100 // size)
+
+        if written != size:
+            raise RuntimeError(f"Размер образа изменился во время записи: {img_path}")
+        reply = soc.bulkCmd("download get_status", timeout=120000)
+        if not reply.startswith(b"success"):
+            raise RuntimeError(f"WorldCup не подтвердил запись {name}: {reply!r}")
+
+
 def flash_partition(name: str, img_path: str, pct_start: int, pct_end: int) -> None:
-    update = get_update_exe()
-    emit(f"Запись раздела {name} ({os.path.getsize(img_path) / (1024 * 1024):.1f} МБ)...")
-    process = subprocess.Popen([update, "partition", name, img_path], cwd=SCRIPT_DIR,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               bufsize=0, **hidden_subprocess_kwargs())
-    errors = []
+    size_mb = os.path.getsize(img_path) / (1024 * 1024)
+    emit(f"Запись раздела {name} ({size_mb:.1f} МБ)...")
+    last_sub_pct = -1
 
-    def read_output():
-        pending = b""
-        last = -1
-        try:
-            while True:
-                chunk = process.stdout.read(256)
-                if not chunk:
-                    break
-                pending += chunk
-                while b"\n" in pending or b"\r" in pending:
-                    match = re.search(b"[\r\n]", pending)
-                    raw, pending = pending[:match.start()], pending[match.end():]
-                    line = safe_decode(raw).strip()
-                    if not line:
-                        continue
-                    if _update_output_failed(line, 0):
-                        errors.append(line)
-                    progress = re.findall(r"(\d{1,3})%", line)
-                    if progress and min(100, int(progress[-1])) != last:
-                        last = min(100, int(progress[-1]))
-                        emit_progress(pct_start + int((pct_end - pct_start) * last / 100),
-                                      f"Запись {name}: {last}%")
-                    else:
-                        emit("  [USB] " + line)
-            if pending and _update_output_failed(safe_decode(pending), 0):
-                errors.append(safe_decode(pending))
-        except Exception as exc:
-            errors.append(str(exc))
+    def report_progress(sub):
+        nonlocal last_sub_pct
+        if sub != last_sub_pct and sub < 100:
+            last_sub_pct = sub
+            overall = pct_start + (pct_end - pct_start) * sub // 100
+            emit_progress(overall, f"Прошивка {name}.img — {sub}%")
 
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
-    try:
-        code = process.wait(timeout=2700)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
-        reader.join(timeout=5)
-        process.stdout.close()
-        raise RuntimeError(f"Время записи {name} истекло; состояние станции неизвестно")
-    reader.join(timeout=10)
-    if not reader.is_alive():
-        process.stdout.close()
-    if reader.is_alive() or code != 0 or errors:
-        raise RuntimeError(f"Ошибка записи {name} (код {code}): {'; '.join(errors)[:300]}")
+    download_image("store", name, img_path, progress=report_progress)
     emit_progress(pct_end, f"Раздел {name} записан")
 
 
@@ -931,11 +948,17 @@ def run_after_ubt():
     batch = os.path.join(SCRIPT_DIR, "after_ubt.bat")
     if not os.path.isfile(batch):
         raise RuntimeError("Не найден обязательный after_ubt.bat")
+    env = os.environ.copy()
+    env["OPENSTATION_ENGINE"] = sys.executable
+    if not getattr(sys, "frozen", False):
+        env["OPENSTATION_ENGINE_SCRIPT"] = os.path.abspath(__file__)
+    else:
+        env.pop("OPENSTATION_ENGINE_SCRIPT", None)
     process = subprocess.Popen(["cmd.exe", "/d", "/c", "after_ubt.bat"],
-                               cwd=SCRIPT_DIR, stdout=subprocess.PIPE,
+                               cwd=SCRIPT_DIR, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, **hidden_subprocess_kwargs())
     try:
-        output, _ = process.communicate(timeout=180)
+        output, _ = process.communicate(timeout=240)
     except subprocess.TimeoutExpired:
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -977,7 +1000,7 @@ def run_flash(args):
 
     emit_progress(28, "Проверка ответа станции...")
     if not is_uboot_alive(timeout=8):
-        raise RuntimeError("Устройство не отвечает на команды update.exe. Запись не начата.")
+        raise RuntimeError("Станция не ответила на команды USB. Запись не начата. Закройте USB Burning Tool и проверьте драйвер.")
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
@@ -996,6 +1019,7 @@ def run_flash(args):
 def main():
     configure_stdio()
     parser = argparse.ArgumentParser(description="OpenStation Max USB Service Port Flasher")
+    parser.add_argument("--bulkcmd", default="", help=argparse.SUPPRESS)
     parser.add_argument("--check", action="store_true", help="Проверить драйвер, USB и локальный ROM (JSON)")
     parser.add_argument("--install-driver", action="store_true", help="Установить драйвер WorldCup")
     parser.add_argument("--flash", action="store_true", help="Прошить станцию полностью автоматически")
@@ -1008,6 +1032,9 @@ def main():
     args = parser.parse_args()
 
     try:
+        if args.bulkcmd:
+            emit(aml_bulkcmd(args.bulkcmd))
+            return 0
         if args.usb_boot_step:
             return run_usb_boot_step_inproc(args.usb_boot_step, args.usb_service)
         if args.check:

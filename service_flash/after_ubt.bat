@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist "update.exe" exit /b 2
+if not defined OPENSTATION_ENGINE if not exist "update.exe" exit /b 2
 set "any_error=0"
 call :run "store init" || set "any_error=1"
 call :run "amlmmc enc" || set "any_error=1"
@@ -13,7 +13,15 @@ exit /b %any_error%
 :run
 set "logfile=%TEMP%\openstation-after-%RANDOM%-%RANDOM%.log"
 echo [after_ubt] %~1
-"%~dp0update.exe" bulkcmd "%~1" > "%logfile%" 2>&1
+if defined OPENSTATION_ENGINE (
+    if defined OPENSTATION_ENGINE_SCRIPT (
+        "%OPENSTATION_ENGINE%" "%OPENSTATION_ENGINE_SCRIPT%" --bulkcmd "%~1" > "%logfile%" 2>&1
+    ) else (
+        "%OPENSTATION_ENGINE%" --bulkcmd "%~1" > "%logfile%" 2>&1
+    )
+) else (
+    "%~dp0update.exe" bulkcmd "%~1" > "%logfile%" 2>&1
+)
 set "rc=%ERRORLEVEL%"
 type "%logfile%"
 findstr /i /c:"ERR:" /c:"ERR(L" /c:"failed" /c:"can not find device" /c:"no [worldcup device]" /c:"fail to open file" "%logfile%" >nul

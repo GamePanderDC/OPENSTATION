@@ -19,8 +19,8 @@ using System.Windows.Media;
 [assembly: AssemblyTitle("OpenStation Max Installer")]
 [assembly: AssemblyDescription("One-Click Installer powered by yasta_flasher engine")]
 [assembly: AssemblyProduct("OpenStation Max")]
-[assembly: AssemblyVersion("1.5.1.0")]
-[assembly: AssemblyFileVersion("1.5.1.0")]
+[assembly: AssemblyVersion("2.2.0.1")]
+[assembly: AssemblyFileVersion("2.2.0.1")]
 
 namespace OpenStationFlasher
 {
@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "v1.5.4";
+        private const string FW_VERSION = "USB Max 1.0";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -109,7 +109,7 @@ namespace OpenStationFlasher
 
         public MainWindow()
         {
-            Title = "OpenStation Max " + FW_VERSION + " — Установщик";
+            Title = "OpenStation USB • Станция Макс";
             Width = 740;
             Height = 520;
             MinWidth = 680;
@@ -120,7 +120,7 @@ namespace OpenStationFlasher
 
             ResolvePaths();
             BuildUi();
-            AppendLog("Установщик OpenStation Max " + FW_VERSION + " (движок yasta_flasher) готов.");
+            AppendLog("OpenStation USB готов к установке.");
             if (!string.IsNullOrEmpty(_toolsRoot))
                 AppendLog("Рабочая директория инструментов: " + _toolsRoot);
 
@@ -156,9 +156,9 @@ namespace OpenStationFlasher
             var g = new LinearGradientBrush();
             g.StartPoint = new Point(0, 0);
             g.EndPoint = new Point(1, 1);
-            g.GradientStops.Add(new GradientStop(Color.FromRgb(4, 7, 14), 0.0));
-            g.GradientStops.Add(new GradientStop(Color.FromRgb(9, 15, 28), 0.55));
-            g.GradientStops.Add(new GradientStop(Color.FromRgb(5, 9, 18), 1.0));
+            g.GradientStops.Add(new GradientStop(Color.FromRgb(11, 9, 27), 0.0));
+            g.GradientStops.Add(new GradientStop(Color.FromRgb(27, 18, 54), 0.55));
+            g.GradientStops.Add(new GradientStop(Color.FromRgb(10, 9, 27), 1.0));
             return g;
         }
 
@@ -248,7 +248,7 @@ namespace OpenStationFlasher
             var titleStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             titleStack.Children.Add(new TextBlock
             {
-                Text = "OPENSTATION MAX",
+                Text = "OPENSTATION USB",
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -328,7 +328,7 @@ namespace OpenStationFlasher
             {
                 CornerRadius = new CornerRadius(18),
                 Padding = new Thickness(24, 22, 24, 22),
-                Background = new SolidColorBrush(Color.FromArgb(140, 14, 21, 36)),
+                Background = new SolidColorBrush(Color.FromArgb(220, 34, 25, 62)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(36, 255, 255, 255)),
                 BorderThickness = new Thickness(1)
             };
@@ -358,7 +358,7 @@ namespace OpenStationFlasher
 
             _txtHeroSub = new TextBlock
             {
-                Text = "Подключите станцию сервисным USB Type-C (перемычка на 6-й контакт) или по ADB.",
+                Text = "Подключите Станцию Макс по USB в режиме прошивки.",
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
                 Margin = new Thickness(24, 6, 0, 18),
@@ -377,12 +377,12 @@ namespace OpenStationFlasher
             Grid.SetColumn(_pillDriverBorder, 0);
             pillsGrid.Children.Add(_pillDriverBorder);
 
-            _pillConnBorder = CreateDiagPill("Порт / ADB", "Ожидание...", out _pillConnVal);
+            _pillConnBorder = CreateDiagPill("USB-подключение", "Ожидание...", out _pillConnVal);
             _pillConnBorder.Margin = new Thickness(3, 0, 3, 0);
             Grid.SetColumn(_pillConnBorder, 1);
             pillsGrid.Children.Add(_pillConnBorder);
 
-            _pillRomBorder = CreateDiagPill("Образ прошивки", FW_VERSION, out _pillRomVal);
+            _pillRomBorder = CreateDiagPill("Образ прошивки", "Скачается автоматически", out _pillRomVal);
             _pillRomBorder.Margin = new Thickness(6, 0, 0, 0);
             Grid.SetColumn(_pillRomBorder, 2);
             pillsGrid.Children.Add(_pillRomBorder);
@@ -528,7 +528,7 @@ namespace OpenStationFlasher
                 Text = "Проверить подключение и установить",
                 FontSize = 15,
                 FontWeight = FontWeights.Bold,
-                Foreground = new SolidColorBrush(Color.FromRgb(8, 12, 22)),
+                Foreground = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -537,7 +537,7 @@ namespace OpenStationFlasher
             var border = new FrameworkElementFactory(typeof(Border));
             border.Name = "bd";
             border.SetValue(Border.CornerRadiusProperty, new CornerRadius(16));
-            border.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(241, 245, 249)));
+            border.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(115, 76, 222)));
             border.SetValue(Border.PaddingProperty, new Thickness(24, 15, 24, 15));
             var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
             presenter.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
@@ -546,7 +546,7 @@ namespace OpenStationFlasher
             tpl.VisualTree = border;
 
             var hov = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
-            hov.Setters.Add(new Setter(Border.BackgroundProperty, Brushes.White, "bd"));
+            hov.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(139, 99, 245)), "bd"));
             tpl.Triggers.Add(hov);
 
             var dis = new Trigger { Property = UIElement.IsEnabledProperty, Value = false };
@@ -765,7 +765,7 @@ namespace OpenStationFlasher
             {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
                 _txtHeroStatus.Text = "Нужно подключение по сервисному USB";
-                _txtHeroSub.Text = "Подключение по ADB не используется в этом установщике.";
+                _txtHeroSub.Text = "Подключите станцию к ПК по USB в режиме прошивки.";
                 _pillConnVal.Text = "Нужен USB";
                 _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 245, 158, 11));
             }
@@ -773,7 +773,7 @@ namespace OpenStationFlasher
             {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
                 _txtHeroStatus.Text = "Ожидание подключения станции";
-                _txtHeroSub.Text = "Замкните 6-й контакт сервисного Type-C на GND, подключите USB к ПК и подайте питание 19В.";
+                _txtHeroSub.Text = "Подключите Станцию Макс в том же режиме, в котором её видит USB Burning Tool.";
                 _pillConnVal.Text = "Не подключена";
                 _pillConnBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255));
             }
@@ -980,7 +980,7 @@ namespace OpenStationFlasher
             Dispatcher.Invoke(() => {
                 _statusDot.Fill = new SolidColorBrush(Color.FromRgb(52, 211, 153));
                 _txtHeroStatus.Text = "Запись завершена";
-                _txtHeroSub.Text = "Загрузка станции не проверена. Снимите перемычку и перезапустите питание.";
+                _txtHeroSub.Text = "Завершающие команды выполнены. Перезапустите питание станции.";
             });
         }
 
