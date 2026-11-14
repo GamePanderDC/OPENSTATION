@@ -29,7 +29,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
-import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -282,7 +281,7 @@ class MainActivity : Activity() {
     private var volumePct = 50
     @Volatile private var daemonOnline = false
     @Volatile private var cachedAppsJson = ""
-    private var lastQrIp = ""
+    private var lastQrIp: String? = null
     private var setupCompletedState: Boolean? = null
     private var wizardAutoOpenedThisRun = false
 
@@ -3182,6 +3181,7 @@ class MainActivity : Activity() {
                     val a = addrs.nextElement()
                     if (a is Inet4Address && !a.isLoopbackAddress) {
                         val ip = a.hostAddress ?: continue
+                        if (!SetupAddress.isUsableIpv4(ip)) continue
                         if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) {
                             result = ip
                             cachedLocalIp = result
@@ -3201,28 +3201,20 @@ class MainActivity : Activity() {
 
     private fun updateNetworkHeader(ipOverride: String? = null, force: Boolean = false) {
         val ip = ipOverride ?: detectLocalIp(force)
-        val url = "http://$ip:8080"
-        val onlineNet = if (ip != "127.0.0.1") {
-            true
-        } else {
-            try {
-                val cm = getSystemService(ConnectivityManager::class.java)
-                cm.activeNetwork != null
-            } catch (_: Throwable) { false }
-        }
-        val ipLine = if (onlineNet || ip != "127.0.0.1") {
+        val url = SetupAddress.webUrl(ip)
+        val ipLine = if (url != null) {
             "$ip:8080"
         } else {
-            "Локально: 127.0.0.1:8080"
+            "Подключите станцию к сети"
         }
         if (force || ipLine != lastIpLineStr) {
             lastIpLineStr = ipLine
             tvIpLine.text = ipLine
         }
-        if (ip != lastQrIp && ip.isNotEmpty()) {
+        if (ip != lastQrIp) {
             lastQrIp = ip
-            val bmp = QrGenerator.generateBitmap(url, 180)
-            if (bmp != null) ivQr.setImageBitmap(bmp)
+            (ivQr.parent as? View)?.visibility = if (url == null) View.GONE else View.VISIBLE
+            ivQr.setImageBitmap(if (url == null) null else QrGenerator.generateBitmap(url, 180))
         }
     }
 

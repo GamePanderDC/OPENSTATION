@@ -11,6 +11,7 @@ internal object SetupAddress {
         return bytes[0] in 1..223 && bytes[0] != 127 && !(bytes[0] == 169 && bytes[1] == 254)
     }
 
-    fun wizardUrl(ip: String): String? =
-        if (isUsableIpv4(ip)) "http://$ip:8080/#wizard" else null
+    fun webUrl(ip: String): String? = if (isUsableIpv4(ip)) "http://$ip:8080" else null
+
+    fun wizardUrl(ip: String): String? = webUrl(ip)?.plus("/#wizard")
 }

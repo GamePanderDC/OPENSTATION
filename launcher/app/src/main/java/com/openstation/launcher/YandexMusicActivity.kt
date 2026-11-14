@@ -1597,9 +1597,15 @@ class YandexMusicActivity : Activity() {
 
     private fun updateWebQrInfo() {
         val ip = detectLocalIp()
-        val url = "http://$ip:8080"
-        tvWebHint.text = "Быстрый вход через веб-пульт ($url):\nНа телефоне или ПК откройте вкладку «Пульт, Музыка & ТВ» и вставьте OAuth-токен — плеер сразу подхватит аккаунт."
-        QrGenerator.generateBitmap(url, dp(92))?.let { ivWebQr.setImageBitmap(it) }
+        val url = SetupAddress.webUrl(ip)
+        (ivWebQr.parent as? View)?.visibility = if (url == null) View.GONE else View.VISIBLE
+        if (url == null) {
+            ivWebQr.setImageDrawable(null)
+            tvWebHint.text = "Подключите станцию к сети, чтобы открыть веб-пульт на телефоне или ПК."
+        } else {
+            tvWebHint.text = "Быстрый вход через веб-пульт ($url):\nНа телефоне или ПК откройте вкладку «Пульт, Музыка & ТВ» и вставьте OAuth-токен — плеер сразу подхватит аккаунт."
+            ivWebQr.setImageBitmap(QrGenerator.generateBitmap(url, dp(92)))
+        }
     }
 
     private fun detectLocalIp(): String {
@@ -1613,7 +1619,7 @@ class YandexMusicActivity : Activity() {
                     val a = addrs.nextElement()
                     if (a is Inet4Address && !a.isLoopbackAddress) {
                         val ip = a.hostAddress ?: continue
-                        if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) return ip
+                        if ((iface.name.startsWith("wlan") || iface.name.startsWith("eth")) && SetupAddress.isUsableIpv4(ip)) return ip
                     }
                 }
             }
