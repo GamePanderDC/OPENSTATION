@@ -1,3 +1,4 @@
+#include "hw/framebuffer_pixel.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "utils/logger.hpp"
 
@@ -645,32 +646,8 @@ void FramebufferHw::poll_sensors() {
 }
 
 void FramebufferHw::set_pixel(FbDevice& dev, uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b) {
-    if (x >= dev.xres || y >= dev.yres) return;
-    size_t row_off = static_cast<size_t>(y) * dev.line_length;
-    if (dev.bpp == 8 || dev.grayscale) {
-        size_t off = row_off + x;
-        if (off < dev.buf.size()) {
-            uint8_t lum = static_cast<uint8_t>((77 * r + 150 * g + 29 * b) >> 8);
-            dev.buf[off] = lum;
-        }
-        return;
-    }
-    size_t bytes_pp = dev.bpp / 8;
-    if (bytes_pp < 3) bytes_pp = 3;
-    size_t off = row_off + static_cast<size_t>(x) * bytes_pp;
-    if (off + bytes_pp > dev.buf.size()) return;
-
-    uint32_t r_idx = dev.red_off / 8;
-    uint32_t g_idx = dev.green_off / 8;
-    uint32_t b_idx = dev.blue_off / 8;
-    if (r_idx >= bytes_pp || g_idx >= bytes_pp || b_idx >= bytes_pp ||
-        (r_idx == g_idx && g_idx == b_idx)) {
-        r_idx = 0; g_idx = 1; b_idx = 2;
-    }
-    dev.buf[off + r_idx] = r;
-    dev.buf[off + g_idx] = g;
-    dev.buf[off + b_idx] = b;
-    if (bytes_pp == 4) dev.buf[off + 3] = 0xFF;
+    write_framebuffer_pixel(dev.buf, dev.xres, dev.yres, dev.line_length, dev.bpp,
+                            dev.red_off, dev.green_off, dev.blue_off, x, y, r, g, b);
 }
 
 void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
