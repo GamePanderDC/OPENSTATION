@@ -350,14 +350,55 @@ def _update_output_failed(out: str, returncode: int) -> bool:
     )
 
 
-def is_uboot_alive(timeout: int = 4) -> bool:
+def _configure_worldcup(soc):
+    # Windows drivers can reject SET_CONFIGURATION while the device is already configured.
     try:
-        with open_worldcup() as soc:
-            return usb_boot_stage(soc.identify()) == "uboot" and soc.bulkCmd(
-                "mmc dev 1", timeout * 1000
-            ).startswith(b"success")
+        soc.dev.get_active_configuration()
     except Exception:
+        soc.dev.set_configuration()
+
+
+def probe_burn_mode(timeout: int = 8) -> bool:
+    from pyamlboot_local import proto
+
+    info = check_usb_device()
+    emit("[USB] Устройство: %s; драйвер: %s; состояние: %s" % (
+        info.get("usb_desc") or "не найдено", info.get("usb_service") or "неизвестен",
+        info.get("usb_status") or "неизвестно"))
+    backends = get_pyusb_backends(info.get("usb_service", ""))
+    if not backends:
+        emit("[USB] Не найдена подходящая USB-библиотека.")
         return False
+    for name, backend in backends:
+        soc = None
+        try:
+            soc = proto.AmlogicSoC(backend=backend)
+            _configure_worldcup(soc)
+            ident = soc.identify()
+            stage = usb_boot_stage(ident)
+            ident_hex = " ".join("%02x" % _byte_at(ident, i) for i in range(min(4, len(ident))))
+            emit("[USB] %s: код=%s, режим=%s" % (name, ident_hex, stage))
+            if stage != "uboot":
+                continue
+            reply = soc.bulkCmd("mmc dev 1", timeout * 1000)
+            if reply.startswith(b"success"):
+                os.environ["OPENSTATION_USB_BACKEND"] = name
+                emit("[USB] %s: устройство подтвердило команду." % name)
+                return True
+            emit("[USB] %s: команда отклонена: %s" % (name, safe_decode(reply)[:160]))
+        except Exception as ex:
+            emit("[USB] %s: %s: %s" % (name, type(ex).__name__, str(ex)[:180]))
+        finally:
+            if soc is not None:
+                try:
+                    soc.close()
+                except Exception:
+                    pass
+    return False
+
+
+def is_uboot_alive(timeout: int = 4) -> bool:
+    return probe_burn_mode(timeout)
 
 
 def probe_usb_identify(preferred_service: str = "") -> dict:
@@ -581,11 +622,14 @@ def open_worldcup():
 
     last_error = None
     preferred = check_usb_device().get("usb_service", "")
-    for _, backend in get_pyusb_backends(preferred):
+    backends = get_pyusb_backends(preferred)
+    selected = os.environ.get("OPENSTATION_USB_BACKEND", "")
+    backends.sort(key=lambda item: item[0] != selected)
+    for _, backend in backends:
         soc = None
         try:
             soc = proto.AmlogicSoC(backend=backend)
-            soc.dev.set_configuration()
+            _configure_worldcup(soc)
         except (USBError, ValueError) as ex:
             last_error = ex
             if soc is not None:
@@ -979,6 +1023,10 @@ def run_flash(args):
         if not install_driver():
             raise RuntimeError("Не удалось установить драйвер WorldCup.")
 
+    emit_progress(4, "Проверка USB-соединения...")
+    if not is_uboot_alive(timeout=8):
+        raise RuntimeError("Не удалось подтвердить режим записи. Данные выше помогут определить причину; запись не начата.")
+
     emit_progress(6, "Подготовка актуальной прошивки...")
     rom_dir = args.rom_dir or ""
     if rom_dir and not os.path.isdir(rom_dir):
@@ -995,12 +1043,6 @@ def run_flash(args):
 
     emit_progress(24, "Проверка контрольных сумм прошивки...")
     verify_rom(rom_dir)
-
-    emit_progress(25, "Поиск станции...")
-
-    emit_progress(28, "Проверка ответа станции...")
-    if not is_uboot_alive(timeout=8):
-        raise RuntimeError("Станция не ответила на команды USB. Запись не начата. Закройте USB Burning Tool и проверьте драйвер.")
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
