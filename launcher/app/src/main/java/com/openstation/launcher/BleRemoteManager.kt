@@ -179,24 +179,21 @@ class BleRemoteManager(private val context: Context) {
         val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter() ?: return null
         val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
 
-        try {
-            val connected = bm?.getConnectedDevices(BluetoothProfile.GATT) ?: emptyList()
-            connected.firstOrNull {
-                isYandexRemoteName(it.name) || (savedMac.isNotEmpty() && it.address == savedMac)
-            }?.let { return it }
-        } catch (_: Throwable) {}
-
-        try {
-            adapter.bondedDevices?.firstOrNull {
-                isYandexRemoteName(it.name) || (savedMac.isNotEmpty() && it.address == savedMac)
-            }?.let { return it }
-        } catch (_: Throwable) {}
-
+        // The remembered remote takes precedence over other Yandex remotes nearby.
         if (savedMac.isNotEmpty()) {
             try {
-                return adapter.getRemoteDevice(savedMac)
-            } catch (_: Throwable) {}
+                adapter.getRemoteDevice(savedMac).takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
+                    ?.let { return it }
+            } catch (_: IllegalArgumentException) {}
         }
+        try {
+            adapter.bondedDevices?.firstOrNull { isYandexRemoteName(it.name) }?.let { return it }
+        } catch (_: Throwable) {}
+        try {
+            val connected = bm?.getConnectedDevices(BluetoothProfile.GATT) ?: emptyList()
+            connected.firstOrNull { it.bondState == BluetoothDevice.BOND_BONDED && isYandexRemoteName(it.name) }
+                ?.let { return it }
+        } catch (_: Throwable) {}
         return null
     }
 
@@ -380,8 +377,11 @@ class BleRemoteManager(private val context: Context) {
         fun finish(state: String, detail: String) {
             if (!finished.compareAndSet(false, true)) return
             hidConnecting.set(false)
-            if (state == "connected") hidConnectedAddress = device.address
-            else if (hidConnectedAddress == device.address) hidConnectedAddress = null
+            if (state == "connected") {
+                hidConnectedAddress = device.address
+                prefs.edit().putString(KEY_REMOTE_MAC, device.address)
+                    .putString(KEY_REMOTE_NAME, try { device.name ?: "Yandex Remote" } catch (_: SecurityException) { "Yandex Remote" }).apply()
+            } else if (hidConnectedAddress == device.address) hidConnectedAddress = null
             profile?.let { try { adapter.closeProfileProxy(profileId, it) } catch (_: Throwable) {} }
             onStatus(state, detail)
         }
