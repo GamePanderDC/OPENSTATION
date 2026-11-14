@@ -239,6 +239,15 @@ class YandexMusicApi(private val context: Context) {
 
     class AuthException(val statusCode: Int, message: String) : Exception(message)
 
+    // Probe only the token: do not replace cached account details during a concurrent sign-in.
+    fun isTokenRejected(): Boolean {
+        if (!hasToken()) return true
+        val result = request("/account/about", "GET")
+        if (result.code == 401 || result.code == 403) return true
+        if (result.code !in 200..299) throw Exception("Account check failed: HTTP ${result.code}")
+        return false
+    }
+
     fun refreshAccount(): YmAccount {
         if (!hasToken()) return YmAccount(loggedIn = false)
         val r = request("/account/about", "GET")

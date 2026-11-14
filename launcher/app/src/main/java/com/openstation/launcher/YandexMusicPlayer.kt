@@ -989,7 +989,7 @@ class YandexMusicPlayer(private val context: Context) {
                 }
             } catch (ae: YandexMusicApi.AuthException) {
                 if (playTokenGen.get() == tok) {
-                    handleAuthFailure(ae.message ?: "Нужен вход в Яндекс Музыку", openUiOnAuthNeeded = false)
+                    handleAuthFailure(ae.message ?: "Нужен вход в Яндекс Музыку", openUiOnAuthNeeded = false, expectedGeneration = tok)
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "resolveStream(${track.id}) failed: ${t.message}")
@@ -1061,7 +1061,27 @@ class YandexMusicPlayer(private val context: Context) {
         }
     }
 
-    private fun handleAuthFailure(msg: String, openUiOnAuthNeeded: Boolean) {
+    private fun handleAuthFailure(msg: String, openUiOnAuthNeeded: Boolean, expectedGeneration: Long? = null) {
+        // A rejected track or stream may be unavailable even when the account token is valid.
+        val checkedToken = api.getToken()
+        val outcome = classifyMusicAuthFailure(checkedToken, { api.getToken() }) {
+            api.isTokenRejected()
+        }
+        if (outcome == MusicAuthFailure.STALE || (expectedGeneration != null && playTokenGen.get() != expectedGeneration)) return
+        if (outcome == MusicAuthFailure.STREAM_ERROR) {
+            Log.w(TAG, "Track or stream access failed; preserving account state")
+            synchronized(lock) {
+                isBuffering = false
+                if (expectedGeneration != null) {
+                    isPlaying = false
+                    isPaused = false
+                    updateMediaSessionLocked()
+                }
+                lastError = msg
+            }
+            emitSnapshot(forceDaemon = true)
+            return
+        }
         synchronized(lock) {
             isBuffering = false
             isPlaying = false
