@@ -2418,7 +2418,7 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     private fun renderOrbAssistantUi() {
         val st = LiveOrbState.assistantState
-        val userTxt = LiveOrbState.liveUserText.trim()
+        val userTxt = if (st == "idle") "" else LiveOrbState.liveUserText.trim()
         val display = LiveOrbState.bestDisplayText()
         val uiKey = "$st|$assistantEnabled|$userTxt|$display"
         if (uiKey == lastOrbUiKey) return

@@ -149,21 +149,22 @@ object LiveOrbState {
         liveUserText = liveUser
         liveModelText = liveModel
         if (lastModel.isNotBlank()) {
+            if (lastModel != lastModelText && (state != "idle" || prevState != "idle")) lastReplyAtMs = now
             lastModelText = lastModel
-            lastReplyAtMs = now
         } else if (liveModel.isNotBlank()) {
+            if (liveModel != lastModelText) lastReplyAtMs = now
             lastModelText = liveModel
-            lastReplyAtMs = now
         } else if (state == "connecting" && prevState == "idle") {
             // New voice turn clears stale text from an older conversation
             lastModelText = ""
             lastError = ""
         }
         if (error.isNotBlank()) {
+            if (error != lastError && (state != "idle" || prevState != "idle")) lastReplyAtMs = now
             lastError = error
-            lastReplyAtMs = now
         }
         if (state == "idle") {
+            if (prevState != "idle" && (lastModelText.isNotBlank() || lastError.isNotBlank())) lastReplyAtMs = now
             ttsRms = 0f
             micRms = 0f
         }
@@ -173,6 +174,9 @@ object LiveOrbState {
     fun updateVoiceLevel(state: String, tts: Float, mic: Float) {
         val changed = (state.isNotEmpty() && state != assistantState)
         if (state.isNotEmpty()) {
+            if (changed && state == "idle" && (lastModelText.isNotBlank() || lastError.isNotBlank())) {
+                lastReplyAtMs = android.os.SystemClock.elapsedRealtime()
+            }
             assistantState = state
             if (state != "idle" && state != "error") {
                 lastActiveAtMs = android.os.SystemClock.elapsedRealtime()
@@ -209,15 +213,8 @@ object LiveOrbState {
     }
 
     fun bestDisplayText(): String {
-        if (lastError.isNotBlank() && assistantState == "error") return "Ошибка: $lastError"
-        val m = liveModelText.trim().ifEmpty { lastModelText.trim() }
-        if (m.isNotEmpty()) return m
-        val u = liveUserText.trim()
-        if (u.isNotEmpty()) return "«$u»"
-        if (lastError.isNotBlank() && (android.os.SystemClock.elapsedRealtime() - lastReplyAtMs) < 6000L) {
-            return "Ошибка: $lastError"
-        }
-        return ""
+        return AssistantDisplayPolicy.text(assistantState, liveModelText, lastModelText, liveUserText,
+            lastError, lastReplyAtMs, android.os.SystemClock.elapsedRealtime())
     }
 }
 
