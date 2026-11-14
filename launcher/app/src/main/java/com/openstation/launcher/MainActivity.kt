@@ -58,8 +58,6 @@ import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -3166,34 +3164,10 @@ class MainActivity : Activity() {
 
     private fun detectLocalIp(force: Boolean = false): String {
         val nowMs = SystemClock.elapsedRealtime()
-        if (!force && cachedLocalIp != "127.0.0.1" && (nowMs - lastIpDetectMs) < 20_000L) {
+        if (!force && cachedLocalIp != "127.0.0.1" && (nowMs - lastIpDetectMs) < 5_000L) {
             return cachedLocalIp
         }
-        var result = "127.0.0.1"
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            var candidate = ""
-            while (ifaces.hasMoreElements()) {
-                val iface = ifaces.nextElement()
-                if (!iface.isUp || iface.isLoopback) continue
-                val addrs = iface.inetAddresses
-                while (addrs.hasMoreElements()) {
-                    val a = addrs.nextElement()
-                    if (a is Inet4Address && !a.isLoopbackAddress) {
-                        val ip = a.hostAddress ?: continue
-                        if (!SetupAddress.isUsableIpv4(ip)) continue
-                        if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) {
-                            result = ip
-                            cachedLocalIp = result
-                            lastIpDetectMs = nowMs
-                            return result
-                        }
-                        candidate = ip
-                    }
-                }
-            }
-            if (candidate.isNotEmpty()) result = candidate
-        } catch (_: Throwable) {}
+        val result = LocalNetworkAddress.find(this).ifEmpty { "127.0.0.1" }
         cachedLocalIp = result
         lastIpDetectMs = nowMs
         return result

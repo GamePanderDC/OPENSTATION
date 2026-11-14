@@ -15,6 +15,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.ConnectivityManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -44,8 +45,6 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.min
@@ -142,6 +141,12 @@ class YandexMusicActivity : Activity() {
         }
     }
 
+    private val networkReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (::ivWebQr.isInitialized && ::tvWebHint.isInitialized) updateWebQrInfo()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         StationAudioService.ensureStarted(this)
@@ -151,6 +156,9 @@ class YandexMusicActivity : Activity() {
 
         try {
             registerReceiver(stateReceiver, IntentFilter(YandexMusicPlayer.ACTION_MUSIC_STATE))
+        } catch (_: Throwable) {}
+        try {
+            registerReceiver(networkReceiver, IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
         } catch (_: Throwable) {}
 
         refreshFromService()
@@ -177,6 +185,7 @@ class YandexMusicActivity : Activity() {
         vinylAnimator?.cancel()
         passportDialog?.dismiss()
         try { unregisterReceiver(stateReceiver) } catch (_: Throwable) {}
+        try { unregisterReceiver(networkReceiver) } catch (_: Throwable) {}
         super.onDestroy()
     }
 
@@ -1609,22 +1618,7 @@ class YandexMusicActivity : Activity() {
     }
 
     private fun detectLocalIp(): String {
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            while (ifaces.hasMoreElements()) {
-                val iface = ifaces.nextElement()
-                if (!iface.isUp || iface.isLoopback) continue
-                val addrs = iface.inetAddresses
-                while (addrs.hasMoreElements()) {
-                    val a = addrs.nextElement()
-                    if (a is Inet4Address && !a.isLoopbackAddress) {
-                        val ip = a.hostAddress ?: continue
-                        if ((iface.name.startsWith("wlan") || iface.name.startsWith("eth")) && SetupAddress.isUsableIpv4(ip)) return ip
-                    }
-                }
-            }
-        } catch (_: Throwable) {}
-        return "127.0.0.1"
+        return LocalNetworkAddress.find(this)
     }
 
     private fun makeTextPill(label: String, onClick: () -> Unit): TextView = TextView(this).apply {

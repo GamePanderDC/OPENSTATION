@@ -26,8 +26,6 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.Inet4Address
-import java.net.NetworkInterface
 import java.net.URL
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -1202,8 +1200,7 @@ class SetupWizardActivity : Activity() {
                     val txt = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     val root = JSONObject(txt)
-                    val reportedIp = root.optString("ip", "")
-                    val ip = if (SetupAddress.isUsableIpv4(reportedIp)) reportedIp else localIp
+                    val ip = localIp
                     val host = root.optString("hostname", "station-max")
                     val fw = root.optString("firmwareVersion", "1.2.3")
                     val dnsMode = root.optString("privateDnsMode", "")
@@ -1420,22 +1417,7 @@ class SetupWizardActivity : Activity() {
     }
 
     private fun detectLocalIp(): String {
-        try {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            while (ifaces.hasMoreElements()) {
-                val iface = ifaces.nextElement()
-                if (!iface.isUp || iface.isLoopback) continue
-                val addrs = iface.inetAddresses
-                while (addrs.hasMoreElements()) {
-                    val address = addrs.nextElement()
-                    if (address is Inet4Address && !address.isLoopbackAddress && !address.isLinkLocalAddress) {
-                        val ip = address.hostAddress ?: continue
-                        if ((iface.name.startsWith("wlan") || iface.name.startsWith("eth")) && SetupAddress.isUsableIpv4(ip)) return ip
-                    }
-                }
-            }
-        } catch (_: Throwable) {}
-        return ""
+        return LocalNetworkAddress.find(this)
     }
 
     private fun makePaneHeading(title: String, sub: String): LinearLayout = LinearLayout(this).apply {
