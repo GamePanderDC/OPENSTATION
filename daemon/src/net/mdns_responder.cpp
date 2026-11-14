@@ -1,4 +1,5 @@
 #include "net/mdns_responder.hpp"
+#include "net/local_address.hpp"
 #include "utils/logger.hpp"
 
 #include <arpa/inet.h>
@@ -83,23 +84,20 @@ MdnsResponder::~MdnsResponder() {
 std::string MdnsResponder::detect_local_ipv4() {
     struct ifaddrs* ifa = nullptr;
     if (getifaddrs(&ifa) != 0) return "";
-    std::string chosen;
+    LocalAddressChoice chosen;
     for (struct ifaddrs* p = ifa; p != nullptr; p = p->ifa_next) {
         if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
-        if (p->ifa_flags & IFF_LOOPBACK) continue;
-        if (!(p->ifa_flags & IFF_UP)) continue;
         char buf[INET_ADDRSTRLEN] = {0};
         auto* sin = reinterpret_cast<struct sockaddr_in*>(p->ifa_addr);
         if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
-            std::string ip(buf);
-            if (ip.rfind("169.254.", 0) == 0) continue;
-            chosen = ip;
-            if (p->ifa_name && strncmp(p->ifa_name, "wlan", 4) == 0) break;
-            if (p->ifa_name && strncmp(p->ifa_name, "eth", 3) == 0) break;
+            const bool physical = p->ifa_name &&
+                (strncmp(p->ifa_name, "wlan", 4) == 0 || strncmp(p->ifa_name, "eth", 3) == 0);
+            chosen.consider(buf, ntohl(sin->sin_addr.s_addr), p->ifa_flags & IFF_UP,
+                            p->ifa_flags & IFF_RUNNING, p->ifa_flags & IFF_LOOPBACK, physical);
         }
     }
     freeifaddrs(ifa);
-    return chosen;
+    return chosen.ip;
 }
 
 bool MdnsResponder::start(const std::string& hostname, int web_port, int wyoming_port, int adb_port) {
