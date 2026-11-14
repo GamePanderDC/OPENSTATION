@@ -3,7 +3,7 @@ import os
 import tempfile
 import types
 import unittest
-import subprocess
+from contextlib import contextmanager
 from unittest.mock import patch
 
 PATH = os.path.join(os.path.dirname(__file__), "..", "service_flash", "flash_service.py")
@@ -13,19 +13,22 @@ spec.loader.exec_module(engine)
 
 
 class FlashWorkflowTests(unittest.TestCase):
-    def test_partition_rejects_error_text_even_on_zero_exit(self):
-        if os.name != "nt":
-            self.skipTest("Windows process test")
-        compiler = os.path.join(os.environ.get("WINDIR", r"C:\Windows"),
-                                r"Microsoft.NET\Framework64\v4.0.30319\csc.exe")
+    def test_partition_rejects_failed_worldcup_status(self):
+        class Device:
+            def start_download(self, *args, **kwargs): return b"success"
+            def write_download_block(self, *args, **kwargs): pass
+            def bulkCmd(self, *args, **kwargs): return b"failed"
+
+        @contextmanager
+        def opened():
+            yield Device()
+
         with tempfile.TemporaryDirectory() as path:
-            source, exe, image = (os.path.join(path, n) for n in ("mock.cs", "update.exe", "system.img"))
-            with open(source, "w") as f:
-                f.write('using System; class P { static int Main() { Console.Write("ERR: write failed"); return 0; } }')
-            open(image, "wb").close()
-            subprocess.run([compiler, "/nologo", "/out:" + exe, source], check=True)
-            with patch.object(engine, "get_update_exe", return_value=exe), patch.object(engine, "SCRIPT_DIR", path):
-                with self.assertRaisesRegex(RuntimeError, "Ошибка записи"):
+            image = os.path.join(path, "system.img")
+            with open(image, "wb") as f:
+                f.write(b"test image")
+            with patch.object(engine, "open_worldcup", opened):
+                with self.assertRaisesRegex(RuntimeError, "не подтвердил запись"):
                     engine.flash_partition("system", image, 0, 100)
 
     def test_commands_are_ordered_and_no_reset_or_erase(self):
@@ -37,19 +40,20 @@ class FlashWorkflowTests(unittest.TestCase):
             events = []
             with patch.object(engine, "check_worldcup_driver", return_value=True), \
                  patch.object(engine, "verify_rom"), \
-                 patch.object(engine, "is_uboot_alive", return_value=True), \
+                 patch.object(engine, "ensure_burn_mode", return_value=True), \
                  patch.object(engine, "run_after_ubt", side_effect=lambda: events.append("after_ubt.bat")), \
                  patch.object(engine, "aml_bulkcmd", side_effect=lambda cmd, **kw: events.append(cmd)), \
                  patch.object(engine, "flash_partition", side_effect=lambda name, *a: events.append(name)):
                 engine.run_flash(args)
-            self.assertEqual(events, ["mmc dev 1", "vbmeta", "vendor", "system", "after_ubt.bat"])
+            self.assertEqual(events, ["mmc dev 1", "vbmeta", "vendor", "system", "misc", "after_ubt.bat"])
 
-    def test_checksum_rejection_precedes_any_device_command(self):
+    def test_checksum_rejection_precedes_flash_commands(self):
         with tempfile.TemporaryDirectory() as path:
             for filename in engine.ROM_FILES:
                 open(os.path.join(path, filename), "wb").close()
             args = types.SimpleNamespace(rom_dir=path, download_latest=False)
             with patch.object(engine, "check_worldcup_driver", return_value=True), \
+                 patch.object(engine, "ensure_burn_mode", return_value=True), \
                  patch.object(engine, "aml_bulkcmd") as command:
                 with self.assertRaises(RuntimeError):
                     engine.run_flash(args)
@@ -62,7 +66,7 @@ class FlashWorkflowTests(unittest.TestCase):
             args = types.SimpleNamespace(rom_dir=path, download_latest=False)
             with patch.object(engine, "check_worldcup_driver", return_value=True), \
                  patch.object(engine, "verify_rom"), \
-                 patch.object(engine, "is_uboot_alive", return_value=True), \
+                 patch.object(engine, "ensure_burn_mode", return_value=True), \
                  patch.object(engine, "aml_bulkcmd"), \
                  patch.object(engine, "flash_partition"), \
                  patch.object(engine, "run_after_ubt", side_effect=RuntimeError("failure")):
