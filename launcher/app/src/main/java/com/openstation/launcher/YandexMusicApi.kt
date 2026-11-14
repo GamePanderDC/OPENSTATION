@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -497,7 +498,7 @@ class YandexMusicApi(private val context: Context) {
                         if (id.isNotEmpty()) ids.add(id)
                     }
                     val tracks = TrackBatchLoader.load(ids, 100,
-                        { batch -> getTracksMeta(batch, likedOverride = true) },
+                        { batch -> getTracksMeta(batch, likedOverride = true, strict = true) },
                         { track -> track.id }).filter { it.available }
                     return LikedCollection(tracks, array.length())
                 }
@@ -564,12 +565,16 @@ class YandexMusicApi(private val context: Context) {
         return out
     }
 
-    fun getTracksMeta(trackIds: List<String>, likedOverride: Boolean? = null): List<YmTrack> {
+    fun getTracksMeta(trackIds: List<String>, likedOverride: Boolean? = null, strict: Boolean = false): List<YmTrack> {
         if (trackIds.isEmpty()) return emptyList()
         val joined = URLEncoder.encode(trackIds.joinToString(","), "UTF-8")
         val r = request("/tracks?trackIds=$joined&removeDuplicates=false&withProgress=true", "GET")
-        if (r.code !in 200..299) return emptyList()
-        val arr = unwrapArray(r.body) ?: return emptyList()
+        if (strict && (r.code == 401 || r.code == 403)) throw AuthException(r.code, "Требуется вход в Яндекс Музыку")
+        if (r.code !in 200..299) {
+            if (strict) throw IOException("Не удалось загрузить треки (HTTP ${r.code})")
+            return emptyList()
+        }
+        val arr = unwrapArray(r.body) ?: if (strict) throw IOException("Некорректный ответ со списком треков") else return emptyList()
         val out = ArrayList<YmTrack>()
         for (i in 0 until arr.length()) {
             val obj = arr.optJSONObject(i) ?: continue
