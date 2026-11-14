@@ -213,6 +213,8 @@ class YandexMusicPlayer(private val context: Context) {
                 override fun onPause() { pause() }
                 override fun onSkipToNext() { next() }
                 override fun onSkipToPrevious() { prev() }
+                override fun onFastForward() { next() }
+                override fun onRewind() { prev() }
                 override fun onStop() { stop() }
                 override fun onSeekTo(pos: Long) { seekTo(pos) }
             }, mainHandler)
@@ -248,6 +250,8 @@ class YandexMusicPlayer(private val context: Context) {
                         PlaybackState.ACTION_PLAY_PAUSE or
                         PlaybackState.ACTION_SKIP_TO_NEXT or
                         PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                        PlaybackState.ACTION_FAST_FORWARD or
+                        PlaybackState.ACTION_REWIND or
                         PlaybackState.ACTION_STOP or
                         PlaybackState.ACTION_SEEK_TO
                 )

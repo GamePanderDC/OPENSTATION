@@ -1578,11 +1578,11 @@ class YandexMusicActivity : Activity() {
                     doPlayerAction("PLAY_PAUSE")
                     return true
                 }
-                KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
                     doPlayerAction("NEXT")
                     return true
                 }
-                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MEDIA_REWIND -> {
                     doPlayerAction("PREV")
                     return true
                 }
