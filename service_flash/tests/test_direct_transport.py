@@ -62,16 +62,50 @@ class TransportTests(unittest.TestCase):
             self.assertFalse(f.probe_burn_mode())
             self.assertEqual(device.calls, [])
 
+    def test_bootstrap_runs_only_for_confirmed_bootrom(self):
+        stages = [{'rom': (3, 2), 'stage': (0, 0), 'mode': 'bootrom'}] * 2
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, 'aml_00053.img'), 'wb').close()
+            with patch.object(f, 'SCRIPT_DIR', folder), patch.object(f, 'probe_burn_mode', side_effect=[False, True]), patch.object(f, 'check_usb_device', return_value={'usb_service': 'libusb0'}), patch.object(f, 'probe_usb_identify', side_effect=stages), patch.object(f.subprocess, 'run', return_value=argparse.Namespace(returncode=0)) as worker, patch.object(f.time, 'sleep'):
+                self.assertTrue(f.ensure_burn_mode())
+                self.assertIn('--usb-boot-step', worker.call_args.args[0])
+        with patch.object(f, 'probe_burn_mode', return_value=False), patch.object(f, 'check_usb_device', return_value={}), patch.object(f, 'probe_usb_identify', return_value={'rom': (0, 7), 'stage': (0, 16), 'mode': 'uboot'}), patch.object(f.subprocess, 'run') as worker:
+            self.assertFalse(f.ensure_burn_mode())
+            worker.assert_not_called()
+
+    def test_bootstrap_initializes_g12_then_sends_valid_blocks(self):
+        from pyamlboot_local import proto
+        class Device:
+            def __init__(self): self.dev = self; self.events = []; self.requests = iter([(3, 65536), (3, 65536)])
+            def set_configuration(self): pass
+            def identify(self): return ''.join(map(chr, (3, 2, 0, 0)))
+            def writeSimpleMemory(self, addr, data): self.events.append(('ddr', int.from_bytes(data, 'little')))
+            def writeLargeMemory(self, addr, data, size): self.events.append(('bl2', len(data)))
+            def run(self, addr): self.events.append(('run', addr))
+            def getBootAMLC(self): return next(self.requests)
+            def writeAMLCData(self, seq, offset, data): self.events.append(('block', seq, offset, len(data)))
+            def close(self): pass
+        device = Device()
+        with tempfile.NamedTemporaryFile(delete=False) as image:
+            image.write(b'x' * 70000); path = image.name
+        try:
+            with patch.object(f, 'get_pyusb_backends', return_value=[('fake', object())]), patch.object(proto, 'AmlogicSoC', return_value=device), patch.object(f.time, 'sleep'):
+                self.assertEqual(f.run_usb_boot_step_inproc(path), 0)
+            self.assertEqual(device.events[:4], [('ddr', 0xb1), ('ddr', 0x5183), ('ddr', 0xb1), ('ddr', 0x5183)])
+            self.assertEqual(device.events[4:], [('bl2', 65536), ('run', 0xfffa0000), ('block', 0, 65536, 3)])
+        finally:
+            os.unlink(path)
+
     def test_after_ubt_runs_only_after_all_partitions_succeed(self):
         with tempfile.TemporaryDirectory() as folder:
             for name in ('vbmeta.img', 'vendor.img', 'system.img'):
                 open(os.path.join(folder, name), 'wb').close()
             args = argparse.Namespace(rom_dir=folder)
             calls = []
-            with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'is_uboot_alive', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=lambda name, *args: calls.append(name)), patch.object(f, 'run_after_ubt', side_effect=lambda: calls.append('after_ubt')):
+            with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=lambda name, *args: calls.append(name)), patch.object(f, 'run_after_ubt', side_effect=lambda: calls.append('after_ubt')):
                 f.run_flash(args)
             self.assertEqual(calls, ['vbmeta', 'vendor', 'system', 'after_ubt'])
-            with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'is_uboot_alive', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=RuntimeError('failed')), patch.object(f, 'run_after_ubt') as finish:
+            with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=RuntimeError('failed')), patch.object(f, 'run_after_ubt') as finish:
                 with self.assertRaises(RuntimeError): f.run_flash(args)
                 finish.assert_not_called()
 

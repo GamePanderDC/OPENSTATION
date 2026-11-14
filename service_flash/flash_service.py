@@ -23,6 +23,7 @@ import platform
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import time
 import threading
@@ -649,6 +650,8 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
 
     with open(img_path, "rb") as f:
         data = f.read()
+    if len(data) < 0x10000:
+        raise ValueError(f"Слишком короткий образ U-Boot: {img_path}")
 
     backends = get_pyusb_backends(preferred_service)
     if not backends:
@@ -665,34 +668,35 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
                 pass
 
             socid = soc.identify()
-            info = classify_usb_id(socid)
-            rom_maj, rom_min = info["rom"]
-            stage_maj, stage_min = info["stage"]
-            emit(f"  [{be_name}] USB ID: ROM {rom_maj}.{rom_min}, Stage {stage_maj}.{stage_min}")
-            if info["mode"] == "uboot":
-                # BootROM commands (WR_LARGE_MEM) hit a live U-Boot and drop the
-                # USB link with "Устройство не опознано" - never do that.
-                emit("[OK] Станция уже в режиме U-Boot — повторная загрузка BL2 не нужна.")
-                return 2
-            if info["mode"] != "bootrom":
-                raise RuntimeError("устройство не ответило на identify (USB ещё инициализируется)")
+            stage = usb_boot_stage(socid)
+            emit(f"  [{be_name}] WorldCup ID: {'-'.join(str(ord(c)) for c in socid[:4])}")
+            if stage == "uboot":
+                return 0
+            if stage != "rom":
+                raise RuntimeError("Для запуска BL2 переподключите питание станции в режиме BootROM.")
 
-            soc.writeLargeMemory(0xFFFA0000, data[0:0x10000], 4096)
-            soc.run(0xFFFA0000)
-            time.sleep(2.0)
+            load_addr = 0xFFFA0000
+            if socid[:2] == "\x03\x02":
+                # G12 DDR initialization sequence used by USB Burning Tool.
+                for value in (0xB1, 0x5183, 0xB1, 0x5183):
+                    soc.writeSimpleMemory(load_addr, struct.pack("<I", value))
+                    time.sleep(0.5)
 
-            prev_len = -1
-            prev_off = -1
-            seq = 0
-            while True:
+            soc.writeLargeMemory(load_addr, data[:0x10000], 4096)
+            soc.run(load_addr)
+            time.sleep(0.2)
+
+            previous_request = None
+            for seq in range(256):
                 length, offset = soc.getBootAMLC()
-                if length == prev_len and offset == prev_off:
+                if previous_request is not None and ((length, offset) == previous_request or length == 0):
                     emit(f"[OK] Загружен {os.path.basename(img_path)} через {be_name} ({seq} блоков AMLC).")
                     return 0
-                prev_len = length
-                prev_off = offset
+                if length == 0 or offset + length > len(data):
+                    raise ValueError(f"Запрос AMLC вне образа: смещение {offset}, размер {length}")
                 soc.writeAMLCData(seq, offset, data[offset : offset + length])
-                seq += 1
+                previous_request = (length, offset)
+            raise RuntimeError("Превышено число блоков AMLC.")
         except Exception as ex:
             last_ex = ex
             emit(f"  [!] [{be_name}] {str(ex).strip()[:160]}")
@@ -1015,6 +1019,45 @@ def run_after_ubt():
         raise RuntimeError("Ошибка after_ubt.bat: код %s" % process.returncode)
 
 
+def ensure_burn_mode() -> bool:
+    if probe_burn_mode(timeout=8):
+        return True
+    info = check_usb_device()
+    observed = probe_usb_identify(info.get("usb_service", ""))
+    if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
+        emit("[USB] Не удалось подтвердить начальный режим станции; загрузка не начата.")
+        return False
+    for image in ("aml_00053.img", "aml_bundle.img"):
+        image_path = os.path.join(SCRIPT_DIR, image)
+        if not os.path.isfile(image_path):
+            continue
+        # Only try a loader while identify confirms BootROM, never on a live U-Boot.
+        observed = probe_usb_identify(info.get("usb_service", ""))
+        if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
+            return probe_burn_mode(timeout=8)
+        emit("[USB] Подготовка станции к записи (%s)..." % image)
+        cmd = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            cmd.extend(["-u", os.path.abspath(__file__)])
+        cmd.extend(["--usb-boot-step", image_path, "--usb-service", info.get("usb_service", "")])
+        try:
+            result = subprocess.run(cmd, cwd=SCRIPT_DIR, stdin=subprocess.DEVNULL,
+                                    timeout=60, **hidden_subprocess_kwargs())
+            emit("[USB] Подготовка завершилась с кодом %s; ожидаем устройство." % result.returncode)
+        except subprocess.TimeoutExpired:
+            emit("[USB] Подготовка не завершилась вовремя; проверяем состояние устройства.")
+        for attempt in range(15):
+            time.sleep(1)
+            if probe_burn_mode(timeout=3):
+                return True
+            # Give Windows time to re-enumerate before treating BootROM as a failed loader.
+            if attempt >= 4:
+                state = probe_usb_identify(info.get("usb_service", ""))
+                if state.get("mode") == "bootrom":
+                    break
+    return False
+
+
 def run_flash(args):
     emit_progress(2, "Проверка подключения и драйвера...")
     if not check_worldcup_driver():
@@ -1024,8 +1067,8 @@ def run_flash(args):
             raise RuntimeError("Не удалось установить драйвер WorldCup.")
 
     emit_progress(4, "Проверка USB-соединения...")
-    if not is_uboot_alive(timeout=8):
-        raise RuntimeError("Не удалось подтвердить режим записи. Данные выше помогут определить причину; запись не начата.")
+    if not ensure_burn_mode():
+        raise RuntimeError("Не удалось подготовить станцию к записи. Данные выше помогут определить причину; запись не начата.")
 
     emit_progress(6, "Подготовка актуальной прошивки...")
     rom_dir = args.rom_dir or ""
