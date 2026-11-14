@@ -1102,6 +1102,13 @@ def run_flash(args):
 
     emit_progress(24, "Проверка контрольных сумм прошивки...")
     verify_rom(rom_dir)
+    misc_path = os.path.join(SCRIPT_DIR, "misc_00053.img")
+    expected_misc = "4d85187efb08dcdc49202a73e8e37e5e297326a89f44ce11c9173bc906bbcae9"
+    if not os.path.isfile(misc_path):
+        raise RuntimeError("Отсутствует завершающий образ misc; запись не начата")
+    with open(misc_path, "rb") as misc_file:
+        if hashlib.sha256(misc_file.read()).hexdigest() != expected_misc:
+            raise RuntimeError("Контрольная сумма misc не совпала; запись не начата")
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
@@ -1110,8 +1117,24 @@ def run_flash(args):
     flash_partition("vendor", os.path.join(rom_dir, "vendor.img"), 41, 52)
     flash_partition("system", os.path.join(rom_dir, "system.img"), 52, 92)
 
+    misc_error = None
+    try:
+        flash_partition("misc", misc_path, 92, 95)
+    except Exception as ex:
+        misc_error = ex
+        emit("[ERROR] Не удалось записать misc: %s; выполняю оставшиеся команды after_ubt." % ex)
+
     emit_progress(95, "Обязательный завершающий этап after_ubt...")
-    run_after_ubt()
+    after_error = None
+    try:
+        run_after_ubt()
+    except Exception as ex:
+        after_error = ex
+    if misc_error or after_error:
+        failures = []
+        if misc_error: failures.append("misc: " + str(misc_error))
+        if after_error: failures.append("after_ubt: " + str(after_error))
+        raise RuntimeError("; ".join(failures))
 
     emit_progress(100, "Запись и завершающие команды выполнены")
     emit("[DONE] Команды выполнены. Загрузка станции ещё не проверена.")
