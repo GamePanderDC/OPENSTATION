@@ -30,6 +30,7 @@ constexpr const char* kLocalManifestPath = "/data/local/openstation/firmware_man
 constexpr const char* kSystemManifestPath = "/system/openstation/firmware_manifest.json";
 constexpr const char* kOtaTmpDir = "/data/local/openstation/ota_tmp";
 constexpr const char* kOtaApplyScriptPath = "/data/local/openstation/ota_apply.sh";
+constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kPendingApksDir = "/data/local/openstation/pending_apks";
 constexpr const char* kApkRepairRebootMarkerPath = "/data/local/openstation/apk_repair_reboot_tried";
 constexpr const char* kBootAnimSystemPath = "/system/media/bootanimation.zip";
@@ -1650,6 +1651,10 @@ void OtaManager::run_install_sync(bool force) {
             write_file_atomic(kLocalManifestPath, raw_manifest.data(), raw_manifest.size(), 0644);
         }
         chmod(kLocalManifestPath, 0644);
+        {
+            const std::string wiz_ver = target_ver + "\n";
+            write_file_atomic(kPostOtaWizardPath, wiz_ver.data(), wiz_ver.size(), 0644);
+        }
         run_shell_capture("rm -rf /data/local/openstation/ota_tmp && sync", 5, dummy_rc, dummy_out);
 
         if (reboot_after_apply) {
@@ -1711,6 +1716,8 @@ void OtaManager::run_install_sync(bool force) {
     script += "mv -f /data/local/openstation/ota_tmp/openstationd /data/local/openstation/openstationd\n";
     script += "mv -f /data/local/openstation/ota_tmp/manifest.json /data/local/openstation/firmware_manifest.json\n";
     script += "chmod 644 /data/local/openstation/firmware_manifest.json\n";
+    script += "printf '%s\\n' " + escape_sh_single(target_ver) + " > " + kPostOtaWizardPath + "\n";
+    script += "chmod 644 " + std::string(kPostOtaWizardPath) + " 2>/dev/null || true\n";
     script += "sync\n";
     script += "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64\n";
     script += "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1\n";

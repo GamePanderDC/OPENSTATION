@@ -1,8 +1,8 @@
 {
     "name":  "OpenStation Max Service ROM",
     "device":  "yandexstation_2",
-    "version":  "1.6.1",
-    "buildTimeUtc":  "2026-11-14T20:45:02Z",
+    "version":  "1.6.2",
+    "buildTimeUtc":  "2026-11-14T22:00:19Z",
     "baseSource":  "YAOSX 1.99",
     "partitions":  [
                        "vbmeta",
@@ -19,12 +19,12 @@
                   "vendor":  {
                                  "fileName":  "vendor.img",
                                  "size":  536870912,
-                                 "sha256":  "110d5253172686c9fa4938b85948d2505818dd261f9595c64da731e124f9249b"
+                                 "sha256":  "b58ecbe72eaff30d77161397fc6e2c23bd8fe52e8b70adbd0989f3ff6fd91718"
                              },
                   "system":  {
                                  "fileName":  "system.img",
                                  "size":  1551892480,
-                                 "sha256":  "a05dbd890ef9139da947dfeb016522593334f7fda7baf63107ce6f42422555ee"
+                                 "sha256":  "7952ffe46b966c3bede38bb53801003c5ca32d60ea7ad88318e50d5821337088"
                              },
                   "logo":  {
                                "fileName":  "logo.img",
@@ -33,9 +33,9 @@
                            }
               },
     "archive":  {
-                    "fileName":  "OpenStationMax-ROM-v1.6.1.zip",
-                    "size":  736501384,
-                    "sha256":  "c44659c15a41d5970b8c6dfe3c29fc68ecbea1dc5777a854e40f010dc1f4baf0",
-                    "tag":  "v1.6.1-rom"
+                    "fileName":  "OpenStationMax-ROM-v1.6.2.zip",
+                    "size":  733493182,
+                    "sha256":  "1c4398ab594f6e11aa93c5050ad47fdae62ff1c406a0488fb38aba74a5afc9e2",
+                    "tag":  "v1.6.2-rom"
                 }
 }

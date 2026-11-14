@@ -2,6 +2,10 @@
 #include <cassert>
 
 int main() {
+    openstation::DaemonConfig defaults;
+    assert(defaults.assistant.agent_mode == true);
+    assert(defaults.network.wifi_adb_enabled == true);
+
     openstation::DaemonConfig config;
     const std::string selected = "Ты — голосовой ассистент Алиса. Отвечай коротко.";
     config.assistant.system_prompt = selected;

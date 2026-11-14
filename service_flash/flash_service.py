@@ -866,11 +866,11 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     return False
 
 
-PINNED_ROM_VERSION = "1.6.1"
-PINNED_ROM_TAG = "v1.6.1"
-PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.1.zip"
-PINNED_ROM_SIZE = 736501384
-PINNED_ROM_SHA256 = "c44659c15a41d5970b8c6dfe3c29fc68ecbea1dc5777a854e40f010dc1f4baf0"
+PINNED_ROM_VERSION = "1.6.2"
+PINNED_ROM_TAG = "v1.6.2"
+PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.2.zip"
+PINNED_ROM_SIZE = 733493182
+PINNED_ROM_SHA256 = "1c4398ab594f6e11aa93c5050ad47fdae62ff1c406a0488fb38aba74a5afc9e2"
 
 
 def _parse_rom_manifest_files(manifest: dict) -> dict:
@@ -1118,8 +1118,8 @@ def wait_for_usb_or_adb_reboot() -> None:
 
 ROM_FILES = {
     "vbmeta.img": (2097152, "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"),
-    "vendor.img": (536870912, "7f873aef9d55038512b8887d33e420f07167f673f72656f2e5cf3f7ab4c64079"),
-    "system.img": (1551892480, "a1438c7afa36fae4a9ab60ffc7d945fae7b1e519a934db6cdf0cc29c8f36efb7"),
+    "vendor.img": (536870912, "b58ecbe72eaff30d77161397fc6e2c23bd8fe52e8b70adbd0989f3ff6fd91718"),
+    "system.img": (1551892480, "7952ffe46b966c3bede38bb53801003c5ca32d60ea7ad88318e50d5821337088"),
 }
 
 
@@ -1268,6 +1268,27 @@ def ensure_burn_mode() -> bool:
     return False
 
 
+MISC_SHA256 = {
+    "misc.img": "9e52b0fc6c40a4db81193f4066c09b2c2d41fe6aa1f0b9a4c521d7422b80b6c8",
+    "misc_00053.img": "4d85187efb08dcdc49202a73e8e37e5e297326a89f44ce11c9173bc906bbcae9",
+}
+
+
+def resolve_misc_image(revision="auto"):
+    """Выбирает и проверяет образ misc в зависимости от ревизии платы."""
+    rev = (revision or "auto").strip()
+    candidates = ("misc.img", "misc_00053.img") if rev in ("0008", "00052") else ("misc_00053.img", "misc.img")
+    for name in candidates:
+        path = os.path.join(SCRIPT_DIR, name)
+        if os.path.isfile(path):
+            expected = MISC_SHA256[name]
+            with open(path, "rb") as misc_file:
+                if hashlib.sha256(misc_file.read()).hexdigest() != expected:
+                    raise RuntimeError(f"Контрольная сумма {name} не совпала; запись не начата")
+            return path
+    raise RuntimeError("Отсутствует завершающий образ misc; запись не начата")
+
+
 def run_flash(args):
     emit_progress(2, "Проверка подключения и драйвера...")
     if not check_worldcup_driver():
@@ -1296,13 +1317,7 @@ def run_flash(args):
 
     emit_progress(24, "Проверка контрольных сумм прошивки...")
     verify_rom(rom_dir)
-    misc_path = os.path.join(SCRIPT_DIR, "misc_00053.img")
-    expected_misc = "4d85187efb08dcdc49202a73e8e37e5e297326a89f44ce11c9173bc906bbcae9"
-    if not os.path.isfile(misc_path):
-        raise RuntimeError("Отсутствует завершающий образ misc; запись не начата")
-    with open(misc_path, "rb") as misc_file:
-        if hashlib.sha256(misc_file.read()).hexdigest() != expected_misc:
-            raise RuntimeError("Контрольная сумма misc не совпала; запись не начата")
+    misc_path = resolve_misc_image(getattr(args, "revision", "auto"))
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")

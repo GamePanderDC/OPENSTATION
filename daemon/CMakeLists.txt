@@ -15,6 +15,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls" "${CMAKE_CURR
 # Generate embedded Web UI C++ header from daemon/web_ui/
 set(WEB_UI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/web_ui")
 set(WEB_ASSETS_HDR "${CMAKE_CURRENT_BINARY_DIR}/generated/web_assets.hpp")
+file(GLOB_RECURSE WEB_UI_ASSETS CONFIGURE_DEPENDS "${WEB_UI_DIR}/*")
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_custom_command(
@@ -23,9 +24,7 @@ add_custom_command(
             "${WEB_UI_DIR}" "${WEB_ASSETS_HDR}"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_web.py"
-        "${WEB_UI_DIR}/index.html"
-        "${WEB_UI_DIR}/style.css"
-        "${WEB_UI_DIR}/app.js"
+        ${WEB_UI_ASSETS}
     COMMENT "Embedding Web UI assets into web_assets.hpp"
     VERBATIM
 )

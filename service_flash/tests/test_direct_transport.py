@@ -207,4 +207,14 @@ class TransportTests(unittest.TestCase):
             self.assertTrue(any('--usb-boot-step' in c for c in calls))
             self.assertTrue(any(len(c) >= 2 and c[1] == 'bl2_boot' for c in calls))
 
+    def test_resolve_misc_image_selects_revision_specific_image(self):
+        p_0008 = f.resolve_misc_image('0008')
+        p_00052 = f.resolve_misc_image('00052')
+        p_00053 = f.resolve_misc_image('00053')
+        p_auto = f.resolve_misc_image('auto')
+        self.assertEqual(os.path.basename(p_0008), 'misc.img')
+        self.assertEqual(os.path.basename(p_00052), 'misc.img')
+        self.assertEqual(os.path.basename(p_00053), 'misc_00053.img')
+        self.assertEqual(os.path.basename(p_auto), 'misc_00053.img')
+
 if __name__ == '__main__': unittest.main()

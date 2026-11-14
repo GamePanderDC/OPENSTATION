@@ -468,7 +468,7 @@
                 <label for="astAgentMode" style="font-weight:600; color:#f1f5f9;">Режим Агента (ADB и система)</label>
                 <div class="hint" style="margin-top:2px;">Алиса получает полный доступ к ADB / root-командам для автоматизации любых действий на станции и рисует задачи на экранчике.</div>
               </div>
-              <input type="checkbox" id="astAgentMode" />
+              <input type="checkbox" id="astAgentMode" checked />
             </div>
 
             <div class="btn-row">
@@ -891,7 +891,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.6.1</span>
+                <span class="badge ok" id="otaVersionBadge">v1.6.2</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -1121,206 +1121,348 @@
   <!-- INTERACTIVE SETUP WIZARD MODAL (Synced live with TV SetupWizardActivity) -->
   <div class="wizard-backdrop" id="wizardModal" style="display:none;">
     <div class="wizard-modal" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
-      <div class="wizard-header">
-        <div>
-          <h2 id="wizTitle">✨ Мастер настройки OpenStation Max</h2>
-          <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
-        </div>
-        <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.6.1</span>
-          <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
-        </div>
-      </div>
-
-      <div class="wizard-steps" id="wizStepsNav">
-        <button class="wiz-step-pill active" data-step="1" type="button">1. Станция и сеть</button>
-        <button class="wiz-step-pill" data-step="2" type="button">2. <span class="js-ast-name">Алиса</span></button>
-        <button class="wiz-step-pill" data-step="3" type="button">3. Музыка и Звук</button>
-        <button class="wiz-step-pill" data-step="4" type="button">4. Подсветка и Кнопки</button>
-        <button class="wiz-step-pill" data-step="5" type="button">5. Готовность</button>
-      </div>
-
-      <div class="wizard-body">
-        <!-- STEP 1 -->
-        <div class="wiz-pane active" id="wizStep1">
-          <div class="status-banner ok" id="wizNetBanner">Станция работает автономно (компьютер больше не нужен).</div>
-          <div class="wiz-diag-grid">
-            <div class="wiz-diag-card">
-              <div class="k">Локальный адрес</div>
-              <div class="v" id="wizDiagIp">--</div>
+      <canvas class="wiz-aurora-canvas" id="wizAuroraCanvas" aria-hidden="true"></canvas>
+      <div class="wizard-layer">
+        <div class="wizard-header">
+          <div class="wiz-title-group">
+            <div class="wiz-orb-shell">
+              <canvas id="wizOrbCanvas" width="84" height="84"></canvas>
             </div>
-            <div class="wiz-diag-card">
-              <div class="k">Адрес в сети</div>
-              <div class="v" id="wizDiagMdns">station-max.local</div>
-            </div>
-            <div class="wiz-diag-card">
-              <div class="k">Передний экранчик</div>
-              <div class="v" id="wizDiagHw">--</div>
-            </div>
-            <div class="wiz-diag-card">
-              <div class="k">Голосовой запуск</div>
-              <div class="v" id="wizDiagMic">--</div>
+            <div>
+              <div class="wiz-title-row">
+                <h2 id="wizTitle">Мастер настройки OpenStation Max</h2>
+                <span class="badge live" id="wizOtaBadge" style="display:none;">OTA</span>
+              </div>
+              <div class="sub" id="wizSubtitle">Автономная настройка и живая синхронизация с ТВ</div>
             </div>
           </div>
-
-          <div class="form-row" style="margin-top:12px;">
-            <label>Штатный BLE-пульт (YNDX) — автопоиск и проверка</label>
-            <div class="btn-row" style="margin-top:6px;">
-              <button class="btn btn-sm btn-accent" id="btnWizPairBle" type="button">🔗 Автопоиск BLE-пульта</button>
-              <button class="btn btn-sm" id="btnWizFindBle" type="button">🔊 Найти (Зуммер)</button>
-            </div>
-          </div>
-
-          <div class="form-row" style="margin-top:12px;">
-            <label>Private DNS (для стабильной работы Алисы)</label>
-            <div class="input-send-row">
-              <input type="text" id="wizDnsHost" placeholder="dns.comss.one (пусто = стандартный)" value="dns.comss.one" />
-              <button class="btn btn-sm" id="btnWizApplyDns" type="button">Сохранить DNS</button>
-            </div>
-          </div>
-          <p class="hint">Совет: на Шаге 3 вход в Яндекс Музыку выполняется прямо на экране станции по полному QR-коду.</p>
-        </div>
-
-        <!-- STEP 2 -->
-        <div class="wiz-pane" id="wizStep2">
-          <div class="status-banner" id="wizGeminiBanner">Укажите API-ключ Google Gemini Live (бесплатно на aistudio.google.com/apikey).</div>
-          <div class="form-row">
-            <label for="wizName">Имя и слово активации</label>
-            <input type="text" id="wizName" maxlength="32" placeholder="Алиса" value="Алиса" />
-            <div class="seg-group" id="wizNamePresets" style="margin-top:8px;">
-              <button class="seg active" type="button" data-aname="Алиса" data-gender="female">Алиса</button>
-              <button class="seg" type="button" data-aname="Джарвис" data-gender="male">Джарвис</button>
-              <button class="seg" type="button" data-aname="Пятница" data-gender="female">Пятница</button>
-              <button class="seg" type="button" data-aname="Макс" data-gender="male">Макс</button>
-            </div>
-          </div>
-          <div class="form-row">
-            <label>Gemini API Key</label>
-            <div class="input-send-row">
-              <input type="password" id="wizApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
-              <button class="btn btn-sm" id="btnWizToggleKey" type="button">Показать</button>
-            </div>
-          </div>
-          <div class="grid-2-tight">
-            <div class="form-row">
-              <label>Сервер обхода (SNI-прокси)</label>
-              <input type="text" id="wizProxyHost" placeholder="ai-pool.comss.one" value="ai-pool.comss.one" />
-            </div>
-            <div class="form-row">
-              <label id="wizVoiceLabel">Голос ассистента</label>
-              <select id="wizVoice">
-                <option value="Aoede">Aoede (женский, мягкий)</option>
-                <option value="Kore">Kore (женский, яркий)</option>
-                <option value="Leda">Leda (женский, живой)</option>
-                <option value="Zephyr">Zephyr (лёгкий)</option>
-                <option value="Puck">Puck (мужской, бодрый)</option>
-                <option value="Charon">Charon (мужской, глубокий)</option>
-                <option value="Fenrir">Fenrir (мужской, энергичный)</option>
-                <option value="Orus">Orus (мужской, ровный)</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row toggle-row">
-            <label id="wizWakeLabel">Откликаться на слово «Алиса»</label>
-            <input type="checkbox" id="wizWakeEn" checked />
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-accent" id="btnWizTestGemini" type="button">⚡ Сохранить и проверить связь</button>
-            <button class="btn" id="btnWizTestSay" type="button">🎤 Разбудить Алису</button>
+          <div class="wizard-header-actions">
+            <span class="badge ok" id="wizFwBadge">v1.6.2</span>
+            <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
           </div>
         </div>
 
-        <!-- STEP 3 -->
-        <div class="wiz-pane" id="wizStep3">
-          <div class="status-banner" id="wizMusicBanner">Яндекс Музыка: проверка статуса...</div>
-          <div class="status-banner ok" style="margin-bottom:12px;">
-            📺 Авторизация Яндекс Музыки на этом шаге выполняется <b>только с самой станции</b> — на экране ТВ откроется страница входа с полным масштабированным QR-кодом.
-          </div>
-          <div class="btn-row" style="margin-bottom:14px;">
-            <button class="btn btn-accent" id="btnWizYmTv" type="button">📺 Открыть вход на ТВ</button>
-            <button class="btn" id="btnWizYmWave" type="button">🌊 Проверить «Мою волну»</button>
-          </div>
-          <div class="grid-2-tight">
-            <div class="form-row">
-              <label>Выход звука</label>
-              <select id="wizAudioRoute">
-                <option value="auto">Авто</option>
-                <option value="speakers">Динамики станции</option>
-                <option value="headphones">Наушники (3.5 мм)</option>
-                <option value="both">Вместе</option>
-                <option value="hdmi">Только HDMI (ТВ)</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label>Эквалайзер</label>
-              <select id="wizEqPreset">
-                <option value="balanced">Сбалансированный</option>
-                <option value="bass_boost">Глубокий бас</option>
-                <option value="vocal">Чистый голос / Кино</option>
-                <option value="night">Ночной режим</option>
-                <option value="flat">Без коррекции</option>
-              </select>
-            </div>
-          </div>
+        <div class="wizard-steps" id="wizStepsNav">
+          <button class="wiz-step-pill active" data-step="1" type="button">1. Пульт</button>
+          <button class="wiz-step-pill" data-step="2" type="button">2. Wi-Fi</button>
+          <button class="wiz-step-pill" data-step="3" type="button">3. OTA</button>
+          <button class="wiz-step-pill" data-step="4" type="button">4. <span class="js-ast-name">Алиса</span></button>
+          <button class="wiz-step-pill" data-step="5" type="button">5. Музыка</button>
+          <button class="wiz-step-pill" data-step="6" type="button">6. Свет 24</button>
+          <button class="wiz-step-pill" data-step="7" type="button">7. Финал</button>
         </div>
 
-        <!-- STEP 4 -->
-        <div class="wiz-pane" id="wizStep4">
-          <div class="grid-2-tight">
+        <div class="wizard-body">
+          <div class="status-banner live wiz-ota-banner" id="wizOtaBanner" style="display:none;"></div>
+
+          <!-- STEP 1: REMOTE -->
+          <div class="wiz-pane active" id="wizStep1">
+            <div class="wiz-sprite-hero">
+              <div class="wiz-sprite-stage">
+                <img src="/sprites/remote.png" alt="Пульт" class="wiz-sprite-img wiz-anim-float" />
+              </div>
+              <div class="wiz-sprite-copy">
+                <div class="wiz-sprite-title">Автоматический поиск штатного пульта</div>
+                <div class="wiz-sprite-sub">Поиск стартует сам без нажатия кнопок. Удерживайте <b>«Домой» и «Громкость −»</b> на пульте ~5 сек до мигания индикатора.</div>
+              </div>
+            </div>
+            <div class="status-banner live">📡 Идёт автоматическое сканирование Bluetooth LE — поднесите пульт к станции.</div>
+            <div class="btn-row" style="margin:12px 0;">
+              <button class="btn btn-accent" id="btnWizFindBle" type="button">🔔 Позвонить на пульт (Зуммер)</button>
+              <button class="btn" id="btnWizPairBle" type="button">🔄 Повторить BLE-поиск</button>
+            </div>
+            <p class="hint">Пока пульт не привязан, вы всегда можете управлять ТВ прямо с вкладки «Пульт» на телефоне.</p>
+          </div>
+
+          <!-- STEP 2: WI-FI & AGENT -->
+          <div class="wiz-pane" id="wizStep2">
+            <div class="wiz-sprite-hero">
+              <div class="wiz-sprite-stage">
+                <img src="/sprites/wifi.png" alt="Wi-Fi" class="wiz-sprite-img wiz-anim-pulse" />
+              </div>
+              <div class="wiz-sprite-copy">
+                <div class="wiz-sprite-title">Сеть, Private DNS и ADB-агент</div>
+                <div class="wiz-sprite-sub">Локальный доступ по Wi-Fi/RJ45, защита DNS и root-управление станцией.</div>
+              </div>
+            </div>
+            <div class="status-banner ok" id="wizNetBanner">✓ Станция в сети (компьютер больше не нужен).</div>
+            <div class="wiz-diag-grid">
+              <div class="wiz-diag-card">
+                <div class="k">🌐 Локальный адрес</div>
+                <div class="v" id="wizDiagIp">--</div>
+              </div>
+              <div class="wiz-diag-card">
+                <div class="k">🔗 Имя в сети</div>
+                <div class="v" id="wizDiagMdns">station-max.local</div>
+              </div>
+            </div>
+            <div class="form-row" style="margin-top:12px;">
+              <label for="wizDnsHost"><span>Private DNS (для стабильной работы <span class="js-ast-name">Алисы</span>)</span></label>
+              <div class="input-send-row">
+                <input type="text" id="wizDnsHost" placeholder="dns.comss.one (пусто = авто)" value="dns.comss.one" />
+                <button class="btn btn-sm" id="btnWizApplyDns" type="button">Сохранить DNS</button>
+              </div>
+            </div>
+            <div class="wiz-agent-card">
+              <div>
+                <div style="font-weight:600; color:#f8fafc;">🤖 Агент ADB (Root) — активен по стоку</div>
+                <div class="hint" id="wizAgentHint">Ассистент управляет ТВ/ADB и может сам перезагружать демон.</div>
+              </div>
+              <input type="checkbox" id="wizAgentStep1" checked />
+            </div>
+          </div>
+
+          <!-- STEP 3: OTA -->
+          <div class="wiz-pane" id="wizStep3">
+            <div class="wiz-sprite-hero">
+              <div class="wiz-sprite-stage gold">
+                <img src="/sprites/ota.png" alt="OTA" class="wiz-sprite-img wiz-anim-float" />
+              </div>
+              <div class="wiz-sprite-copy">
+                <div class="wiz-sprite-title">Обновление системы OpenStation Max</div>
+                <div class="wiz-sprite-sub">Проверка релизов GitHub и безопасное обновление демона и лаунчера.</div>
+              </div>
+            </div>
+            <div class="status-banner" id="wizOtaLiveText">Текущая версия прошивки проверяется...</div>
+            <div class="btn-row" style="margin-top:14px;">
+              <button class="btn btn-accent" id="btnWizOtaCheck" type="button">🔄 Проверить обновления</button>
+              <button class="btn btn-ota" id="btnWizOtaInstall" type="button" style="display:none;">⬇ Установить обновление</button>
+            </div>
+            <p class="hint" style="margin-top:10px;">После будущих OTA-обновлений этот мастер автоматически откроется, чтобы показать новые функции.</p>
+          </div>
+
+          <!-- STEP 4: ALICE -->
+          <div class="wiz-pane" id="wizStep4">
+            <div class="wiz-sprite-hero">
+              <div class="wiz-sprite-stage">
+                <img src="/sprites/alice.png" alt="Алиса" class="wiz-sprite-img wiz-anim-spin-slow" />
+              </div>
+              <div class="wiz-sprite-copy">
+                <div class="wiz-sprite-title">Голосовой ассистент «<span class="js-ast-name">Алиса</span>»</div>
+                <div class="wiz-sprite-sub">ИИ Gemini Live с быстрым пробуждением по голосу и доступом к командам ТВ.</div>
+              </div>
+            </div>
+            <div class="status-banner" id="wizGeminiBanner">Укажите API-ключ Google Gemini Live (бесплатно на aistudio.google.com/apikey).</div>
             <div class="form-row">
-              <label>Подсветка кольца</label>
-              <select id="wizRingMode">
-                <option value="music">Светомузыка (спектр)</option>
-                <option value="rainbow">Радуга</option>
-                <option value="solid">Сплошной цвет</option>
-                <option value="breathe">Дыхание</option>
-                <option value="spinner">Спиннер</option>
-                <option value="off">Выкл</option>
-              </select>
+              <label for="wizName">Имя и слово активации</label>
+              <input type="text" id="wizName" maxlength="32" placeholder="Алиса" value="Алиса" />
+              <div class="seg-group" id="wizNamePresets" style="margin-top:8px;">
+                <button class="seg active" type="button" data-aname="Алиса" data-gender="female">Алиса</button>
+                <button class="seg" type="button" data-aname="Джарвис" data-gender="male">Джарвис</button>
+                <button class="seg" type="button" data-aname="Пятница" data-gender="female">Пятница</button>
+                <button class="seg" type="button" data-aname="Макс" data-gender="male">Макс</button>
+              </div>
             </div>
             <div class="form-row">
-              <label>Основной цвет кольца</label>
-              <input type="color" id="wizRingColor" value="#00d4ff" />
+              <label>Gemini API Key</label>
+              <div class="input-send-row">
+                <input type="password" id="wizApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
+                <button class="btn btn-sm" id="btnWizToggleKey" type="button">Показать</button>
+              </div>
             </div>
-          </div>
-          <div class="grid-2-tight">
+            <div class="grid-2-tight">
+              <div class="form-row">
+                <label>Сервер обхода (SNI-прокси)</label>
+                <input type="text" id="wizProxyHost" placeholder="ai-pool.comss.one" value="ai-pool.comss.one" />
+              </div>
+              <div class="form-row">
+                <label id="wizVoiceLabel">Голос ассистента</label>
+                <select id="wizVoice">
+                  <option value="Aoede">Aoede (женский, мягкий)</option>
+                  <option value="Kore">Kore (женский, яркий)</option>
+                  <option value="Leda">Leda (женский, живой)</option>
+                  <option value="Zephyr">Zephyr (лёгкий)</option>
+                  <option value="Puck">Puck (мужской, бодрый)</option>
+                  <option value="Charon">Charon (мужской, глубокий)</option>
+                  <option value="Fenrir">Fenrir (мужской, энергичный)</option>
+                  <option value="Orus">Orus (мужской, ровный)</option>
+                </select>
+              </div>
+            </div>
             <div class="form-row">
-              <label>Верхняя кнопка на корпусе</label>
-              <select id="wizActShort">
-                <option value="assistant">Запустить Алису</option>
-                <option value="wyoming">Home Assistant</option>
-                <option value="play_pause">Пауза / Музыка</option>
-                <option value="led_cycle">Сменить подсветку</option>
-              </select>
+              <label>Характер общения</label>
+              <div class="seg-group" id="wizPromptPresets">
+                <button class="seg" type="button" data-preset="universal">Универсальная</button>
+                <button class="seg" type="button" data-preset="concise">Краткая и чёткая</button>
+                <button class="seg" type="button" data-preset="witty">Дружелюбная с юмором</button>
+              </div>
             </div>
-            <div class="form-row toggle-row" style="align-self:end; padding-bottom:10px;">
-              <label>Автояркость по освещению</label>
-              <input type="checkbox" id="wizAutoBri" checked />
+            <div class="grid-2-tight">
+              <div class="form-row toggle-row">
+                <label id="wizWakeLabel">Откликаться на слово «Алиса»</label>
+                <input type="checkbox" id="wizWakeEn" checked />
+              </div>
+              <div class="form-row toggle-row">
+                <label for="wizAgentStep2">Агент ADB (Root-команды)</label>
+                <input type="checkbox" id="wizAgentStep2" checked />
+              </div>
+            </div>
+            <div class="wiz-wave-box">
+              <div class="wiz-wave-head">
+                <span>СПЕКТР МИКРОФОНОВ (VQE)</span>
+                <span id="wizMicLiveText">0 RMS</span>
+              </div>
+              <canvas id="wizMicWaveCanvas" height="36"></canvas>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-accent" id="btnWizTestGemini" type="button">⚡ Сохранить и проверить связь</button>
+              <button class="btn" id="btnWizTestSay" type="button">🎤 Разбудить</button>
             </div>
           </div>
-          <div class="btn-row" style="margin-bottom:12px;">
-            <button class="btn btn-sm" id="btnWizCecWake" type="button">📺 Включить ТВ (HDMI)</button>
+
+          <!-- STEP 5: MUSIC & SOUND -->
+          <div class="wiz-pane" id="wizStep5">
+            <div class="wiz-sprite-hero">
+              <div class="wiz-sprite-stage gold">
+                <img src="/sprites/vinyl.png" alt="Винил" class="wiz-sprite-img wiz-anim-spin" />
+                <img src="/sprites/ym.png" alt="Яндекс Музыка" class="wiz-sprite-mini" />
+              </div>
+              <div class="wiz-sprite-copy">
+                <div class="wiz-sprite-title">Яндекс Музыка и аудио-тракт Hi-Fi</div>
+                <div class="wiz-sprite-sub">Моя волна без потерь, 10-полосный EQ и аппаратный усилитель SY6045S.</div>
+              </div>
+            </div>
+            <div class="status-banner" id="wizMusicBanner">Яндекс Музыка: проверка статуса...</div>
+            <div class="status-banner ok" style="margin-bottom:12px;">
+              📺 Авторизация Яндекс Музыки выполняется <b>прямо на экране ТВ</b> — откроется страница входа с полным QR-кодом.
+            </div>
+            <div class="btn-row" style="margin-bottom:14px;">
+              <button class="btn btn-accent" id="btnWizYmTv" type="button">📺 Открыть вход на ТВ</button>
+              <button class="btn" id="btnWizYmWave" type="button">🌊 Проверить «Мою волну»</button>
+            </div>
+            <div class="grid-2-tight">
+              <div class="form-row">
+                <label>Выход звука</label>
+                <select id="wizAudioRoute">
+                  <option value="auto">Авто</option>
+                  <option value="speakers">Динамики станции</option>
+                  <option value="headphones">Наушники (3.5 мм)</option>
+                  <option value="both">Вместе</option>
+                  <option value="hdmi">Только HDMI (ТВ)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Эквалайзер (10 полос)</label>
+                <select id="wizEqPreset">
+                  <option value="balanced">Сбалансированный</option>
+                  <option value="flat">Без коррекции</option>
+                  <option value="bass_boost">Глубокий бас</option>
+                  <option value="vocal">Чистый голос / Кино</option>
+                  <option value="night">Ночной режим</option>
+                  <option value="rock">Рок / Драйв</option>
+                  <option value="electronic">Электроника / Клуб</option>
+                  <option value="custom">Пользовательский (10 полос)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row" id="wizHwEqRow" style="display:none; margin-top:10px;">
+              <label>Аппаратный DSP усилителя (SY6045S)</label>
+              <div class="seg-group" id="wizHwEqPresets">
+                <button class="seg" type="button" data-hweq="original">Оригинал</button>
+                <button class="seg" type="button" data-hweq="hifi">Hi-Fi</button>
+                <button class="seg" type="button" data-hweq="night">Ночь</button>
+                <button class="seg" type="button" data-hweq="bass">Бас</button>
+                <button class="seg" type="button" data-hweq="club">Клуб</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 6: 24 LED & TV -->
+          <div class="wiz-pane" id="wizStep6">
+            <div class="wiz-led-studio">
+              <canvas id="wizLedRingCanvas" width="112" height="112"></canvas>
+              <div style="flex:1;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <img src="/sprites/eq.png" alt="Спектр" style="width:24px; height:24px; object-fit:contain;" />
+                  <div style="font-weight:600; color:#f8fafc;" id="wizLedStudioTitle">24 RGB LED Кольцо</div>
+                </div>
+                <div class="hint" style="margin-top:2px;">Предпросмотр синхронизирован с верхним кольцом Станции Макс.</div>
+                <div class="wiz-swatches" id="wizColorSwatches">
+                  <button class="wiz-swatch" type="button" data-color="#00d4ff" style="background:#00d4ff;" title="Голубой"></button>
+                  <button class="wiz-swatch" type="button" data-color="#e8c686" style="background:#e8c686;" title="Золото"></button>
+                  <button class="wiz-swatch" type="button" data-color="#8b5cf6" style="background:#8b5cf6;" title="Неон"></button>
+                  <button class="wiz-swatch" type="button" data-color="#10b981" style="background:#10b981;" title="Изумруд"></button>
+                  <button class="wiz-swatch" type="button" data-color="#ec4899" style="background:#ec4899;" title="Розовый"></button>
+                  <button class="wiz-swatch" type="button" data-color="#ffffff" style="background:#ffffff;" title="Белый"></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid-2-tight">
+              <div class="form-row">
+                <label>Подсветка кольца</label>
+                <select id="wizRingMode">
+                  <option value="music">Светомузыка (спектр)</option>
+                  <option value="rainbow">Радуга</option>
+                  <option value="solid">Сплошной цвет</option>
+                  <option value="breathe">Дыхание</option>
+                  <option value="spinner">Спиннер</option>
+                  <option value="off">Выкл</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Основной цвет кольца</label>
+                <input type="color" id="wizRingColor" value="#00d4ff" />
+              </div>
+            </div>
+            <div class="grid-2-tight">
+              <div class="form-row">
+                <label>Верхняя кнопка на корпусе</label>
+                <select id="wizActShort">
+                  <option value="assistant">Запустить ассистента</option>
+                  <option value="wyoming">Home Assistant</option>
+                  <option value="play_pause">Пауза / Музыка</option>
+                  <option value="led_cycle">Сменить подсветку</option>
+                </select>
+              </div>
+              <div class="form-row toggle-row" style="align-self:end; padding-bottom:10px;">
+                <label>Автояркость по освещению</label>
+                <input type="checkbox" id="wizAutoBri" checked />
+              </div>
+            </div>
+            <div class="btn-row" style="margin-bottom:6px;">
+              <button class="btn btn-sm" id="btnWizCecWake" type="button">📺 Включить ТВ (HDMI)</button>
+              <button class="btn btn-sm" id="btnWizStartupShow" type="button">✨ Стартовое шоу</button>
+            </div>
+          </div>
+
+          <!-- STEP 7: FINISH -->
+          <div class="wiz-pane" id="wizStep7">
+            <div class="wiz-sprite-trio">
+              <img src="/sprites/station.png" alt="Станция Макс" class="wiz-sprite-img wiz-anim-float" />
+              <img src="/sprites/alice.png" alt="Алиса" class="wiz-sprite-img wiz-anim-spin-slow" />
+              <img src="/sprites/ota.png" alt="v1.6.2" class="wiz-sprite-img wiz-anim-float" />
+            </div>
+            <div class="status-banner ok" id="wizStep5Banner">✨ Станция настроена и готова к работе.</div>
+            <h3>Готовность OpenStation Max</h3>
+            <div class="wiz-checklist" id="wizChecklist"></div>
+            <div class="wiz-cheats-grid">
+              <div class="wiz-cheat-card">
+                <div class="k">🎙 «Алиса, включи мою волну»</div>
+                <div class="v">Поток Яндекс Музыки и цветомузыка 24 LED.</div>
+              </div>
+              <div class="wiz-cheat-card">
+                <div class="k">🔄 «Алиса, перезагрузи демон»</div>
+                <div class="v">Безопасный голосовой рестарт openstationd.</div>
+              </div>
+            </div>
+            <p class="hint" style="margin-top:10px;">Нажмите «Начать работу» для завершения мастера.</p>
           </div>
         </div>
 
-        <!-- STEP 5 -->
-        <div class="wiz-pane" id="wizStep5">
-          <div class="status-banner ok" id="wizStep5Banner">✨ Все ключевые компоненты настроены и готовы к работе.</div>
-          <h3>Готовность компонентов OpenStation Max</h3>
-          <div class="wiz-checklist" id="wizChecklist"></div>
-          <p class="hint" style="margin-top:12px;">Нажмите «Завершить настройку» — станция зафиксирует готовность и переключится в основной режим управления.</p>
-        </div>
-      </div>
-
-      <div class="wizard-footer">
-        <div class="btn-row" style="margin-top:0;">
-          <button class="btn btn-sm" id="btnWizPrev" type="button">← Назад</button>
-          <button class="btn btn-sm" id="btnWizSkip" type="button">Пропустить</button>
-        </div>
-        <span class="hint" id="wizProgressText">Шаг 1 из 5</span>
-        <div class="btn-row" style="margin-top:0;">
-          <button class="btn btn-accent" id="btnWizNext" type="button">Далее →</button>
-          <button class="btn btn-accent" id="btnWizFinish" type="button" style="display:none;">✨ Завершить настройку</button>
+        <div class="wizard-footer">
+          <div class="btn-row" style="margin-top:0;">
+            <button class="btn btn-sm" id="btnWizPrev" type="button">← Назад</button>
+            <button class="btn btn-sm" id="btnWizSkip" type="button">Пропустить</button>
+          </div>
+          <div class="wiz-footer-progress">
+            <span class="hint" id="wizProgressText">Экран 1 из 7</span>
+            <div class="wiz-footer-bar"><div class="wiz-footer-fill" id="wizFooterFill"></div></div>
+          </div>
+          <div class="btn-row" style="margin-top:0;">
+            <button class="btn btn-accent" id="btnWizNext" type="button">Далее →</button>
+            <button class="btn btn-accent" id="btnWizFinish" type="button" style="display:none;">✨ Начать работу</button>
+          </div>
         </div>
       </div>
     </div>

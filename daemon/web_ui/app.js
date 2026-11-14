@@ -10,7 +10,10 @@
   let toastTimer = null;
   let lastHistSig = "";
   let wizStep = 1;
+  let wizPrevStep = 1;
   let wizPopulatedOnce = false;
+  let wizAnimRaf = null;
+  let wizConfetti = [];
   let otaPendingRestart = false;
   let bootanimBusy = false;
   let wifiAdbBusy = false;
@@ -789,7 +792,10 @@
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.5.0") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.6.2") + " активна!");
+      if (d.postOtaWizardPending && $("wizardModal")?.style.display !== "flex") {
+        openWizard(1);
+      }
     }
     updateAliceLiveBox(ast.liveUserText || "", ast.liveModelText || "");
     if (Array.isArray(ast.history)) {
@@ -898,7 +904,7 @@
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
-        if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode === true;
+        if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 8;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
         if (Array.isArray(cfg.assistant.memoryNotes)) {
@@ -2054,7 +2060,10 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.5.0"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.6.2"));
+              if (state?.postOtaWizardPending && $("wizardModal")?.style.display !== "flex") {
+                openWizard(1);
+              }
             }
           } else if (msg.type === "assistant_event") {
             const fakeAst = Object.assign({}, state?.assistant || {}, {
@@ -2116,33 +2125,337 @@
     }
   }
 
-  function setWizardStep(step) {
-    wizStep = Math.max(1, Math.min(5, step));
-    document.querySelectorAll(".wiz-step-pill").forEach((b) => {
-      b.classList.toggle("active", parseInt(b.dataset.step, 10) === wizStep);
-    });
-    for (let i = 1; i <= 5; i++) {
-      const p = $("wizStep" + i);
-      if (p) p.classList.toggle("active", i === wizStep);
+  const WIZ_PROMPTS = {
+    universal: "Ты — голосовой ассистент Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). Отвечай по-русски живо, дружелюбно, естественно и кратко (1-3 предложения, если не просят подробнее). Обязательно используй локальные инструменты: web_search, get_weather, fetch_url, set_volume, set_eq_preset, set_audio_route, set_led_ring, manage_timer, tv_hdmi_cec, remote_control, music_control и manage_apps.",
+    concise: "Ты — голосовой ассистент Алиса на Станции Макс. Отвечай максимально кратко и по делу на русском языке (1-2 предложения), сразу выполняй команды управления музыкой, громкостью, ТВ, подсветкой и поиском через доступные инструменты.",
+    witty: "Ты — весёлая и остроумная Алиса на Станции Макс. Общайся по-русски тепло, живо и иногда с лёгкой шуткой, оставаясь полезной и используя все встроенные инструменты колонки для музыки, погоды, ТВ и умного дома."
+  };
+
+  const WIZ_TOTAL_STEPS = 7;
+  const WIZ_PALETTES = [
+    [[56, 189, 248], [16, 185, 129]],
+    [[34, 211, 238], [59, 130, 246]],
+    [[99, 102, 241], [245, 158, 11]],
+    [[139, 92, 246], [232, 198, 134]],
+    [[236, 72, 153], [59, 130, 246]],
+    [[0, 212, 255], [16, 185, 129]],
+    [[16, 185, 129], [251, 191, 36]]
+  ];
+  const wizWaveBars = new Float32Array(22);
+  let wizAuroraMix = [56, 189, 248, 16, 185, 129];
+
+  function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{6})$/i.exec((hex || "").trim());
+    if (!m) return [0, 212, 255];
+    const v = parseInt(m[1], 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+
+  function spawnWizConfetti() {
+    const cols = ["#e8c686", "#38bdf8", "#10b981", "#ec4899", "#a78bfa", "#ffffff"];
+    wizConfetti = Array.from({ length: 44 }, () => ({
+      x: 0.15 + Math.random() * 0.70,
+      y: 0.20 + Math.random() * 0.25,
+      vx: (Math.random() - 0.5) * 0.012,
+      vy: -0.008 - Math.random() * 0.010,
+      size: 3 + Math.random() * 4,
+      rot: Math.random() * Math.PI * 2,
+      vr: (Math.random() - 0.5) * 0.18,
+      color: cols[(Math.random() * cols.length) | 0],
+      alpha: 1
+    }));
+  }
+
+  function ensureCanvasSize(canvas) {
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
     }
+    return { w, h, dpr };
+  }
+
+  function drawWizAurora(t) {
+    const c = $("wizAuroraCanvas");
+    const dim = ensureCanvasSize(c);
+    if (!dim) return;
+    const ctx = c.getContext("2d");
+    const { w, h } = dim;
+    ctx.clearRect(0, 0, w, h);
+
+    const tgt = WIZ_PALETTES[Math.max(0, Math.min(WIZ_TOTAL_STEPS - 1, wizStep - 1))];
+    const tr = [tgt[0][0], tgt[0][1], tgt[0][2], tgt[1][0], tgt[1][1], tgt[1][2]];
+    for (let i = 0; i < 6; i++) wizAuroraMix[i] += (tr[i] - wizAuroraMix[i]) * 0.08;
+
+    const c1 = `rgba(${wizAuroraMix[0] | 0},${wizAuroraMix[1] | 0},${wizAuroraMix[2] | 0},0.22)`;
+    const c2 = `rgba(${wizAuroraMix[3] | 0},${wizAuroraMix[4] | 0},${wizAuroraMix[5] | 0},0.18)`;
+
+    const x1 = w * (0.28 + Math.sin(t * 0.45) * 0.16);
+    const y1 = h * (0.22 + Math.cos(t * 0.35) * 0.12);
+    const g1 = ctx.createRadialGradient(x1, y1, 0, x1, y1, Math.max(w, h) * 0.55);
+    g1.addColorStop(0, c1);
+    g1.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g1;
+    ctx.fillRect(0, 0, w, h);
+
+    const x2 = w * (0.76 + Math.cos(t * 0.38) * 0.14);
+    const y2 = h * (0.78 + Math.sin(t * 0.42) * 0.14);
+    const g2 = ctx.createRadialGradient(x2, y2, 0, x2, y2, Math.max(w, h) * 0.52);
+    g2.addColorStop(0, c2);
+    g2.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, w, h);
+
+    if (wizConfetti.length) {
+      for (const p of wizConfetti) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.00035;
+        p.rot += p.vr;
+        p.alpha -= 0.007;
+        if (p.alpha <= 0) continue;
+        ctx.save();
+        ctx.translate(p.x * w, p.y * h);
+        ctx.rotate(p.rot);
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size * 0.6, -p.size * 0.35, p.size * 1.2, p.size * 0.7);
+        ctx.restore();
+      }
+      wizConfetti = wizConfetti.filter((p) => p.alpha > 0);
+    }
+  }
+
+  function drawWizOrb(t) {
+    const c = $("wizOrbCanvas");
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    const w = c.width, h = c.height, cx = w / 2, cy = h / 2;
+    ctx.clearRect(0, 0, w, h);
+
+    const astState = state?.assistant?.state || "idle";
+    const rms = Number(state?.audio?.engine?.monoRms || 0);
+    const amp = Math.min(1, rms / 1800);
+    const tgt = WIZ_PALETTES[Math.max(0, Math.min(WIZ_TOTAL_STEPS - 1, wizStep - 1))];
+    const colA = astState === "listening" ? [56, 189, 248] : astState === "speaking" ? [232, 198, 134] : tgt[0];
+    const colB = astState === "thinking" ? [168, 85, 247] : tgt[1];
+
+    const glowR = w * (0.42 + amp * 0.07 + Math.sin(t * 2.5) * 0.02);
+    const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, glowR);
+    g.addColorStop(0, `rgba(${colA[0]},${colA[1]},${colA[2]},0.92)`);
+    g.addColorStop(0.55, `rgba(${colB[0]},${colB[1]},${colB[2]},0.40)`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, glowR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(255,255,255,0.42)`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, w * 0.30, t * 1.8, t * 1.8 + Math.PI * 1.15);
+    ctx.stroke();
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.beginPath();
+    ctx.arc(cx, cy, w * (0.12 + amp * 0.05), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawWizMicWave(t) {
+    if (wizStep !== 4) return;
+    const c = $("wizMicWaveCanvas");
+    const dim = ensureCanvasSize(c);
+    if (!dim) return;
+    const ctx = c.getContext("2d");
+    const { w, h } = dim;
+    ctx.clearRect(0, 0, w, h);
+
+    const eng = state?.audio?.engine || {};
+    const ch = Array.isArray(eng.channelRms) ? eng.channelRms : [];
+    const monoNorm = Math.min(1, Number(eng.monoRms || 0) / 1800);
+    const n = wizWaveBars.length;
+    const stepX = w / n;
+    const barW = Math.max(3, stepX * 0.56);
+
+    for (let i = 0; i < n; i++) {
+      const chVal = ch.length ? Math.min(1, Number(ch[i % ch.length] || 0) / 2000) : monoNorm;
+      const env = Math.sin((i / (n - 1)) * Math.PI);
+      const idle = 0.08 + 0.08 * Math.abs(Math.sin(t * 2.4 + i * 0.45));
+      const target = Math.max(idle, (monoNorm * 0.55 + chVal * 0.45) * (0.55 + 0.45 * env));
+      wizWaveBars[i] += (target - wizWaveBars[i]) * 0.25;
+
+      const bh = Math.max(3, wizWaveBars[i] * (h - 6));
+      const bx = i * stepX + (stepX - barW) * 0.5;
+      const by = (h - bh) * 0.5;
+      const grad = ctx.createLinearGradient(0, by, 0, by + bh);
+      grad.addColorStop(0, "#e8c686");
+      grad.addColorStop(1, "#38bdf8");
+      ctx.fillStyle = grad;
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(bx, by, barW, bh, barW * 0.5);
+        ctx.fill();
+      } else {
+        ctx.fillRect(bx, by, barW, bh);
+      }
+    }
+  }
+
+  function drawWizLedRing(t) {
+    if (wizStep !== 6) return;
+    const c = $("wizLedRingCanvas");
+    const dim = ensureCanvasSize(c);
+    if (!dim) return;
+    const ctx = c.getContext("2d");
+    const { w, h } = dim;
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2, cy = h / 2;
+    const ringR = Math.min(w, h) * 0.36;
+    const mode = $("wizRingMode")?.value || state?.config?.ledRing?.mode || "music";
+    const rgb = hexToRgb($("wizRingColor")?.value || state?.config?.ledRing?.color || "#00d4ff");
+    const px = Array.isArray(state?.hardware?.ringPixels) ? state.hardware.ringPixels : [];
+    const hasHw = px.length === 24 && px.some((p) => (p[0] + p[1] + p[2]) > 18);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = Math.max(1.5, w * 0.02);
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+    ctx.stroke();
+
+    for (let i = 0; i < 24; i++) {
+      const ang = (i / 24) * Math.PI * 2 - Math.PI / 2;
+      const lx = cx + Math.cos(ang) * ringR;
+      const ly = cy + Math.sin(ang) * ringR;
+      let r = rgb[0], g = rgb[1], b = rgb[2], alpha = 0.92;
+
+      if (mode === "off") {
+        r = 70; g = 80; b = 100; alpha = 0.25;
+      } else if (hasHw) {
+        r = px[i][0]; g = px[i][1]; b = px[i][2];
+        const mag = Math.max(r, g, b);
+        alpha = mag > 10 ? 0.95 : 0.20;
+      } else if (mode === "rainbow" || mode === "music") {
+        const hue = ((i / 24) * 360 + t * 90) % 360;
+        const k = (n) => (n + hue / 30) % 12;
+        const f = (n) => 255 * (1 - Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1)));
+        r = f(0) | 0; g = f(8) | 0; b = f(4) | 0;
+        if (mode === "music") {
+          const beat = 0.55 + 0.45 * Math.sin(t * 5.2 + i * 0.65);
+          alpha = Math.max(0.35, beat);
+        }
+      } else if (mode === "breathe") {
+        alpha = 0.25 + 0.70 * (0.5 + 0.5 * Math.sin(t * 2.2));
+      } else if (mode === "spinner") {
+        const head = (t * 14) % 24;
+        const dist = (i - head + 24) % 24;
+        alpha = dist < 5 ? (1 - dist * 0.18) : 0.14;
+      }
+
+      if (alpha > 0.3) {
+        const gg = ctx.createRadialGradient(lx, ly, 0, lx, ly, w * 0.08);
+        gg.addColorStop(0, `rgba(${r},${g},${b},${alpha * 0.55})`);
+        gg.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gg;
+        ctx.beginPath();
+        ctx.arc(lx, ly, w * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+      ctx.beginPath();
+      ctx.arc(lx, ly, Math.max(2.5, w * 0.032), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function startWizardAnimLoop() {
+    if (wizAnimRaf) return;
+    const tick = (now) => {
+      const modal = $("wizardModal");
+      if (!modal || modal.style.display === "none") {
+        wizAnimRaf = null;
+        return;
+      }
+      const t = now * 0.001;
+      drawWizAurora(t);
+      drawWizOrb(t);
+      drawWizMicWave(t);
+      drawWizLedRing(t);
+      wizAnimRaf = requestAnimationFrame(tick);
+    };
+    wizAnimRaf = requestAnimationFrame(tick);
+  }
+
+  function stopWizardAnimLoop() {
+    if (wizAnimRaf) {
+      cancelAnimationFrame(wizAnimRaf);
+      wizAnimRaf = null;
+    }
+  }
+
+  let lastAutoBleScanMs = 0;
+  function setWizardStep(step) {
+    const target = Math.max(1, Math.min(WIZ_TOTAL_STEPS, step));
+    const enterCls = target >= wizPrevStep ? "enter-next" : "enter-prev";
+    wizPrevStep = target;
+    wizStep = target;
+    if (wizStep === 1 && Date.now() - lastAutoBleScanMs > 20000) {
+      lastAutoBleScanMs = Date.now();
+      api("/api/remote/pair", "POST", {}).catch(() => {});
+    }
+    document.querySelectorAll(".wiz-step-pill").forEach((b) => {
+      const s = parseInt(b.dataset.step, 10);
+      b.classList.toggle("active", s === wizStep);
+      b.classList.toggle("done", s < wizStep);
+    });
+    for (let i = 1; i <= WIZ_TOTAL_STEPS; i++) {
+      const p = $("wizStep" + i);
+      if (!p) continue;
+      p.classList.remove("active", "enter-next", "enter-prev");
+      if (i === wizStep) {
+        void p.offsetWidth;
+        p.classList.add("active", enterCls);
+      }
+    }
+    if (wizStep === WIZ_TOTAL_STEPS) spawnWizConfetti();
     if ($("btnWizPrev")) $("btnWizPrev").style.visibility = wizStep > 1 ? "visible" : "hidden";
-    if ($("btnWizNext")) $("btnWizNext").style.display = wizStep < 5 ? "inline-flex" : "none";
-    if ($("btnWizFinish")) $("btnWizFinish").style.display = wizStep === 5 ? "inline-flex" : "none";
-    if ($("wizProgressText")) $("wizProgressText").textContent = `Шаг ${wizStep} из 5`;
+    if ($("btnWizNext")) $("btnWizNext").style.display = wizStep < WIZ_TOTAL_STEPS ? "inline-flex" : "none";
+    if ($("btnWizFinish")) $("btnWizFinish").style.display = wizStep === WIZ_TOTAL_STEPS ? "inline-flex" : "none";
+    if ($("wizProgressText")) $("wizProgressText").textContent = `Экран ${wizStep} из ${WIZ_TOTAL_STEPS}`;
+    if ($("wizFooterFill")) $("wizFooterFill").style.width = `${Math.round((wizStep / WIZ_TOTAL_STEPS) * 100)}%`;
     if (state) syncWizardTelemetry(state, false);
+  }
+
+  function parseWizardHashStep() {
+    const m = /^#wizard(?:\/([1-7]))?$/i.exec(location.hash || "");
+    return m ? (parseInt(m[1], 10) || 1) : 0;
   }
 
   function openWizard(step = 1) {
     wizPopulatedOnce = false;
+    wizPrevStep = step;
     if (state) syncWizardTelemetry(state, true);
-    setWizardStep(step);
     if ($("wizardModal")) $("wizardModal").style.display = "flex";
+    setWizardStep(step);
+    startWizardAnimLoop();
   }
 
   function closeWizard(rememberDismiss = true) {
+    stopWizardAnimLoop();
     if ($("wizardModal")) $("wizardModal").style.display = "none";
     if (rememberDismiss) sessionStorage.setItem("os_wiz_dismissed", "1");
-    if (location.hash === "#wizard") {
+    if (state?.postOtaWizardPending) {
+      state.postOtaWizardPending = false;
+      state.postOtaWizardVersion = "";
+      api("/api/setup/dismiss_ota_wizard", "POST", {}).catch(() => {});
+    }
+    if (parseWizardHashStep()) {
       try { history.replaceState(null, "", location.pathname + location.search); } catch {}
     }
   }
@@ -2153,12 +2466,23 @@
     const ast = d.assistant || {};
     const ww = ast.wakeWord || {};
     const m = d.music || {};
+    const fw = d.firmwareVersion || "1.6.2";
 
     if ($("wizFwBadge")) {
-      $("wizFwBadge").textContent = `v${d.firmwareVersion || "1.5.0"}`;
+      $("wizFwBadge").textContent = `v${fw}`;
+    }
+    if ($("wizOtaBadge") && $("wizOtaBanner")) {
+      const postOta = !!d.postOtaWizardPending;
+      const postVer = d.postOtaWizardVersion || fw;
+      $("wizOtaBadge").style.display = postOta ? "inline-flex" : "none";
+      $("wizOtaBadge").textContent = `OTA v${postVer}`;
+      $("wizOtaBanner").style.display = postOta ? "block" : "none";
+      if (postOta) {
+        $("wizOtaBanner").textContent = `✨ Обновление до OpenStation Max v${postVer} успешно установлено! Просмотрите новые возможности: активный ADB Агент, обновлённая Алиса и 24-LED визуализация.`;
+      }
     }
     if ($("sysAutoInfo")) {
-      $("sysAutoInfo").textContent = `Версия v${d.firmwareVersion || "1.5.0"} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
+      $("sysAutoInfo").textContent = `Версия v${fw} · Все службы работают автономно внутри станции (${d.ip || "local"}).`;
     }
     if ($("wizDiagIp")) $("wizDiagIp").textContent = d.ip || "127.0.0.1";
     if ($("wizDiagMdns")) $("wizDiagMdns").textContent = `${d.hostname || "station-max"}.local`;
@@ -2168,6 +2492,32 @@
     const cleanAstName = (cfg.assistant?.name || "").trim() || "Алиса";
     if ($("wizDiagMic")) {
       $("wizDiagMic").textContent = ww.ready ? `Фраза «${cleanAstName}» активна` : (ww.status || "Выкл");
+    }
+    if ($("wizWakeLabel")) {
+      $("wizWakeLabel").textContent = `Откликаться на слово «${cleanAstName}»`;
+    }
+    document.querySelectorAll("#wizNamePresets .seg").forEach((b) => {
+      b.classList.toggle("active", (b.dataset.aname || "").toLowerCase() === cleanAstName.toLowerCase());
+    });
+
+    const curPrompt = (cfg.assistant?.systemPrompt || "").trim();
+    document.querySelectorAll("#wizPromptPresets .seg").forEach((b) => {
+      const k = b.dataset.preset;
+      b.classList.toggle("active", !!WIZ_PROMPTS[k] && curPrompt === WIZ_PROMPTS[k]);
+    });
+
+    const agentOn = cfg.assistant ? (cfg.assistant.agentMode !== false) : true;
+    if ($("wizAgentStep1")) $("wizAgentStep1").checked = agentOn;
+    if ($("wizAgentStep2")) $("wizAgentStep2").checked = agentOn;
+    if ($("wizAgentHint")) {
+      $("wizAgentHint").textContent = agentOn
+        ? "Ассистент управляет ADB, настройками Android TV и может сам перезагружать демон."
+        : "Агентный ADB-режим выключен (оставлены базовые инструменты и музыка).";
+    }
+
+    const monoRms = Math.round(Number(d.audio?.engine?.monoRms || 0));
+    if ($("wizMicLiveText")) {
+      $("wizMicLiveText").textContent = `${monoRms} RMS · ${ww.ready ? "VQE OK" : (ww.status || "idle")}`;
     }
 
     const dnsHost = d.privateDnsHost || "";
@@ -2183,6 +2533,33 @@
       $("wizNetBanner").textContent = `✓ Автономный режим · IP: ${d.ip || "local"} · ${dnsLabel}`;
     }
 
+    const ota = d.ota || {};
+    if ($("wizOtaLiveText")) {
+      let otaMsg = `Текущая версия: v${fw} · Нажмите «Проверить обновления».`;
+      let otaCls = "status-banner";
+      if (ota.busy) {
+        otaMsg = `⏳ ${ota.progressText || "Загрузка обновления..."} (${ota.progressPct || 0}%)`;
+        otaCls = "status-banner warn";
+      } else if (ota.updateAvailable && ota.latestVersion) {
+        otaMsg = `⬇ Доступна новая версия v${ota.latestVersion}${ota.changelog ? ": " + ota.changelog : ""}`;
+        otaCls = "status-banner live";
+      } else if (ota.error) {
+        otaMsg = `⚠ ${ota.error}`;
+        otaCls = "status-banner warn";
+      } else if (ota.state === "up_to_date") {
+        otaMsg = `✓ Установлена актуальная версия OpenStation Max v${fw}`;
+        otaCls = "status-banner ok";
+      }
+      $("wizOtaLiveText").textContent = otaMsg;
+      $("wizOtaLiveText").className = otaCls;
+    }
+    if ($("btnWizOtaInstall")) {
+      $("btnWizOtaInstall").style.display = (ota.updateAvailable && !ota.busy) ? "inline-flex" : "none";
+    }
+    if ($("btnWizOtaCheck")) {
+      $("btnWizOtaCheck").disabled = !!ota.busy;
+    }
+
     if ($("wizMusicBanner")) {
       if (m.hasAuth) {
         $("wizMusicBanner").textContent = `✓ Яндекс Музыка: @${m.userLogin || "OK"}${m.hasPlus ? " · Плюс" : ""}`;
@@ -2193,12 +2570,33 @@
       }
     }
 
+    const hwEq = d.hardwareEq || {};
+    if ($("wizHwEqRow")) {
+      $("wizHwEqRow").style.display = hwEq.supported ? "" : "none";
+      if (hwEq.supported) {
+        const curHw = hwEq.profile || "original";
+        document.querySelectorAll("#wizHwEqPresets .seg").forEach((b) => {
+          b.classList.toggle("active", b.dataset.hweq === curHw);
+        });
+      }
+    }
+
+    const curColor = ($("wizRingColor")?.value || cfg.ledRing?.color || "#00d4ff").toLowerCase();
+    document.querySelectorAll("#wizColorSwatches .wiz-swatch").forEach((b) => {
+      b.classList.toggle("active", (b.dataset.color || "").toLowerCase() === curColor);
+    });
+    if ($("wizLedStudioTitle")) {
+      const bri = hw.effectiveBrightness ?? cfg.ledRing?.brightness;
+      $("wizLedStudioTitle").textContent = bri !== undefined ? `24 RGB LED Кольцо · Яркость ${Math.round((bri / 255) * 100)}%` : "24 RGB LED Кольцо";
+    }
+
     if ($("wizChecklist")) {
       const hasKey = !!(cfg.assistant?.geminiApiKeySet || cfg.assistant?.geminiApiKey);
       const checks = [
         { ok: true, txt: "Станция в сети и готова" },
         { ok: hasKey, txt: hasKey ? `Ключ (${cleanAstName} / Gemini) задан` : `Ключ ассистента не задан (Шаг 2)` },
         { ok: !!ww.ready, txt: ww.ready ? `Отклик на фразу «${cleanAstName}» активен` : "Отклик на фразу выключен" },
+        { ok: agentOn, txt: agentOn ? "Агент ADB активен по стоку" : "Агент ADB выключен (опц.)" },
         { ok: !!m.hasAuth, txt: m.hasAuth ? `Яндекс Музыка: @${m.userLogin || "OK"}` : "Яндекс Музыка: без входа (опц.)" }
       ];
       // textContent: userLogin comes from the music account and must not be parsed as HTML
@@ -2224,12 +2622,37 @@
       }
       if ($("wizVoice") && document.activeElement !== $("wizVoice")) $("wizVoice").value = cfg.assistant.voiceName || "Aoede";
       if ($("wizWakeEn")) $("wizWakeEn").checked = cfg.assistant.wakeWordEnabled !== false;
-      if ($("wizAudioRoute") && document.activeElement !== $("wizAudioRoute")) $("wizAudioRoute").value = cfg.audio?.outputRoute || "auto";
-      if ($("wizEqPreset") && document.activeElement !== $("wizEqPreset")) $("wizEqPreset").value = cfg.audio?.eqPreset || "balanced";
+      if ($("wizAudioRoute") && document.activeElement !== $("wizAudioRoute")) {
+        $("wizAudioRoute").value = cfg.audio?.outputRoute || "auto";
+        if (!$("wizAudioRoute").value) $("wizAudioRoute").value = "auto";
+      }
+      if ($("wizEqPreset") && document.activeElement !== $("wizEqPreset")) {
+        $("wizEqPreset").value = cfg.audio?.eqPreset || "balanced";
+        if (!$("wizEqPreset").value) $("wizEqPreset").value = "balanced";
+      }
       if ($("wizRingMode") && document.activeElement !== $("wizRingMode")) $("wizRingMode").value = cfg.ledRing?.mode || "music";
       if ($("wizRingColor") && document.activeElement !== $("wizRingColor")) $("wizRingColor").value = cfg.ledRing?.color || "#00d4ff";
       if ($("wizAutoBri")) $("wizAutoBri").checked = cfg.ledRing?.autoBrightness !== false;
       if ($("wizActShort") && document.activeElement !== $("wizActShort")) $("wizActShort").value = cfg.input?.actionShort || "assistant";
+    }
+  }
+
+  async function toggleAgentFromWizard(enabled, sourceEl) {
+    try {
+      const res = await api("/api/assistant/agent_mode", "POST", { enabled });
+      const active = !!res.agentMode;
+      if (state?.config?.assistant) state.config.assistant.agentMode = active;
+      if (state?.assistant) state.assistant.agentMode = active;
+      if ($("astAgentMode")) $("astAgentMode").checked = active;
+      if ($("wizAgentStep1")) $("wizAgentStep1").checked = active;
+      if ($("wizAgentStep2")) $("wizAgentStep2").checked = active;
+      if (state) syncWizardTelemetry(state, false);
+      showToast(active
+        ? "Режим Агента включён — Алиса управляет ADB и может перезагружать демон"
+        : "Режим Агента выключен");
+    } catch (e) {
+      if (sourceEl) sourceEl.checked = !enabled;
+      showToast("Не удалось переключить Режим Агента: " + (e?.message || e), true);
     }
   }
 
@@ -2284,6 +2707,11 @@
   }
   if ($("btnApplyDns") && $("sysDnsHost")) $("btnApplyDns").addEventListener("click", () => applyDnsHost($("sysDnsHost").value));
   if ($("btnWizApplyDns") && $("wizDnsHost")) $("btnWizApplyDns").addEventListener("click", () => applyDnsHost($("wizDnsHost").value));
+  ["wizAgentStep1", "wizAgentStep2"].forEach((id) => {
+    if ($(id)) {
+      $(id).addEventListener("change", () => toggleAgentFromWizard($(id).checked, $(id)));
+    }
+  });
 
   function buildWizAssistantPatch() {
     const key = $("wizApiKey")?.value.trim() || "";
@@ -2293,11 +2721,21 @@
       name: ($("wizName")?.value.trim()) || "Алиса",
       geminiProxyHost: $("wizProxyHost")?.value.trim() ?? "ai-pool.comss.one",
       voiceName: $("wizVoice")?.value || "Aoede",
-      wakeWordEnabled: $("wizWakeEn") ? $("wizWakeEn").checked : true
+      wakeWordEnabled: $("wizWakeEn") ? $("wizWakeEn").checked : true,
+      agentMode: $("wizAgentStep2") ? $("wizAgentStep2").checked : ($("wizAgentStep1") ? $("wizAgentStep1").checked : true)
     };
     if (key) astPatch.geminiApiKey = key;
     return astPatch;
   }
+
+  document.querySelectorAll("#wizPromptPresets .seg").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const p = WIZ_PROMPTS[b.dataset.preset];
+      if (!p) return;
+      if ($("astPrompt")) $("astPrompt").value = p;
+      await pushPartialConfig({ assistant: { systemPrompt: p } }, `Характер «${b.textContent}» сохранён`);
+    });
+  });
 
   if ($("btnWizTestGemini")) {
     $("btnWizTestGemini").addEventListener("click", async () => {
@@ -2332,6 +2770,33 @@
   if ($("wizEqPreset")) {
     $("wizEqPreset").addEventListener("change", () => pushPartialConfig({ audio: { eqPreset: $("wizEqPreset").value } }, "Эквалайзер применён"));
   }
+  document.querySelectorAll("#wizHwEqPresets .seg").forEach((b) => {
+    b.addEventListener("click", async () => {
+      const profile = b.dataset.hweq;
+      if (!profile) return;
+      try {
+        const res = await api("/api/audio/hardware_eq", "POST", { profile });
+        document.querySelectorAll("#wizHwEqPresets .seg").forEach((x) => x.classList.toggle("active", x.dataset.hweq === (res.profile || profile)));
+        if (state && state.hardwareEq) state.hardwareEq.profile = res.profile || profile;
+        showToast(`Аппаратный DSP: ${b.textContent}`);
+      } catch (e) {
+        showToast("Ошибка DSP: " + (e?.message || e), true);
+      }
+    });
+  });
+  document.querySelectorAll("#wizColorSwatches .wiz-swatch").forEach((b) => {
+    b.addEventListener("click", () => {
+      const col = b.dataset.color || "#00d4ff";
+      if ($("wizRingColor")) $("wizRingColor").value = col;
+      pushPartialConfig({
+        ledRing: {
+          mode: $("wizRingMode")?.value || "music",
+          color: col,
+          autoBrightness: $("wizAutoBri") ? $("wizAutoBri").checked : true
+        }
+      }, "Цвет кольца обновлён");
+    });
+  });
   ["wizRingMode", "wizRingColor", "wizAutoBri"].forEach((id) => {
     if ($(id)) {
       $(id).addEventListener("change", () => pushPartialConfig({
@@ -2348,6 +2813,40 @@
   }
   if ($("btnWizCecWake")) {
     $("btnWizCecWake").addEventListener("click", () => api("/api/remote/cec", "POST", { cmd: "wakeup" }).then(() => showToast("Команда включения отправлена ТВ")).catch(() => {}));
+  }
+  if ($("btnWizStartupShow")) {
+    $("btnWizStartupShow").addEventListener("click", async () => {
+      try {
+        await api("/api/system/startup_show", "POST", {});
+        showToast("Запущено стартовое свето-звуковое шоу!");
+      } catch (e) { showToast("Ошибка запуска шоу: " + e.message, true); }
+    });
+  }
+  if ($("btnWizOtaCheck")) {
+    $("btnWizOtaCheck").addEventListener("click", async () => {
+      try {
+        await api("/api/ota/check", "POST", {});
+        showToast("Проверяем обновления на GitHub...");
+      } catch (e) { showToast("Ошибка проверки OTA: " + e.message, true); }
+    });
+  }
+  if ($("btnWizOtaInstall")) {
+    $("btnWizOtaInstall").addEventListener("click", async () => {
+      try {
+        otaPendingRestart = true;
+        await api("/api/ota/install", "POST", { force: false });
+        showToast("Запущена установка обновления OTA...");
+      } catch (e) { otaPendingRestart = false; showToast("Ошибка установки OTA: " + e.message, true); }
+    });
+  }
+  if ($("btnWizRestartDaemon")) {
+    $("btnWizRestartDaemon").addEventListener("click", async () => {
+      if (!confirm("Перезапустить демон openstationd сейчас? Панель восстановится через 2-3 секунды.")) return;
+      try {
+        await api("/api/system/restart_daemon", "POST", {});
+        showToast("Демон перезагружается...");
+      } catch (e) { showToast("Ошибка рестарта: " + e.message, true); }
+    });
   }
   if ($("btnWizFinish")) {
     $("btnWizFinish").addEventListener("click", async () => {
@@ -2491,7 +2990,8 @@
   if ($("btnOtaInstall")) $("btnOtaInstall").addEventListener("click", () => triggerOtaInstall(false));
   if ($("btnOtaReinstall")) $("btnOtaReinstall").addEventListener("click", () => triggerOtaInstall(true));
   window.addEventListener("hashchange", () => {
-    if (location.hash === "#wizard") openWizard(1);
+    const hs = parseWizardHashStep();
+    if (hs) openWizard(hs);
   });
 
   // ===================== Связь со станцией и мини-плеер =====================
@@ -2862,8 +3362,9 @@
       const s = await api("/api/status");
       setConn(true);
       applyTelemetry(s, true);
-      if (location.hash === "#wizard" || (s.config?.setupCompleted === false && !sessionStorage.getItem("os_wiz_dismissed"))) {
-        openWizard(1);
+      const hs = parseWizardHashStep();
+      if (hs || s.postOtaWizardPending || (s.config?.setupCompleted === false && !sessionStorage.getItem("os_wiz_dismissed"))) {
+        openWizard(hs || 1);
       }
       loadApps();
     } catch {

@@ -310,6 +310,7 @@ try {
         }
         assistant = [ordered]@{
             enabled         = $true
+            agentMode       = $true
             mode            = "gemini"
             geminiApiKey    = ""
             geminiModel     = "gemini-3.8-live"
@@ -574,6 +575,51 @@ try {
     fi
   }
 
+  repair_wireless_hardware() {
+    intel_pci=0
+    for vf in /sys/bus/pci/devices/*/vendor; do
+      [ -r "$vf" ] || continue
+      v=$(cat "$vf" 2>/dev/null | tr -d '\r\n ')
+      case "$v" in
+        0x8086|8086) intel_pci=1; break ;;
+      esac
+    done
+    [ "$intel_pci" -eq 1 ] || return 0
+    bt_svc=$(getprop init.svc.btlinux-1-0 | tr -d '\r\n')
+    if [ -d /sys/class/net/wlan0 ] && [ -e /sys/class/bluetooth/hci0 ] && [ "$bt_svc" = "running" ]; then
+      return 0
+    fi
+    for g in 482 493; do
+      [ -d "/sys/class/gpio/gpio$g" ] || echo "$g" > /sys/class/gpio/export 2>/dev/null || true
+      [ -w "/sys/class/gpio/gpio$g/direction" ] && echo high > "/sys/class/gpio/gpio$g/direction" 2>/dev/null || true
+    done
+    for mod in \
+      /vendor/lib/modules/btintel.ko \
+      /vendor/lib/modules/btusb.ko \
+      /vendor/lib/backported_iwlwifi/compat.ko \
+      /vendor/lib/backported_iwlwifi/cfg80211.ko \
+      /vendor/lib/backported_iwlwifi/mac80211.ko \
+      /vendor/lib/backported_iwlwifi/iwlwifi.ko \
+      /vendor/lib/backported_iwlwifi/iwlmvm.ko; do
+      mbase=$(basename "$mod" .ko)
+      if [ -f "$mod" ] && ! grep -q "^${mbase} " /proc/modules 2>/dev/null; then
+        insmod "$mod" 2>/dev/null || true
+      fi
+    done
+    hw=0
+    while [ $hw -lt 10 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do
+      hw=$((hw+1))
+      sleep 0.1
+    done
+    if [ "$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')" = "running" ]; then
+      stop vendor.bluetooth-1-0 2>/dev/null || true
+    fi
+    if [ "$(getprop init.svc.btlinux-1-0 | tr -d '\r\n')" != "running" ]; then
+      start btlinux-1-0 2>/dev/null || true
+    fi
+  }
+
+  repair_wireless_hardware
   prov_applied=0
   android_ready=0
   i=0
@@ -841,6 +887,101 @@ EOF
     chmod 644 "$MNT/etc/hardvol_sy.xml.tmp"
     mv -f "$MNT/etc/hardvol_sy.xml.tmp" "$MNT/etc/hardvol_sy.xml"
     chcon u:object_r:vendor_configs_file:s0 "$MNT/etc/hardvol_sy.xml" 2>/dev/null || true
+fi
+
+# Патч /vendor/bin/multiwifi.sh: заполняем пустую ветку Intel (актуально при загрузке с dt_id=rev375f на платах 0008/00052 с Intel 7265)
+MW_TGT="$MNT/bin/multiwifi.sh"
+if [ -f "$MW_TGT" ]; then
+    cat <<'EOF' > "$BUILD/multiwifi.sh.tmp"
+#!/vendor/bin/sh
+
+detect_chip_type() {
+  CHIP_TYPE="Unknown"
+  attempt=0
+  while [ $attempt -lt 25 ]; do
+    for sdev in /sys/bus/sdio/devices/*; do
+      [ -r "$sdev/vendor" ] || continue
+      SDIO_VENDOR=$(cat "$sdev/vendor" 2>/dev/null | tr -d '\r\n ')
+      SDIO_DEVICE=$(cat "$sdev/device" 2>/dev/null | tr -d '\r\n ')
+      if [ "$SDIO_VENDOR" = "0x024c" ] && [ "$SDIO_DEVICE" = "0xa822" ]; then
+        CHIP_TYPE="Realtek"
+        return 0
+      fi
+      if [ "$SDIO_VENDOR" = "0x0000" ] && [ "$SDIO_DEVICE" = "0x0000" ]; then
+        CHIP_TYPE="Unisoc"
+        return 0
+      fi
+    done
+    for pdev in /sys/bus/pci/devices/*; do
+      [ -r "$pdev/vendor" ] || continue
+      PCI_VENDOR=$(cat "$pdev/vendor" 2>/dev/null | tr -d '\r\n ')
+      PCI_DEVICE=$(cat "$pdev/device" 2>/dev/null | tr -d '\r\n ')
+      case "$PCI_VENDOR:$PCI_DEVICE" in
+        0x8086:0x095a|0x8086:*)
+          CHIP_TYPE="Intel"
+          return 0
+          ;;
+      esac
+    done
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+load_ko() {
+  mod="$1"
+  [ -f "$mod" ] || return 0
+  mbase=$(basename "$mod" .ko)
+  grep -q "^${mbase} " /proc/modules 2>/dev/null && return 0
+  insmod "$mod" 2>/dev/null || true
+}
+
+detect_chip_type
+
+case "$CHIP_TYPE" in
+"Unisoc")
+    echo Starting Unisoc Wi-Fi
+    load_ko /vendor/lib/modules/cfg80211.ko
+    load_ko /vendor/lib/modules/mac80211.ko
+    load_ko /vendor/lib/modules/uwe5621_bsp_sdio.ko
+    load_ko /vendor/lib/modules/sprdwl_ng.ko
+    load_ko /vendor/lib/modules/sprdbt_tty.ko
+    ;;
+"Realtek")
+    echo Starting Realtek Wi-Fi
+    load_ko /vendor/lib/modules/cfg80211.ko
+    load_ko /vendor/lib/modules/mac80211.ko
+    load_ko /vendor/lib/modules/88x2es.ko
+    ;;
+"Intel")
+    echo Starting Intel Wi-Fi/BT
+    for g in 482 493; do
+      [ -d "/sys/class/gpio/gpio$g" ] || echo "$g" > /sys/class/gpio/export 2>/dev/null || true
+      [ -w "/sys/class/gpio/gpio$g/direction" ] && echo high > "/sys/class/gpio/gpio$g/direction" 2>/dev/null || true
+    done
+    load_ko /vendor/lib/modules/btintel.ko
+    load_ko /vendor/lib/modules/btusb.ko
+    load_ko /vendor/lib/backported_iwlwifi/compat.ko
+    load_ko /vendor/lib/backported_iwlwifi/cfg80211.ko
+    load_ko /vendor/lib/backported_iwlwifi/mac80211.ko
+    load_ko /vendor/lib/backported_iwlwifi/iwlwifi.ko
+    load_ko /vendor/lib/backported_iwlwifi/iwlmvm.ko
+    hw=0
+    while [ $hw -lt 10 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do
+      hw=$((hw + 1))
+      sleep 0.1
+    done
+    stop vendor.bluetooth-1-0 2>/dev/null || true
+    start btlinux-1-0 2>/dev/null || true
+    ;;
+esac
+EOF
+    sh -n "$BUILD/multiwifi.sh.tmp" || { echo "multiwifi.sh syntax check failed" >&2; exit 1; }
+    chown 0:2000 "$BUILD/multiwifi.sh.tmp"
+    chmod 755 "$BUILD/multiwifi.sh.tmp"
+    mv -f "$BUILD/multiwifi.sh.tmp" "$MW_TGT"
+    chcon u:object_r:multiwifi_sh_exec:s0 "$MW_TGT" 2>/dev/null || true
 fi
 
 echo "=== VENDOR DF BEFORE ZERO ==="

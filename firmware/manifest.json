@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.1",
+    "version":  "1.6.2",
     "autonomous":  true,
-    "changelog":  "OpenStation Max v1.6.1: восстановлен аппаратный VQE-захват (GENERIC вместо 33с заглушения VOICE_RECOGNITION), оптимизирован 64-мс NEON AEC без зависания DTD и переключений микрофона, улучшено распознавание «Алисы» при играющей музыке без лишней нагрузки в тишине.",
-    "buildTimeUtc":  "2026-11-14T20:36:18Z",
+    "changelog":  "OpenStation Max v1.6.2: переработанный анимированный 7-экранный мастер настройки со спрайтами и автопоиском пульта без кнопок, автозапуск мастера после OTA, голосовой рестарт демона Алисой, активный по стоку ADB-агент и авторемонт Wi-Fi/BT для плат 0008/00052.",
+    "buildTimeUtc":  "2026-11-14T21:52:08Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  2951688,
-                                 "sha256":  "b8e8165d7eb169543d695939c8faf866573533675d9a64499e58f566506a8ce8"
+                                 "size":  3070352,
+                                 "sha256":  "3c44f63809211c3c2e174428823720b046b5cfe3526caccd23366e512f7617a0"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
@@ -18,8 +18,8 @@
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  4680074,
-                                   "sha256":  "6a64cf7995d77104f4d9d71ccc972527f3d5418e59774457d1595b0672cfe8c9"
+                                   "size":  5135776,
+                                   "sha256":  "1df8be1e606517d498b81cf81612d693a1c29844d5d51d0d6088a7dcdd5ed170"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

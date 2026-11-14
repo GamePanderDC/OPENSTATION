@@ -15,4 +15,10 @@ int main() {
     assert(openstation::block_power_tool_for_stop(true, "remote_control"));
     assert(!openstation::block_power_tool_for_stop(false, "tv_hdmi_cec"));
     assert(!openstation::block_power_tool_for_stop(true, "stop_assistant"));
+    assert(openstation::normalize_device_power_action("restart_daemon") == "restart_daemon");
+    assert(openstation::normalize_device_power_action("restart") == "restart_daemon");
+    assert(openstation::normalize_device_power_action("reboot_daemon") == "restart_daemon");
+    assert(openstation::normalize_device_power_action("wake") == "screen_wake");
+    assert(openstation::normalize_device_power_action("sleep") == "screen_sleep");
+    assert(openstation::normalize_device_power_action("reboot") == "reboot");
 }

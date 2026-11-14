@@ -3314,6 +3314,8 @@ class MainActivity : Activity() {
                     val astCfg = cfg?.optJSONObject("assistant")
 
                     fwVer = root.optString("firmwareVersion", fwVer).ifBlank { fwVer }
+                    val postOtaPending = root.optBoolean("postOtaWizardPending", false)
+                    val postOtaVer = root.optString("postOtaWizardVersion", "").trim()
                     ringMode = ringCfg?.optString("mode", ringMode) ?: ringMode
                     micMuted = audioCfg?.optBoolean("micMuted", micMuted) ?: micMuted
                     outputRoute = audioCfg?.optString("outputRoute", outputRoute) ?: outputRoute
@@ -3443,12 +3445,17 @@ class MainActivity : Activity() {
                             wizardAutoOpenedThisRun = false
                         }
                         setupCompletedState = setupDone
-                        if (!setupDone && !wizardAutoOpenedThisRun) {
-                            val prefs = getSharedPreferences(SetupWizardActivity.PREFS_NAME, MODE_PRIVATE)
-                            val dismissedVer = prefs.getInt(SetupWizardActivity.KEY_WIZARD_DISMISSED_VER, 0)
-                            if (dismissedVer < SetupWizardActivity.CURRENT_WIZARD_VER) {
+                        if (!wizardAutoOpenedThisRun) {
+                            if (postOtaPending) {
                                 wizardAutoOpenedThisRun = true
-                                openSetupWizard(manual = false)
+                                openSetupWizard(manual = false, postOtaVer = postOtaVer)
+                            } else if (!setupDone) {
+                                val prefs = getSharedPreferences(SetupWizardActivity.PREFS_NAME, MODE_PRIVATE)
+                                val dismissedVer = prefs.getInt(SetupWizardActivity.KEY_WIZARD_DISMISSED_VER, 0)
+                                if (dismissedVer < SetupWizardActivity.CURRENT_WIZARD_VER) {
+                                    wizardAutoOpenedThisRun = true
+                                    openSetupWizard(manual = false)
+                                }
                             }
                         }
                     }
@@ -3971,10 +3978,13 @@ class MainActivity : Activity() {
         handler.post(otaDialogPollRunnable)
     }
 
-    private fun openSetupWizard(manual: Boolean) {
+    private fun openSetupWizard(manual: Boolean, postOtaVer: String = "") {
         try {
             val i = Intent(this, SetupWizardActivity::class.java).apply {
                 putExtra(SetupWizardActivity.EXTRA_MANUAL, manual)
+                if (postOtaVer.isNotEmpty()) {
+                    putExtra(SetupWizardActivity.EXTRA_POST_OTA_VER, postOtaVer)
+                }
                 addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }
             startActivity(i)

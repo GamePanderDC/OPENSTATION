@@ -1,3 +1,4 @@
+#include "assistant/assistant_intents.hpp"
 #include "assistant/assistant_manager.hpp"
 #include "assistant/timer_manager.hpp"
 #include "assistant/tls_ws_client.hpp"
@@ -32,6 +33,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dirent.h>
 #include <fcntl.h>
 #include <malloc.h>
 #include <mutex>
@@ -49,7 +51,10 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.1";
+constexpr const char* kFirmwareVersion = "1.6.2";
+constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
+constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
+constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
 
 std::atomic<bool> g_stop{false};
 
@@ -272,6 +277,122 @@ bool spawn_detached(const std::vector<std::string>& args) {
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
     return true;
+}
+
+bool file_exists_plain(const char* path) {
+    struct stat st {};
+    return ::stat(path, &st) == 0;
+}
+
+bool write_text_file_atomic(const char* path, const std::string& content) {
+    std::string tmp = std::string(path) + ".tmp." + std::to_string(static_cast<long>(getpid()));
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return false;
+    size_t off = 0;
+    bool ok = true;
+    while (off < content.size()) {
+        ssize_t n = ::write(fd, content.data() + off, content.size() - off);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        off += static_cast<size_t>(n);
+    }
+    if (::close(fd) != 0) ok = false;
+    if (!ok || ::rename(tmp.c_str(), path) != 0) {
+        ::unlink(tmp.c_str());
+        return false;
+    }
+    ::chmod(path, 0644);
+    return true;
+}
+
+bool schedule_daemon_restart(int delay_ms) {
+    int clamped_ms = std::clamp(delay_ms, 200, 15000);
+    double delay_sec = static_cast<double>(clamped_ms) / 1000.0;
+    long pid_l = static_cast<long>(getpid());
+    char sh_cmd[640];
+    snprintf(sh_cmd, sizeof(sh_cmd),
+             "sleep %.2f; kill -TERM %ld 2>/dev/null; "
+             "i=0; while kill -0 %ld 2>/dev/null && [ $i -lt 30 ]; do sleep 0.2; i=$((i+1)); done; "
+             "kill -KILL %ld 2>/dev/null; killall -9 openstationd 2>/dev/null || true; sleep 0.3; "
+             "LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64 "
+             "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1",
+             delay_sec, pid_l, pid_l, pid_l);
+    return spawn_detached({"/system/bin/sh", "-c", sh_cmd});
+}
+
+void repair_wireless_hardware_if_needed() {
+    auto path_exists = [](const char* p) {
+        struct stat st {};
+        return ::stat(p, &st) == 0;
+    };
+    auto trim_token = [](std::string s) {
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+        return s;
+    };
+    bool has_intel_pci = false;
+    if (DIR* d = ::opendir("/sys/bus/pci/devices")) {
+        struct dirent* ent = nullptr;
+        while ((ent = ::readdir(d)) != nullptr) {
+            if (ent->d_name[0] == '.') continue;
+            std::string vp = std::string("/sys/bus/pci/devices/") + ent->d_name + "/vendor";
+            std::string v;
+            if (FILE* f = fopen(vp.c_str(), "r")) {
+                char buf[32] = {0};
+                if (fgets(buf, sizeof(buf), f)) v = trim_token(buf);
+                fclose(f);
+            }
+            if (v == "0x8086" || v == "8086") {
+                has_intel_pci = true;
+                break;
+            }
+        }
+        ::closedir(d);
+    }
+    if (!has_intel_pci) return;
+
+    auto svc_state = [](const char* name) {
+        char buf[PROP_VALUE_MAX] = {0};
+        __system_property_get(name, buf);
+        return std::string(buf);
+    };
+    const bool had_wlan0 = path_exists("/sys/class/net/wlan0");
+    const bool had_hci0 = path_exists("/sys/class/bluetooth/hci0");
+    const bool had_btlinux = (svc_state("init.svc.btlinux-1-0") == "running");
+    if (had_wlan0 && had_hci0 && had_btlinux) return;
+
+    LOGW("Hardware", "Detected Intel PCIe card without active Wi-Fi/BT (wlan0=%d hci0=%d btlinux=%d); repairing",
+         had_wlan0 ? 1 : 0, had_hci0 ? 1 : 0, had_btlinux ? 1 : 0);
+
+    const char* repair_sh =
+        "for g in 482 493; do "
+        "  [ -d /sys/class/gpio/gpio$g ] || echo $g > /sys/class/gpio/export 2>/dev/null || true; "
+        "  [ -w /sys/class/gpio/gpio$g/direction ] && echo high > /sys/class/gpio/gpio$g/direction 2>/dev/null || true; "
+        "done; "
+        "for m in /vendor/lib/modules/btintel.ko /vendor/lib/modules/btusb.ko "
+        "  /vendor/lib/backported_iwlwifi/compat.ko /vendor/lib/backported_iwlwifi/cfg80211.ko "
+        "  /vendor/lib/backported_iwlwifi/mac80211.ko /vendor/lib/backported_iwlwifi/iwlwifi.ko "
+        "  /vendor/lib/backported_iwlwifi/iwlmvm.ko; do "
+        "  b=$(basename \"$m\" .ko); "
+        "  [ -f \"$m\" ] && ! grep -q \"^${b} \" /proc/modules 2>/dev/null && insmod \"$m\" 2>/dev/null || true; "
+        "done; "
+        "i=0; while [ $i -lt 15 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do i=$((i+1)); sleep 0.1; done; "
+        "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" = \"running\" ]; then stop vendor.bluetooth-1-0 2>/dev/null || true; fi; "
+        "if [ \"$(getprop init.svc.btlinux-1-0 | tr -d '\\r\\n')\" != \"running\" ]; then start btlinux-1-0 2>/dev/null || true; fi";
+
+    int status = std::system(repair_sh);
+    (void)status;
+
+    if (!had_wlan0 && path_exists("/sys/class/net/wlan0")) {
+        std::system("/system/bin/svc wifi disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc wifi enable >/dev/null 2>&1");
+        LOGI("Hardware", "Intel wlan0 restored and Wi-Fi service refreshed");
+    }
+    if (!had_btlinux && path_exists("/sys/class/bluetooth/hci0")) {
+        std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
+        LOGI("Hardware", "Intel BT HAL (btlinux-1-0) restored and Bluetooth service refreshed");
+    }
 }
 
 std::string normalize_cec_action(const std::string& raw) {
@@ -1090,9 +1211,29 @@ int main(int argc, char** argv) {
     using namespace openstation;
     Logger::instance().init("/data/local/openstation/openstationd.log");
     LOGI("Main", "=== OpenStation Max Daemon v%s starting ===", kFirmwareVersion);
+    std::thread(repair_wireless_hardware_if_needed).detach();
 
     DaemonConfig cfg;
     cfg.load();
+    if (!file_exists_plain(kStockAgentMigratedPath)) {
+        if (!cfg.assistant.agent_mode) {
+            cfg.assistant.agent_mode = true;
+            cfg.save();
+            LOGI("Main", "Activated stock ADB Agent mode (agent_mode=true) for v%s", kFirmwareVersion);
+        }
+        write_text_file_atomic(kStockAgentMigratedPath, std::string(kFirmwareVersion) + "\n");
+    }
+    {
+        const std::string prev_booted_fw = read_first_line(kLastBootedFwPath);
+        if (prev_booted_fw != kFirmwareVersion) {
+            if (cfg.setup_completed) {
+                write_text_file_atomic(kPostOtaWizardPath, std::string(kFirmwareVersion) + "\n");
+                LOGI("Main", "Detected OTA upgrade (%s -> %s), scheduling post-OTA setup wizard",
+                     prev_booted_fw.empty() ? "legacy" : prev_booted_fw.c_str(), kFirmwareVersion);
+            }
+            write_text_file_atomic(kLastBootedFwPath, std::string(kFirmwareVersion) + "\n");
+        }
+    }
     std::mutex cfg_mu;
     std::mutex save_mu;
     auto save_cfg = [&](const DaemonConfig& c) {
@@ -2551,7 +2692,8 @@ int main(int argc, char** argv) {
         }
 
         if (name == "device_power") {
-            std::string act = args.get("action") ? args.get("action")->as_str() : "";
+            std::string act = normalize_device_power_action(
+                args.get("action") ? args.get("action")->as_str() : "");
             if (act == "screen_wake") {
                 uinput.send_key(143); // KEY_WAKEUP
                 exec_hdmi_cec_action("wake");
@@ -2567,19 +2709,16 @@ int main(int argc, char** argv) {
                 return res;
             }
             if (act == "restart_daemon") {
-                long pid_l = static_cast<long>(getpid());
-                char sh_cmd[512];
-                snprintf(sh_cmd, sizeof(sh_cmd),
-                         "sleep 4; kill -TERM %ld 2>/dev/null; "
-                         "i=0; while kill -0 %ld 2>/dev/null && [ $i -lt 30 ]; do sleep 0.2; i=$((i+1)); done; "
-                         "kill -KILL %ld 2>/dev/null; sleep 0.2; "
-                         "LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64 "
-                         "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1",
-                         pid_l, pid_l, pid_l);
-                bool spawned = spawn_detached({"/system/bin/sh", "-c", sh_cmd});
+                leds.trigger_task_icon("terminal", 72, 240, 165, 4500);
+                bool spawned = schedule_daemon_restart(4800);
                 res["ok"] = Value::make_bool(spawned);
                 res["action"] = Value::make_str(act);
-                if (spawned) res["stopSession"] = Value::make_bool(true);
+                if (spawned) {
+                    res["delayMs"] = Value::make_int(4800);
+                    res["message"] = Value::make_str(
+                        "Перезапуск openstationd запланирован. Кратко подтверди пользователю, что демон перезагружается.");
+                    res["stopSession"] = Value::make_bool(true);
+                }
                 return res;
             }
             if (act == "reboot") {
@@ -3900,6 +4039,11 @@ int main(int argc, char** argv) {
 
         root["assistant"] = assistant.get_status_json();
         root["startupShownThisBoot"] = Value::make_bool(is_startup_shown_flag());
+        {
+            const std::string post_ota_wiz_ver = read_first_line(kPostOtaWizardPath);
+            root["postOtaWizardVersion"] = Value::make_str(post_ota_wiz_ver);
+            root["postOtaWizardPending"] = Value::make_bool(!post_ota_wiz_ver.empty());
+        }
         root["music"] = get_music_json();
         root["timers"] = timers.list_timers_json();
         root["wyoming"] = wyoming.get_status_json();
@@ -4549,7 +4693,20 @@ int main(int argc, char** argv) {
                     cfg.setup_completed = true;
                     c = cfg;
                 }
+                ::unlink(kPostOtaWizardPath);
                 save_cfg(c);
+                json::Value st = build_status_json();
+                std::string out = st.dump(-1);
+                if (http.ws_client_count() > 0) {
+                    json::Value msg = json::Value::make_obj();
+                    msg["type"] = json::Value::make_str("telemetry");
+                    msg["data"] = std::move(st);
+                    http.broadcast_ws_text(msg.dump(-1));
+                }
+                return HttpResponse::json(out);
+            }
+            if (req.method == "POST" && req.path == "/api/setup/dismiss_ota_wizard") {
+                ::unlink(kPostOtaWizardPath);
                 json::Value st = build_status_json();
                 std::string out = st.dump(-1);
                 if (http.ws_client_count() > 0) {
@@ -4689,13 +4846,8 @@ int main(int argc, char** argv) {
                 return HttpResponse::json(out);
             }
             if (req.method == "POST" && req.path == "/api/system/restart_daemon") {
-                spawn_detached({
-                    "/system/bin/sh", "-c",
-                    "sleep 0.5; killall openstationd 2>/dev/null || true; sleep 1; "
-                    "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64; "
-                    "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1"
-                });
-                return HttpResponse::json("{\"ok\":true}");
+                bool spawned = schedule_daemon_restart(500);
+                return HttpResponse::json(spawned ? "{\"ok\":true}" : "{\"ok\":false}", spawned ? 200 : 500);
             }
             if (req.method == "POST" && req.path == "/api/system/reboot") {
                 spawn_detached({

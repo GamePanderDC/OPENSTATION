@@ -126,7 +126,7 @@ struct AssistantConfig {
     int kws_threads = 1;
     bool chime_enabled = true;
     bool google_search = false;
-    bool agent_mode = false;
+    bool agent_mode = true;
     bool echo_guard = true;
     int pre_roll_ms = 450;
     int follow_up_sec = 8;

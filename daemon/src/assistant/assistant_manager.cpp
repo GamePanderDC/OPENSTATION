@@ -703,6 +703,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
               "- Настройка пульта (setup_remote): при просьбе «настрой пульт», «подключи пульт» или «сопряги пульт» сразу вызывай setup_remote(), это открывает интерактивную пошаговую инструкцию и поиск BLE-пульта на телевизоре.\n"
+              "- Перезагрузка демона и службы (device_power): если пользователь просит перезагрузить или перезапустить демон, Алису, службу или оболочку OpenStation («перезагрузи демон», «перезапусти демон», «рестарт демона/сервиса»), ВСЕГДА вызывай device_power(action=\"restart_daemon\") и кратко подтверди 1 фразой («Перезагружаю демон, вернусь через пару секунд»). НИКОГДА не перезапускай openstationd через shell_exec или adb_exec (убийство процесса через дочерний shell прервёт перезапуск).\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
@@ -816,7 +817,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
         p["action"] = make_enum_prop("Screen or daemon lifecycle action", {"screen_wake", "screen_sleep", "restart_daemon"});
         decls.push(make_func_decl(
             "device_power",
-            "Wake/sleep the TV/display or restart openstationd daemon (delayed slightly so speech finishes).",
+            "Wake/sleep the TV/display (screen_wake, screen_sleep) or safely restart the openstationd daemon (restart_daemon). Always call action='restart_daemon' when the user asks to restart/reboot the daemon, voice assistant service, or openstationd; never kill openstationd via shell_exec/adb_exec.",
             std::move(p),
             {"action"},
             nb));

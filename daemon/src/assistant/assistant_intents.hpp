@@ -25,4 +25,18 @@ inline bool block_power_tool_for_stop(bool stop_requested, const std::string& to
     return stop_requested && (tool == "tv_hdmi_cec" || tool == "remote_control" || tool == "device_power");
 }
 
+inline std::string normalize_device_power_action(const std::string& raw) {
+    if (raw == "wake" || raw == "wakeup" || raw == "wake_screen" || raw == "screen_on") {
+        return "screen_wake";
+    }
+    if (raw == "sleep" || raw == "sleep_screen" || raw == "screen_off") {
+        return "screen_sleep";
+    }
+    if (raw == "restart" || raw == "restart_daemon" || raw == "reboot_daemon" ||
+        raw == "reload_daemon" || raw == "restart_service") {
+        return "restart_daemon";
+    }
+    return raw;
+}
+
 } // namespace openstation
