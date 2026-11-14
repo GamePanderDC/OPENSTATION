@@ -523,9 +523,19 @@ class AmlogicSoC(object):
 
     def _read_burn_status(self, timeout, size=512):
         deadline = time.monotonic() + timeout / 1000
+        empty_responses = 0
         while time.monotonic() < deadline:
             remaining = max(1, int((deadline - time.monotonic()) * 1000))
             reply = bytes(self.dev.read(0x81, size, remaining)).split(b'\0', 1)[0]
+            if not reply:
+                # A zero-length USB read does not confirm that the block was written.
+                # Poll for its acknowledgement without sending the block again.
+                empty_responses += 1
+                if empty_responses >= 3:
+                    raise IOError("WorldCup returned empty status repeatedly; write state is unknown")
+                deadline = min(deadline, time.monotonic() + 5.0)
+                time.sleep(0.1)
+                continue
             if not reply.startswith(b"Continue"):
                 return reply
-        raise TimeoutError("WorldCup did not return a final status")
+        raise TimeoutError("WorldCup did not return a final status; write state is unknown")

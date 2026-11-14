@@ -96,6 +96,23 @@ class TransportTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_empty_usb_status_waits_for_confirmation_without_resending_block(self):
+        from pyamlboot_local.proto import AmlogicSoC
+        class Usb:
+            def __init__(self, replies): self.replies = iter(replies); self.controls = 0; self.writes = 0
+            def ctrl_transfer(self, *args): self.controls += 1
+            def write(self, endpoint, data, timeout): self.writes += 1; return len(data)
+            def read(self, endpoint, size, timeout): return next(self.replies)
+        soc = AmlogicSoC.__new__(AmlogicSoC)
+        soc.dev = Usb([b'', b'Continue:32', b'OK!!'])
+        with patch.object(f.time, 'sleep'):
+            soc.write_download_block(1978, b'example', 3000)
+        self.assertEqual((soc.dev.controls, soc.dev.writes), (1, 1))
+        soc.dev = Usb([b'', b'', b''])
+        with patch.object(f.time, 'sleep'), self.assertRaisesRegex(IOError, 'write state is unknown'):
+            soc.write_download_block(1978, b'example', 3000)
+        self.assertEqual((soc.dev.controls, soc.dev.writes), (1, 1))
+
     def test_after_ubt_runs_only_after_all_partitions_succeed(self):
         with tempfile.TemporaryDirectory() as folder:
             for name in ('vbmeta.img', 'vendor.img', 'system.img'):

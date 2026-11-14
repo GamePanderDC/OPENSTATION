@@ -660,6 +660,7 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
     last_ex = None
     for be_name, backend in backends:
         soc = None
+        transfer_started = False
         try:
             soc = proto.AmlogicSoC(backend=backend)
             try:
@@ -676,15 +677,20 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
                 raise RuntimeError("Для запуска BL2 переподключите питание станции в режиме BootROM.")
 
             load_addr = 0xFFFA0000
+            transfer_started = True
             if socid[:2] == "\x03\x02":
+                emit(f"  [{be_name}] Инициализация памяти...")
                 # G12 DDR initialization sequence used by USB Burning Tool.
                 for value in (0xB1, 0x5183, 0xB1, 0x5183):
                     soc.writeSimpleMemory(load_addr, struct.pack("<I", value))
                     time.sleep(0.5)
 
+            emit(f"  [{be_name}] Передача начального загрузчика...")
             soc.writeLargeMemory(load_addr, data[:0x10000], 4096)
+            emit(f"  [{be_name}] Запуск начального загрузчика...")
             soc.run(load_addr)
             time.sleep(0.2)
+            emit(f"  [{be_name}] Ожидание запроса остальных данных...")
 
             previous_request = None
             for seq in range(256):
@@ -699,7 +705,11 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
             raise RuntimeError("Превышено число блоков AMLC.")
         except Exception as ex:
             last_ex = ex
-            emit(f"  [!] [{be_name}] {str(ex).strip()[:160]}")
+            emit(f"  [!] [{be_name}] {type(ex).__name__}: {str(ex).strip()[:160]}")
+            if transfer_started:
+                # A partial transfer can leave the device in transition. Do not send
+                # another loader using a different USB backend until it is identified again.
+                raise
         finally:
             if soc is not None:
                 try:
@@ -908,7 +918,13 @@ def download_image(target, name, img_path, image_format="normal", progress=None)
 
         written = 0
         for seq, data in enumerate(iter(lambda: image.read(65536), b"")):
-            soc.write_download_block(seq, data, timeout=50000)
+            try:
+                soc.write_download_block(seq, data, timeout=50000)
+            except Exception as ex:
+                raise RuntimeError(
+                    f"Запись {name} прервана на блоке {seq}, смещение {written}: {ex}. "
+                    "Состояние раздела неизвестно; завершающие команды не выполнялись."
+                ) from ex
             written += len(data)
             if progress:
                 progress(written * 100 // size)

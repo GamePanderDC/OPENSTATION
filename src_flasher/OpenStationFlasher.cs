@@ -19,8 +19,8 @@ using System.Windows.Media;
 [assembly: AssemblyTitle("OpenStation Max Installer")]
 [assembly: AssemblyDescription("One-Click Installer powered by yasta_flasher engine")]
 [assembly: AssemblyProduct("OpenStation Max")]
-[assembly: AssemblyVersion("2.2.0.3")]
-[assembly: AssemblyFileVersion("2.2.0.3")]
+[assembly: AssemblyVersion("2.2.0.4")]
+[assembly: AssemblyFileVersion("2.2.0.4")]
 
 namespace OpenStationFlasher
 {
@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "USB Max 1.2";
+        private const string FW_VERSION = "USB Max 1.3";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
