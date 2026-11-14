@@ -348,16 +348,16 @@ class StationAudioService : Service() {
 
     fun applyEq(preset: String, customBands: FloatArray? = null, bassBoostPct: Int = 20) {
         currentPreset = preset
-        val gainsDb = when (preset) {
+        val gainsDb = EqBandSelection.resolve(customBands) { when (preset) {
             "flat" -> floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
             "bass_boost" -> floatArrayOf(4.5f, 4.0f, 3.0f, 1.5f, 0.0f, -0.5f, 0.0f, 0.5f, 1.0f, 1.0f)
             "vocal" -> floatArrayOf(-2.0f, -1.0f, 0.0f, 1.5f, 3.0f, 3.5f, 2.0f, 1.0f, 0.5f, -0.5f)
             "night" -> floatArrayOf(-3.0f, -2.5f, -1.5f, 0.0f, 1.0f, 1.0f, 0.5f, -0.5f, -2.0f, -3.0f)
             "rock" -> floatArrayOf(3.5f, 2.5f, 1.0f, -0.5f, -1.0f, 0.0f, 1.5f, 2.5f, 3.5f, 3.5f)
             "electronic" -> floatArrayOf(4.0f, 3.5f, 2.0f, 0.5f, -0.5f, 0.0f, 1.0f, 2.0f, 3.5f, 4.0f)
-            "custom" -> customBands ?: floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            "custom" -> floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
             else -> floatArrayOf(1.0f, 1.5f, 1.0f, 0.5f, 0.0f, 0.0f, 0.5f, 1.0f, 1.5f, 1.5f) // "balanced"
-        }
+        } }
 
         try {
             dynProc?.let { dp ->
@@ -378,8 +378,9 @@ class StationAudioService : Service() {
                 val num = eq.numberOfBands.toInt()
                 val range = eq.bandLevelRange
                 for (b in 0 until num) {
-                    val idx = min(gainsDb.size - 1, (b * gainsDb.size) / max(1, num))
-                    val mb = (gainsDb[idx] * 100f).toInt().coerceIn(range[0].toInt(), range[1].toInt())
+                    val hz = eq.getCenterFreq(b.toShort()) / 1000f
+                    val gain = EqBandSelection.gainAtFrequency(bandFreqs, gainsDb, hz)
+                    val mb = (gain * 100f).toInt().coerceIn(range[0].toInt(), range[1].toInt())
                     eq.setBandLevel(b.toShort(), mb.toShort())
                 }
             }
