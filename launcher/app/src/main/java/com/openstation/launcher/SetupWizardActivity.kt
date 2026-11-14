@@ -45,7 +45,8 @@ class SetupWizardActivity : Activity() {
     private var currentStep = 1
     private var manualLaunch = false
     private var initialSetupCompleted: Boolean? = null
-    private var lastQrUrl = ""
+    private var lastQrUrl: String? = null
+    private var hasQrState = false
     private var lastKwsDetections = -1
 
     // Header & Step pills
@@ -65,6 +66,7 @@ class SetupWizardActivity : Activity() {
     private lateinit var tvChkKws: TextView
     private lateinit var tvChkMusic: TextView
     private lateinit var ivQr: ImageView
+    private lateinit var qrWhite: LinearLayout
     private lateinit var tvQrUrl: TextView
 
     // Step 1: Diagnostics
@@ -102,7 +104,7 @@ class SetupWizardActivity : Activity() {
     private lateinit var tvStep5Summary: TextView
 
     // Cached daemon config state
-    private var curIp = "127.0.0.1"
+    private var curIp = ""
     private var curHostname = "station-max"
     private var curFwVersion = "1.2.3"
     private var curTempC = 0.0
@@ -365,7 +367,7 @@ class SetupWizardActivity : Activity() {
                 cornerRadius = dp(14).toFloat()
             }
         }
-        val qrWhite = LinearLayout(this).apply {
+        qrWhite = LinearLayout(this).apply {
             setPadding(dp(4), dp(4), dp(4), dp(4))
             background = GradientDrawable().apply {
                 setColor(Color.WHITE)
@@ -391,14 +393,14 @@ class SetupWizardActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
         tvQrUrl = TextView(this).apply {
-            text = "http://127.0.0.1:8080/#wizard"
+            text = "Подключите станцию к сети"
             setTextColor(Color.parseColor("#38BDF8"))
             textSize = 10.5f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
         val tvQrNote = TextView(this).apply {
-            text = "Сканируйте QR — удобно вставлять ключи со смартфона без ПК"
+            text = "Подключите телефон и станцию к одной сети"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 10f
             setPadding(0, dp(2), 0, 0)
@@ -1202,6 +1204,11 @@ class SetupWizardActivity : Activity() {
 
     private fun pollDaemonStatus() {
         val localIp = detectLocalIp()
+        if (!SetupAddress.isUsableIpv4(localIp)) {
+            curIp = ""
+            updateQrCode(curIp)
+            if (::tvDiagIp.isInitialized) tvDiagIp.text = "Нет подключения к сети"
+        }
         thread(isDaemon = true) {
             try {
                 val conn = (URL("http://127.0.0.1:8080/api/status").openConnection() as HttpURLConnection).apply {
@@ -1212,7 +1219,8 @@ class SetupWizardActivity : Activity() {
                     val txt = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     val root = JSONObject(txt)
-                    val ip = root.optString("ip", "").ifBlank { localIp }
+                    val reportedIp = root.optString("ip", "")
+                    val ip = if (SetupAddress.isUsableIpv4(reportedIp)) reportedIp else localIp
                     val host = root.optString("hostname", "station-max")
                     val fw = root.optString("firmwareVersion", "1.2.3")
                     val dnsMode = root.optString("privateDnsMode", "")
@@ -1330,7 +1338,7 @@ class SetupWizardActivity : Activity() {
         }
 
         // Step 1 Cards
-        tvDiagIp.text = "http://$curIp:8080\n$curHostname.local"
+        tvDiagIp.text = if (SetupAddress.isUsableIpv4(curIp)) "http://$curIp:8080\n$curHostname.local" else "Нет подключения к сети"
         tvDiagDns.text = if (curDnsMode == "hostname" && curDnsHost.isNotBlank()) {
             "$curDnsHost (активен)"
         } else {
@@ -1401,7 +1409,7 @@ class SetupWizardActivity : Activity() {
 
         // Step 5 Summary
         tvStep5Summary.text = buildString {
-            append("• Автономный сервер: http://$curIp:8080 ($curHostname.local)\n")
+            append(if (SetupAddress.isUsableIpv4(curIp)) "• Веб-пульт: http://$curIp:8080 ($curHostname.local)\n" else "• Веб-пульт: подключите станцию к сети\n")
             append("• Голосовой ассистент «Алиса»: ").append(if (curHasKey) "Ключ API задан · Голос $curVoice\n" else "Без ключа API (можно добавить позже в веб-пульте)\n")
             append("• Яндекс Музыка: ").append(if (curMusicLoggedIn) "@$curMusicUser · Моя волна готова\n" else "Не авторизована (можно войти позже)\n")
             append("• Звук и подсветка: Выход $curRoute · EQ $curEq · Кольцо $curRingMode")
@@ -1411,12 +1419,19 @@ class SetupWizardActivity : Activity() {
     }
 
     private fun updateQrCode(ip: String) {
-        val cleanIp = ip.ifBlank { "127.0.0.1" }
-        val url = "http://$cleanIp:8080/#wizard"
-        if (url != lastQrUrl) {
-            lastQrUrl = url
+        val url = SetupAddress.wizardUrl(ip)
+        if (hasQrState && url == lastQrUrl) return
+        hasQrState = true
+        lastQrUrl = url
+        if (url == null) {
+            qrWhite.visibility = View.INVISIBLE
+            ivQr.setImageDrawable(null)
+            tvQrUrl.text = "Подключите станцию к сети"
+        } else {
+            val bitmap = QrGenerator.generateBitmap(url, 180)
+            qrWhite.visibility = if (bitmap != null) View.VISIBLE else View.INVISIBLE
+            ivQr.setImageBitmap(bitmap)
             tvQrUrl.text = url
-            QrGenerator.generateBitmap(url, 180)?.let { ivQr.setImageBitmap(it) }
         }
     }
 
@@ -1428,15 +1443,15 @@ class SetupWizardActivity : Activity() {
                 if (!iface.isUp || iface.isLoopback) continue
                 val addrs = iface.inetAddresses
                 while (addrs.hasMoreElements()) {
-                    val a = addrs.nextElement()
-                    if (a is Inet4Address && !a.isLoopbackAddress) {
-                        val ip = a.hostAddress ?: continue
-                        if (iface.name.startsWith("wlan") || iface.name.startsWith("eth")) return ip
+                    val address = addrs.nextElement()
+                    if (address is Inet4Address && !address.isLoopbackAddress && !address.isLinkLocalAddress) {
+                        val ip = address.hostAddress ?: continue
+                        if ((iface.name.startsWith("wlan") || iface.name.startsWith("eth")) && SetupAddress.isUsableIpv4(ip)) return ip
                     }
                 }
             }
         } catch (_: Throwable) {}
-        return "127.0.0.1"
+        return ""
     }
 
     private fun makePaneHeading(title: String, sub: String): LinearLayout = LinearLayout(this).apply {
