@@ -923,7 +923,7 @@ def download_image(target, name, img_path, image_format="normal", progress=None)
             except Exception as ex:
                 raise RuntimeError(
                     f"Запись {name} прервана на блоке {seq}, смещение {written}: {ex}. "
-                    "Состояние раздела неизвестно; завершающие команды не выполнялись."
+                    "Состояние раздела неизвестно."
                 ) from ex
             written += len(data)
             if progress:

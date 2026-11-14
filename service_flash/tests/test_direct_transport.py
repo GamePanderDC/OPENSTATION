@@ -113,6 +113,15 @@ class TransportTests(unittest.TestCase):
             soc.write_download_block(1978, b'example', 3000)
         self.assertEqual((soc.dev.controls, soc.dev.writes), (1, 1))
 
+    def test_null_status_records_actual_read_size(self):
+        from pyamlboot_local.proto import AmlogicSoC
+        class Usb:
+            def read(self, endpoint, size, timeout): return b"\0" * 8
+        soc = AmlogicSoC.__new__(AmlogicSoC)
+        soc.dev = Usb()
+        with patch.object(f.time, "sleep"), self.assertRaisesRegex(IOError, "last USB read: 8 bytes"):
+            soc._read_burn_status(3000)
+
     def test_misc_failure_runs_after_ubt_and_reports_failure(self):
         with tempfile.TemporaryDirectory() as folder:
             for name in ('vbmeta.img', 'vendor.img', 'system.img'):
