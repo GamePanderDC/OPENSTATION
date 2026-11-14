@@ -127,6 +127,10 @@ class StationAudioService : Service() {
     private val btEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
+            if (action == BluetoothAdapter.ACTION_STATE_CHANGED || action == BluetoothAdapter.ACTION_SCAN_MODE_CHANGED) {
+                thread(isDaemon = true) { syncBluetoothAdapterState() }
+                return
+            }
             val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
             val devName = try { dev?.name ?: "Устройство" } catch (_: Throwable) { "Устройство" }
             val devType = try { dev?.type ?: BluetoothDevice.DEVICE_TYPE_UNKNOWN } catch (_: Throwable) { BluetoothDevice.DEVICE_TYPE_UNKNOWN }
@@ -217,6 +221,8 @@ class StationAudioService : Service() {
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
                 addAction("android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED")
+                addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED)
             }
             registerReceiver(btEventReceiver, bf)
         } catch (t: Throwable) {
@@ -703,6 +709,7 @@ class StationAudioService : Service() {
         thread(name = "VolumeStateSync", isDaemon = true) {
             while (running) {
                 val ok = pushVolumeStateToDaemon(showOsd = false)
+                if (ok) syncBluetoothAdapterState()
                 if (ok && !initialMusicPushed) {
                     initialMusicPushed = true
                     musicPlayer.emitSnapshot(forceDaemon = true)
@@ -757,6 +764,20 @@ class StationAudioService : Service() {
             conn.responseCode
             conn.disconnect()
         } catch (_: Throwable) {}
+    }
+
+    private fun syncBluetoothAdapterState() {
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return
+            val state = adapter.state
+            if (state != BluetoothAdapter.STATE_ON && state != BluetoothAdapter.STATE_OFF) return
+            val enabled = state == BluetoothAdapter.STATE_ON
+            val discoverable = enabled && adapter.scanMode == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE
+            postJsonToDaemon("/api/bluetooth/adapter_state", JSONObject()
+                .put("enabled", enabled).put("discoverable", discoverable))
+        } catch (t: Throwable) {
+            Log.w(TAG, "Unable to read Bluetooth adapter state: ${t.message}")
+        }
     }
 
     private fun syncInitialAssistantState() {

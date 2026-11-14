@@ -654,7 +654,7 @@
       const btDisc = !!(bt.discoverable);
       if (btDisc) {
         const rem = bt.discoverableRemainingSec ?? 0;
-        $("btnQuickBt").textContent = `ᛒ BT: Виден (${rem}с)`;
+        $("btnQuickBt").textContent = rem > 0 ? `ᛒ BT: Виден (${rem}с)` : "ᛒ BT: Виден";
         $("btnQuickBt").className = "btn btn-sm btn-accent active";
       } else if (btOn) {
         $("btnQuickBt").textContent = "ᛒ BT: ВКЛ";

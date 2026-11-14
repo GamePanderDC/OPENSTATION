@@ -3746,6 +3746,20 @@ int main(int argc, char** argv) {
                 resp["discoverable"] = json::Value::make_bool(false);
                 return HttpResponse::json(resp.dump(-1));
             }
+            if (req.method == "POST" && req.path == "/api/bluetooth/adapter_state") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj() ||
+                    !v.get("enabled") || !v.get("enabled")->is_bool() ||
+                    !v.get("discoverable") || !v.get("discoverable")->is_bool()) {
+                    return HttpResponse::json("{\"error\":\"invalid adapter state\"}", 400);
+                }
+                bool enabled = v.get("enabled")->as_bool();
+                bool discoverable = enabled && v.get("discoverable")->as_bool();
+                bluetooth_enabled.store(enabled);
+                bluetooth_discoverable.store(discoverable);
+                if (!discoverable) bt_discoverable_until_ms.store(0);
+                return HttpResponse::json("{\"ok\":true}");
+            }
             if (req.method == "POST" && req.path == "/api/bluetooth/device_event") {
                 json::Value v;
                 if (json::Parser::parse(req.body, v)) {
