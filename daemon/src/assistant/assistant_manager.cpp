@@ -1,3 +1,4 @@
+#include "assistant/listening_deadline.hpp"
 #include "assistant/assistant_manager.hpp"
 #include "assistant/assistant_intents.hpp"
 #include "assistant/tls_ws_client.hpp"
@@ -1260,6 +1261,7 @@ void AssistantManager::session_worker(uint64_t sid,
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
     auto listen_idle_since = session_start_tp;
+    auto listen_unconfirmed_since = session_start_tp;
     auto last_pcm_flush_tp = session_start_tp;
     int64_t initial_speech_ms = last_speech_ms_.load();
 
@@ -1406,6 +1408,7 @@ void AssistantManager::session_worker(uint64_t sid,
         session_start_tp = std::chrono::steady_clock::now();
         setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
         listen_idle_since = session_start_tp;
+        listen_unconfirmed_since = session_start_tp;
         last_pcm_flush_tp = session_start_tp;
         initial_speech_ms = last_speech_ms_.load();
 
@@ -1442,6 +1445,7 @@ void AssistantManager::session_worker(uint64_t sid,
                 use_proxy_host_.store(cur_use_proxy);
                 had_interaction = (src == TriggerSource::Text) || !pending_voice_greeting.empty();
                 listen_idle_since = std::chrono::steady_clock::now();
+                listen_unconfirmed_since = listen_idle_since;
                 last_pcm_flush_tp = listen_idle_since;
                 LOGI("Assistant", "Gemini Live setupComplete (via=%s, voice=%s)",
                      cur_use_proxy ? cfg_snap.gemini_proxy_host.c_str() : "direct",
@@ -1546,6 +1550,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     model_turn_done = false;
                     awaiting_playback_drain = false;
                     listen_idle_since = std::chrono::steady_clock::now();
+                    listen_unconfirmed_since = listen_idle_since;
                     set_state(AssistantState::Listening);
                 }
 
@@ -1555,6 +1560,7 @@ void AssistantManager::session_worker(uint64_t sid,
                         if (!delta.empty()) {
                             had_interaction = true;
                             listen_idle_since = std::chrono::steady_clock::now();
+                            listen_unconfirmed_since = listen_idle_since;
                             {
                                 std::lock_guard<std::mutex> lk(hist_mu_);
                                 live_user_text_ += delta;
@@ -1792,6 +1798,7 @@ void AssistantManager::session_worker(uint64_t sid,
                         break;
                     }
                     listen_idle_since = now;
+                    listen_unconfirmed_since = now;
                     initial_speech_ms = last_speech_ms_.load();
                     set_state(AssistantState::Listening);
                 } else {
@@ -1802,11 +1809,11 @@ void AssistantManager::session_worker(uint64_t sid,
                     initial_speech_ms = last_speech_ms_.load();
                     listen_idle_since = now;
                 }
-                int wait_sec = had_interaction
-                                   ? std::max(1, cfg_snap.follow_up_sec)
-                                   : std::max(8, cfg_snap.follow_up_sec);
-                if (now - listen_idle_since >= std::chrono::seconds(wait_sec)) {
-                    LOGI("Assistant", "Follow-up idle timeout (%ds), closing session", wait_sec);
+                if (listening_deadline_expired(now - listen_idle_since, now - listen_unconfirmed_since,
+                                               cfg_snap.follow_up_sec, had_interaction)) {
+                    LOGI("Assistant", "Listening timeout (idle=%llds, unconfirmed=%llds), closing session",
+                         static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - listen_idle_since).count()),
+                         static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - listen_unconfirmed_since).count()));
                     session_done = true;
                     break;
                 }
