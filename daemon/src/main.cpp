@@ -4,6 +4,7 @@
 #include "config.hpp"
 #include "hw/alsa_mixer.hpp"
 #include "hw/audio_engine.hpp"
+#include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
 #include "hw/uinput_keys.hpp"
@@ -48,7 +49,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.5.5";
+constexpr const char* kFirmwareVersion = "1.6.0";
 
 std::atomic<bool> g_stop{false};
 
@@ -1432,6 +1433,7 @@ int main(int argc, char** argv) {
         send_udp_json(8086, lcmd.dump(-1));
     };
 
+    Sy6045sEq hardware_eq;
     auto push_style_sync_to_launcher = [&](const DaemonConfig& c) {
         if (!is_udp_port_bound(8086)) return;
         json::Value scmd = json::Value::make_obj();
@@ -1448,6 +1450,10 @@ int main(int argc, char** argv) {
         scmd["eqBands"] = std::move(bands);
         std::string loc_city = !c.location.city.empty() ? c.location.city : c.location.resolved_city;
         scmd["locationCity"] = json::Value::make_str(loc_city);
+        scmd["assistantName"] = json::Value::make_str(c.assistant.name);
+        scmd["voiceName"] = json::Value::make_str(c.assistant.voice_name);
+        scmd["hardwareEqProfile"] = json::Value::make_str(c.audio.hardware_eq_profile);
+        scmd["hardwareEqSupported"] = json::Value::make_bool(hardware_eq.supported());
         send_udp_json(8086, scmd.dump(-1));
     };
 
@@ -1753,6 +1759,18 @@ int main(int argc, char** argv) {
             boot_cfg = cfg;
         }
         apply_hw_config(boot_cfg, inputs.headphone_plugged());
+        if (hardware_eq.supported() && !boot_cfg.audio.hardware_eq_profile.empty() &&
+            boot_cfg.audio.hardware_eq_profile != "original") {
+            std::lock_guard<std::mutex> vol_lk(vol_apply_mu);
+            std::string hw_err;
+            if (!hardware_eq.apply(boot_cfg.audio.hardware_eq_request(), hw_err)) {
+                LOGW("Audio", "Boot hardware EQ restore (%s) skipped: %s",
+                     boot_cfg.audio.hardware_eq_profile.c_str(), hw_err.c_str());
+            } else {
+                LOGI("Audio", "Boot hardware EQ restored: %s",
+                     boot_cfg.audio.hardware_eq_profile.c_str());
+            }
+        }
     }
 
     std::thread geo_thread([&]() {
@@ -1857,6 +1875,158 @@ int main(int argc, char** argv) {
             http.broadcast_ws_text(evt.dump(-1));
         }
     });
+
+    // --- Wall-clock alarms (config "alarms"); ticked from the main loop below ---
+    struct RingingAlarm {
+        int id = 0;
+        std::string label, time, sound;
+        std::chrono::steady_clock::time_point started{}, next_beep{};
+    };
+    struct SnoozedAlarm {
+        AlarmEntry alarm;
+        time_t fire_epoch = 0;
+    };
+    std::mutex alarm_mu;
+    bool alarm_ringing = false;
+    RingingAlarm ringing_alarm;
+    std::vector<SnoozedAlarm> snoozed_alarms; // in-memory only
+    int64_t last_alarm_minute = -1;
+
+    auto ringing_alarm_json = [&]() -> json::Value {
+        std::lock_guard<std::mutex> lk(alarm_mu);
+        if (!alarm_ringing) return json::Value::make_null();
+        json::Value o = json::Value::make_obj();
+        o["id"] = json::Value::make_int(ringing_alarm.id);
+        o["label"] = json::Value::make_str(ringing_alarm.label);
+        o["time"] = json::Value::make_str(ringing_alarm.time);
+        o["sound"] = json::Value::make_str(ringing_alarm.sound);
+        o["ringingSec"] = json::Value::make_int(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - ringing_alarm.started).count());
+        return o;
+    };
+
+    auto fire_alarm = [&](const AlarmEntry& a) {
+        auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            alarm_ringing = true;
+            ringing_alarm = RingingAlarm{a.id, a.label, a.time, a.sound, now, now + std::chrono::seconds(4)};
+        }
+        LOGI("Alarm", "Alarm %d (%s) fired: %s", a.id, a.time.c_str(), a.label.c_str());
+        leds.trigger_flash(255, 140, 0, 2200);
+        leds.trigger_screen_text("БУДИЛЬНИК " + a.time + (a.label.empty() ? "" : " " + a.label), 255, 165, 0, 8000);
+        audio.play_timer_alarm();
+        if (a.sound == "wave" || a.sound == "calm") {
+            json::Value p = json::Value::make_obj();
+            p["cmd"] = json::Value::make_str("play_my_wave");
+            p["mood"] = json::Value::make_str(a.sound == "calm" ? "calm" : "any");
+            p["openUi"] = json::Value::make_bool(false);
+            std::string payload = p.dump(-1);
+            if (is_udp_port_bound(8086)) {
+                send_udp_json(8086, payload);
+            } else {
+                std::thread([payload]() {
+                    if (ensure_launcher_service_udp(8086)) {
+                        send_udp_json(8086, payload);
+                    }
+                }).detach();
+            }
+        }
+        if (http.ws_client_count() > 0) {
+            json::Value evt = json::Value::make_obj();
+            evt["type"] = json::Value::make_str("alarm_fired");
+            evt["id"] = json::Value::make_int(a.id);
+            evt["label"] = json::Value::make_str(a.label);
+            evt["time"] = json::Value::make_str(a.time);
+            http.broadcast_ws_text(evt.dump(-1));
+        }
+    };
+
+    // Stops the ringing alarm; returns it via out param (false if nothing was ringing).
+    auto stop_ringing_alarm = [&](RingingAlarm& out) -> bool {
+        {
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            if (!alarm_ringing) return false;
+            alarm_ringing = false;
+            out = ringing_alarm;
+        }
+        audio.clear_playback_queue();
+        if (out.sound == "wave" || out.sound == "calm") {
+            json::Value p = json::Value::make_obj();
+            p["cmd"] = json::Value::make_str("music_action");
+            p["action"] = json::Value::make_str("PAUSE");
+            send_udp_json(8086, p.dump(-1));
+        }
+        return true;
+    };
+
+    auto alarm_tick = [&]() {
+        auto steady_now = std::chrono::steady_clock::now();
+        {
+            // Chime repeats every 4 s while ringing; auto-stop after 10 min.
+            std::lock_guard<std::mutex> lk(alarm_mu);
+            if (alarm_ringing) {
+                if (steady_now - ringing_alarm.started >= std::chrono::minutes(10)) {
+                    alarm_ringing = false;
+                } else if (ringing_alarm.sound == "chime" && steady_now >= ringing_alarm.next_beep) {
+                    ringing_alarm.next_beep = steady_now + std::chrono::seconds(4);
+                    audio.play_timer_alarm();
+                }
+                return;
+            }
+        }
+        time_t now = std::time(nullptr);
+        {
+            AlarmEntry due;
+            bool has_due = false;
+            {
+                std::lock_guard<std::mutex> lk(alarm_mu);
+                for (auto it = snoozed_alarms.begin(); it != snoozed_alarms.end(); ++it) {
+                    if (now >= it->fire_epoch) {
+                        due = it->alarm;
+                        has_due = true;
+                        snoozed_alarms.erase(it);
+                        break;
+                    }
+                }
+            }
+            if (has_due) {
+                fire_alarm(due);
+                return;
+            }
+        }
+        int64_t minute = static_cast<int64_t>(now) / 60;
+        if (minute == last_alarm_minute) return;
+        last_alarm_minute = minute;
+        struct tm lt {};
+        localtime_r(&now, &lt);
+        char hhmm[8];
+        snprintf(hhmm, sizeof(hhmm), "%02d:%02d", lt.tm_hour, lt.tm_min);
+        int dow = (lt.tm_wday + 6) % 7; // Mon=0..Sun=6
+        AlarmEntry due;
+        bool has_due = false;
+        bool disabled_one_shot = false;
+        DaemonConfig c;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            for (auto& a : cfg.alarms) {
+                if (!a.enabled || a.time != hhmm) continue;
+                bool one_shot = std::none_of(a.days.begin(), a.days.end(), [](bool b) { return b; });
+                if (!one_shot && !a.days[dow]) continue;
+                due = a;
+                has_due = true;
+                if (one_shot) {
+                    a.enabled = false;
+                    disabled_one_shot = true;
+                    c = cfg;
+                }
+                break;
+            }
+        }
+        if (!has_due) return;
+        if (disabled_one_shot) save_cfg(c);
+        fire_alarm(due);
+    };
 
     auto list_apps_json_arr = [&]() -> json::Value {
         using json::Value;
@@ -2488,6 +2658,7 @@ int main(int argc, char** argv) {
         }
 
         if (name == "set_eq_preset") {
+            std::lock_guard<std::mutex> apply_lock(config_apply_mu);
             DaemonConfig c;
             {
                 std::lock_guard<std::mutex> lk(cfg_mu);
@@ -2644,6 +2815,84 @@ int main(int argc, char** argv) {
             res["autoMusicVisualizer"] = Value::make_bool(c.led_screen.auto_music_visualizer);
             res["screenColor"] = Value::make_str(c.led_screen.color);
             res["screenMode"] = Value::make_str(c.led_screen.mode);
+            res["stopSession"] = Value::make_bool(true);
+            return res;
+        }
+
+        if (name == "set_assistant_name") {
+            std::string new_name = args.get("name") && args.get("name")->is_str()
+                ? trim_ws_copy(args.get("name")->as_str()) : "";
+            utf8_truncate(new_name, 48);
+            new_name = trim_ws_copy(new_name);
+            if (new_name.empty()) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("name is required");
+                return res;
+            }
+            bool update_ww = args.get("update_wake_word") ? args.get("update_wake_word")->as_bool(true) : true;
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                cfg.assistant.name = new_name;
+                if (update_ww) {
+                    cfg.assistant.kws_keywords = new_name;
+                }
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            assistant.update_config(c.assistant);
+            push_style_sync_to_launcher(c);
+            save_cfg(c);
+            leds.trigger_screen_text(new_name, 0, 212, 255, 3600);
+            res["ok"] = Value::make_bool(true);
+            res["name"] = Value::make_str(c.assistant.name);
+            res["kwsKeywords"] = Value::make_str(c.assistant.kws_keywords);
+            res["reloadPersona"] = Value::make_bool(true);
+            return res;
+        }
+
+        if (name == "set_hardware_eq") {
+            std::string prof = args.get("profile") && args.get("profile")->is_str()
+                ? trim_ws_copy(args.get("profile")->as_str()) : "";
+            if (prof != "original" && prof != "hifi" && prof != "night" && prof != "bass" && prof != "club") {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("invalid profile (original/hifi/night/bass/club)");
+                return res;
+            }
+            if (!hardware_eq.supported()) {
+                res["ok"] = Value::make_bool(false);
+                res["error"] = Value::make_str("SY6045S amplifier pair unavailable on this device");
+                return res;
+            }
+            std::string hw_err;
+            {
+                std::lock_guard<std::mutex> cfg_lk(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lk(vol_apply_mu);
+                auto cur_st = hardware_eq.status();
+                const bool can_restore = cur_st.get("canRestore") && cur_st.get("canRestore")->as_bool(false);
+                if (!(prof == "original" && !can_restore)) {
+                    Value hw_req = Value::make_obj();
+                    hw_req["profile"] = Value::make_str(prof);
+                    if (!hardware_eq.apply(hw_req, hw_err)) {
+                        res["ok"] = Value::make_bool(false);
+                        res["error"] = Value::make_str(hw_err);
+                        return res;
+                    }
+                }
+            }
+            DaemonConfig c;
+            {
+                std::lock_guard<std::mutex> lk(cfg_mu);
+                cfg.audio.hardware_eq_profile = prof;
+                cfg.sanitize_and_validate();
+                c = cfg;
+            }
+            push_style_sync_to_launcher(c);
+            save_cfg(c);
+            leds.trigger_task_icon("eq", 86, 220, 255, 4800);
+            res["ok"] = Value::make_bool(true);
+            res["profile"] = Value::make_str(c.audio.hardware_eq_profile);
+            res["hardwareEq"] = hardware_eq.status();
             res["stopSession"] = Value::make_bool(true);
             return res;
         }
@@ -3043,8 +3292,18 @@ int main(int argc, char** argv) {
             json::Value payload = json::Value::make_obj();
             payload["cmd"] = json::Value::make_str("setup_remote");
             bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+            if (!sent) {
+                sent = spawn_detached({
+                    "/system/bin/am", "start",
+                    "-n", "com.openstation.launcher/.RemoteSetupActivity"
+                });
+            }
+            if (sent) {
+                leds.trigger_task_icon("settings", 0, 212, 255, 4500);
+                leds.trigger_screen_text("ПУЛЬТ...", 0, 212, 255, 4500);
+            }
             res["ok"] = Value::make_bool(sent);
-            res["message"] = Value::make_str(sent ? "Открываю настройку пульта на телевизоре." : "Не удалось открыть настройку пульта.");
+            res["message"] = Value::make_str(sent ? "Открываю настройку и поиск пульта на телевизоре." : "Не удалось открыть настройку пульта.");
             res["stopSession"] = Value::make_bool(true);
             return res;
         }
@@ -3669,6 +3928,14 @@ int main(int argc, char** argv) {
         public_config["assistant"]["geminiApiKeySet"] = Value::make_bool(!c.assistant.gemini_api_key.empty());
         public_config["mqtt"]["password"] = Value::make_str("");
         public_config["mqtt"]["passwordConfigured"] = Value::make_bool(!c.mqtt.password.empty());
+        public_config["mqtt"]["passwordSet"] = Value::make_bool(!c.mqtt.password.empty());
+        if (Value* ha = &public_config["homeAssistant"]; ha->is_obj()) {
+            ha->obj_val.erase("token");
+            (*ha)["tokenSet"] = Value::make_bool(!c.home_assistant.token.empty());
+        }
+        root["alarms"] = public_config["alarms"];
+        root["ringingAlarm"] = ringing_alarm_json();
+        root["hardwareEq"] = hardware_eq.status(false);
         root["config"] = std::move(public_config);
         return root;
     };
@@ -3697,7 +3964,13 @@ int main(int argc, char** argv) {
                 DaemonConfig c;
                 {
                     std::lock_guard<std::mutex> lk(cfg_mu);
+                    const std::string prev_name = cfg.assistant.name;
+                    const std::string prev_kws = cfg.assistant.kws_keywords;
                     cfg.from_json(v);
+                    if (cfg.assistant.name != prev_name && cfg.assistant.kws_keywords == prev_kws) {
+                        cfg.assistant.kws_keywords = cfg.assistant.name;
+                        cfg.sanitize_and_validate();
+                    }
                     c = cfg;
                 }
                 apply_hw_config(c, inputs.headphone_plugged());
@@ -3969,7 +4242,141 @@ int main(int argc, char** argv) {
                 }
                 return HttpResponse::json("{\"error\":\"missing route\"}", 400);
             }
+            if ((req.path == "/api/audio/hardware_eq" || req.path == "/api/audio/drc_bypass") &&
+                req.method == "POST") {
+                const bool ct_ok = (req.content_type == "application/json" ||
+                                    req.content_type.rfind("application/json;", 0) == 0);
+                const bool origin_ok = !req.origin.empty()
+                    ? (req.origin == "http://" + req.host)
+                    : (req.host.rfind("127.0.0.1", 0) == 0 || req.host.rfind("localhost", 0) == 0);
+                if (req.host.empty() || !ct_ok || !origin_ok) {
+                    return HttpResponse::json(R"({"error":"Same-origin JSON required"})", 403);
+                }
+            }
+            if (req.path == "/api/audio/hardware_eq" &&
+                (req.method == "GET" || req.method == "POST")) {
+                const bool write = (req.method == "POST");
+                json::Value body;
+                if (write) {
+                    if (req.body.size() > 512 || !json::Parser::parse(req.body, body) || !body.is_obj()) {
+                        return HttpResponse::json(R"({"error":"Invalid DSP request"})", 400);
+                    }
+                }
+                DaemonConfig c;
+                bool persist_now = false;
+                json::Value cur_status;
+                {
+                    std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                    std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
+                    if (write) {
+                        const auto* prof_v = body.get("profile");
+                        const std::string want_prof = (prof_v && prof_v->is_str()) ? prof_v->as_str() : "";
+                        auto pre_st = hardware_eq.status();
+                        const bool can_restore = pre_st.get("canRestore") && pre_st.get("canRestore")->as_bool(false);
+                        if (!(want_prof == "original" && !can_restore && body.obj_val.size() == 1)) {
+                            std::string error;
+                            if (!hardware_eq.apply(body, error)) {
+                                json::Value out = json::Value::make_obj();
+                                out["error"] = json::Value::make_str(error);
+                                return HttpResponse::json(out.dump(-1), 409);
+                            }
+                        }
+                        persist_now = true;
+                    }
+                    cur_status = hardware_eq.status();
+                }
+                if (persist_now) {
+                    {
+                        std::lock_guard<std::mutex> lk(cfg_mu);
+                        if (const auto* pr = cur_status.get("profile"); pr && pr->is_str()) {
+                            cfg.audio.hardware_eq_profile = pr->as_str();
+                        }
+                        if (const auto* pm = cur_status.get("params"); pm && pm->is_obj()) {
+                            if (const auto* bg = pm->get("bass_gain"); bg && bg->is_num()) cfg.audio.hardware_eq_bass_gain = bg->as_double(0.0);
+                            if (const auto* tg = pm->get("treble_gain"); tg && tg->is_num()) cfg.audio.hardware_eq_treble_gain = tg->as_double(3.0);
+                            if (const auto* sf = pm->get("subsonic_freq"); sf && sf->is_num()) cfg.audio.hardware_eq_subsonic = sf->as_int(48);
+                        }
+                        if (const auto* fl = cur_status.get("filters"); fl && fl->is_obj()) {
+                            if (const auto* ss = fl->get("subsonic"); ss && ss->is_bool()) cfg.audio.hardware_eq_subsonic_on = ss->as_bool(true);
+                            if (const auto* nc = fl->get("notch120"); nc && nc->is_bool()) cfg.audio.hardware_eq_notch120 = nc->as_bool(true);
+                            if (const auto* ph = fl->get("phase"); ph && ph->is_bool()) cfg.audio.hardware_eq_phase = ph->as_bool(true);
+                            if (const auto* tr = fl->get("treble"); tr && tr->is_bool()) cfg.audio.hardware_eq_treble_air = tr->as_bool(true);
+                        }
+                        cfg.sanitize_and_validate();
+                        c = cfg;
+                    }
+                    push_style_sync_to_launcher(c);
+                    save_cfg(c);
+                }
+                return HttpResponse::json(cur_status.dump(-1));
+            }
+            if (req.path == "/api/audio/drc_bypass" &&
+                (req.method == "GET" || req.method == "POST")) {
+                if (!hardware_eq.supported()) {
+                    return HttpResponse::json(R"({"error":"SY6045S amplifier pair unavailable"})", 404);
+                }
+                const bool write = (req.method == "POST");
+                bool enabled = true;
+                if (write) {
+                    json::Value body;
+                    if (req.body.size() > 128 || !json::Parser::parse(req.body, body) ||
+                        !body.is_obj() || body.obj_val.size() != 1 ||
+                        !body.get("bypass") || !body.get("bypass")->is_bool()) {
+                        return HttpResponse::json(R"({"error":"Expected a boolean bypass value"})", 400);
+                    }
+                    enabled = !body.get("bypass")->as_bool();
+                }
+                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
+                const char* woofer = "Woofer DRC Switch";
+                const char* tweeters = "Tweeters DRC Switch";
+                bool w = true, t = true;
+                if (!mixer.get_bool(woofer, w) || !mixer.get_bool(tweeters, t)) {
+                    return HttpResponse::json(R"({"error":"Не удалось прочитать состояние лимитеров"})", 409);
+                }
+                if (write) {
+                    auto set_and_verify = [&](bool want_w, bool want_t) {
+                        const bool wrote_w = mixer.set_bool(woofer, want_w);
+                        const bool wrote_t = mixer.set_bool(tweeters, want_t);
+                        bool actual_w = false, actual_t = false;
+                        return wrote_w && wrote_t && mixer.get_bool(woofer, actual_w) &&
+                               mixer.get_bool(tweeters, actual_t) && actual_w == want_w && actual_t == want_t;
+                    };
+                    if (!set_and_verify(enabled, enabled)) {
+                        return HttpResponse::json(set_and_verify(w, t)
+                            ? R"({"error":"Изменение DRC не подтверждено. Прежнее состояние восстановлено"})"
+                            : R"({"error":"Изменение DRC не подтверждено. Проверьте состояние лимитеров"})", 409);
+                    }
+                    DaemonConfig next;
+                    {
+                        std::lock_guard<std::mutex> lock(cfg_mu);
+                        next = cfg;
+                        next.audio.woofer_drc = next.audio.tweeters_drc = enabled;
+                    }
+                    bool saved = false;
+                    {
+                        std::lock_guard<std::mutex> save_lock(save_mu);
+                        saved = next.save();
+                    }
+                    if (!saved) {
+                        return HttpResponse::json(set_and_verify(w, t)
+                            ? R"({"error":"Сохранение DRC не удалось. Прежнее состояние восстановлено"})"
+                            : R"({"error":"Сохранение DRC не удалось. Проверьте состояние лимитеров"})", 409);
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(cfg_mu);
+                        cfg.audio.woofer_drc = cfg.audio.tweeters_drc = enabled;
+                    }
+                    w = t = enabled;
+                }
+                json::Value out = json::Value::make_obj();
+                out["wooferDrc"] = json::Value::make_bool(w);
+                out["tweetersDrc"] = json::Value::make_bool(t);
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/audio/reload_eq") {
+                std::lock_guard<std::mutex> cfg_lock(config_apply_mu);
+                std::lock_guard<std::mutex> vol_lock(vol_apply_mu);
                 bool ok = mixer.reload_amp_defaults();
                 if (ok) {
                     DaemonConfig c;
@@ -3982,7 +4389,7 @@ int main(int argc, char** argv) {
                     mixer.set_bool("Tweeters EQ Switch", c.audio.tweeters_eq);
                     mixer.set_bool("Tweeters DRC Switch", c.audio.tweeters_drc);
                     mixer.set_enum("Loopback Enable", c.audio.loopback_enable ? "Enable" : "Disable");
-                    reapply_current_volume_and_route(true, true);
+                    apply_curve_unlocked(volume_osd_pct.load(), true, true, true);
                 }
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
             }
@@ -4742,6 +5149,236 @@ int main(int argc, char** argv) {
                 ShellResult sr = run_argv_with_timeout({"/system/bin/pm", "uninstall", pkg}, 45);
                 return finalize_pm_mutation(sr);
             }
+            if (req.path == "/api/timers" || req.path == "/api/timers/cancel") {
+                json::Value out = json::Value::make_obj();
+                if (req.method == "POST") {
+                    json::Value v;
+                    if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                        return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                    }
+                    if (req.path == "/api/timers") {
+                        const auto* s = v.get("seconds");
+                        int sec = (s && s->is_num()) ? s->as_int(0) : 0;
+                        if (sec < 1 || sec > 86400) {
+                            return HttpResponse::json("{\"error\":\"seconds must be 1..86400\"}", 400);
+                        }
+                        std::string label = (v.get("label") && v.get("label")->is_str()) ? v.get("label")->as_str() : "";
+                        utf8_truncate(label, 64);
+                        int id = timers.set_timer(sec, label);
+                        leds.trigger_flash(255, 165, 0, 500);
+                        out["id"] = json::Value::make_int(id);
+                    } else {
+                        const auto* t = v.get("id");
+                        std::string target;
+                        if (t && t->is_num()) target = std::to_string(t->as_int(0));
+                        else if (t && t->is_str()) target = trim_ws_copy(t->as_str());
+                        if (target.empty()) {
+                            return HttpResponse::json("{\"error\":\"missing id\"}", 400);
+                        }
+                        out["removed"] = json::Value::make_int(timers.cancel_timer(target));
+                    }
+                    out["ok"] = json::Value::make_bool(true);
+                } else if (req.method != "GET" || req.path != "/api/timers") {
+                    return HttpResponse::json("{\"error\":\"method not allowed\"}", 405);
+                }
+                out["timers"] = timers.list_timers_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/alarms") {
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    c = cfg;
+                }
+                json::Value out = json::Value::make_obj();
+                out["alarms"] = c.to_json()["alarms"];
+                out["ringingAlarm"] = ringing_alarm_json();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/alarms") {
+                json::Value v;
+                const json::Value* arr = nullptr;
+                if (!json::Parser::parse(req.body, v) || !(arr = v.get("alarms")) || !arr->is_arr()) {
+                    return HttpResponse::json("{\"error\":\"missing alarms array\"}", 400);
+                }
+                DaemonConfig parsed;
+                json::Value patch = json::Value::make_obj();
+                patch["alarms"] = *arr;
+                parsed.from_json(patch);
+                if (parsed.alarms.size() != std::min<size_t>(arr->arr_val.size(), 20)) {
+                    return HttpResponse::json("{\"error\":\"invalid alarm (time must be HH:MM)\"}", 400);
+                }
+                DaemonConfig c;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    cfg.alarms = parsed.alarms;
+                    c = cfg;
+                }
+                save_cfg(c);
+                {
+                    std::lock_guard<std::mutex> lk(alarm_mu);
+                    snoozed_alarms.clear();
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["alarms"] = c.to_json()["alarms"];
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.method == "POST" && (req.path == "/api/alarms/stop" || req.path == "/api/alarms/snooze")) {
+                RingingAlarm stopped;
+                if (!stop_ringing_alarm(stopped)) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"not_ringing\"}");
+                }
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                if (req.path == "/api/alarms/snooze") {
+                    int minutes = 5;
+                    json::Value v;
+                    if (json::Parser::parse(req.body, v) && v.get("minutes") && v.get("minutes")->is_num()) {
+                        minutes = std::clamp(v.get("minutes")->as_int(5), 1, 60);
+                    }
+                    SnoozedAlarm s;
+                    s.alarm.id = stopped.id;
+                    s.alarm.label = stopped.label;
+                    s.alarm.time = stopped.time;
+                    s.alarm.sound = stopped.sound;
+                    s.fire_epoch = std::time(nullptr) + minutes * 60;
+                    {
+                        std::lock_guard<std::mutex> lk(alarm_mu);
+                        snoozed_alarms.push_back(s);
+                    }
+                    out["snoozeMinutes"] = json::Value::make_int(minutes);
+                    out["fireEpoch"] = json::Value::make_int(static_cast<int64_t>(s.fire_epoch));
+                }
+                out["id"] = json::Value::make_int(stopped.id);
+                out["ringingAlarm"] = json::Value::make_null();
+                return HttpResponse::json(out.dump(-1));
+            }
+            if ((req.method == "GET" && req.path == "/api/ha/states") ||
+                (req.method == "POST" && req.path == "/api/ha/service")) {
+                static const char* kHaDomains[] = {"light", "switch", "fan", "cover", "climate", "vacuum",
+                                                   "media_player", "scene", "script", "sensor", "binary_sensor"};
+                auto ha_domain_ok = [](const std::string& d) {
+                    for (const char* x : kHaDomains) if (d == x) return true;
+                    return false;
+                };
+                auto err_json = [](const std::string& code, const std::string& detail, int http_code) {
+                    json::Value e = json::Value::make_obj();
+                    e["ok"] = json::Value::make_bool(false);
+                    e["error"] = json::Value::make_str(code);
+                    if (!detail.empty()) e["detail"] = json::Value::make_str(detail);
+                    return HttpResponse::json(e.dump(-1), http_code);
+                };
+                HomeAssistantConfig ha;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    ha = cfg.home_assistant;
+                }
+                if (ha.url.empty() || ha.token.empty()) return err_json("not_configured", "", 200);
+                if (ha.url.rfind("http://", 0) != 0 && ha.url.rfind("https://", 0) != 0) {
+                    return err_json("bad_url", "homeAssistant.url must start with http:// or https://", 200);
+                }
+
+                HttpClientRequest hreq;
+                hreq.timeout_ms = 5000;
+                hreq.max_redirects = 0; // never forward the bearer token elsewhere
+                hreq.max_body_bytes = 4 * 1024 * 1024;
+                hreq.headers["Authorization"] = "Bearer " + ha.token;
+                hreq.headers["Accept"] = "application/json";
+
+                if (req.path == "/api/ha/service") {
+                    json::Value v;
+                    if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                        return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                    }
+                    auto str_of = [&](const char* k) {
+                        const auto* x = v.get(k);
+                        return (x && x->is_str()) ? x->as_str() : std::string();
+                    };
+                    auto charset_ok = [](const std::string& s, bool allow_dot_digits) {
+                        if (s.empty() || s.size() > 128) return false;
+                        for (char ch : s) {
+                            bool ok = (ch >= 'a' && ch <= 'z') || ch == '_' ||
+                                      (allow_dot_digits && ((ch >= '0' && ch <= '9') || ch == '.'));
+                            if (!ok) return false;
+                        }
+                        return true;
+                    };
+                    std::string domain = str_of("domain"), service = str_of("service"), entity = str_of("entity_id");
+                    if (!(ha_domain_ok(domain) || domain == "homeassistant")) {
+                        return HttpResponse::json("{\"error\":\"domain not allowed\"}", 400);
+                    }
+                    if (!charset_ok(service, false)) {
+                        return HttpResponse::json("{\"error\":\"invalid service\"}", 400);
+                    }
+                    if (!charset_ok(entity, true) || entity.find('.') == std::string::npos) {
+                        return HttpResponse::json("{\"error\":\"invalid entity_id\"}", 400);
+                    }
+                    json::Value body = json::Value::make_obj();
+                    if (const auto* d = v.get("data"); d && d->is_obj()) body = *d;
+                    body["entity_id"] = json::Value::make_str(entity);
+                    hreq.method = "POST";
+                    hreq.url = ha.url + "/api/services/" + domain + "/" + service;
+                    hreq.body = body.dump(-1);
+                } else {
+                    hreq.method = "GET";
+                    hreq.url = ha.url + "/api/states";
+                }
+
+                HttpClientResponse hres = http_perform(hreq);
+                if (!hres.ok) return err_json("network", hres.error, 502);
+                if (hres.status_code == 401 || hres.status_code == 403) return err_json("unauthorized", "", 502);
+                if (hres.status_code < 200 || hres.status_code >= 300) {
+                    return err_json("http_" + std::to_string(hres.status_code), hres.body.substr(0, 200), 502);
+                }
+
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                if (req.path == "/api/ha/service") {
+                    out["status"] = json::Value::make_int(hres.status_code);
+                    return HttpResponse::json(out.dump(-1));
+                }
+
+                json::Value states;
+                if (!json::Parser::parse(hres.body, states) || !states.is_arr()) {
+                    return err_json("bad_response", hres.truncated ? "response too large" : "", 502);
+                }
+                json::Value ents = json::Value::make_arr();
+                for (const auto& st : states.arr_val) {
+                    const auto* eid = st.get("entity_id");
+                    if (!eid || !eid->is_str()) continue;
+                    std::string id = eid->as_str();
+                    std::string domain = id.substr(0, id.find('.'));
+                    if (!ha_domain_ok(domain)) continue;
+                    static const json::Value kEmptyObj = json::Value::make_obj();
+                    const json::Value* attrs = st.get("attributes");
+                    if (!attrs || !attrs->is_obj()) attrs = &kEmptyObj;
+                    auto attr_str = [&](const char* k) {
+                        const auto* x = attrs->get(k);
+                        return (x && x->is_str()) ? x->as_str() : std::string();
+                    };
+                    std::string dc = attr_str("device_class");
+                    if (domain == "sensor" && dc != "temperature" && dc != "humidity") continue;
+                    if (domain == "binary_sensor" && dc != "door" && dc != "window" && dc != "motion") continue;
+                    json::Value e = json::Value::make_obj();
+                    e["entity_id"] = json::Value::make_str(id);
+                    e["domain"] = json::Value::make_str(domain);
+                    std::string name = attr_str("friendly_name");
+                    e["name"] = json::Value::make_str(name.empty() ? id : name);
+                    e["state"] = json::Value::make_str(st.get("state") ? st.get("state")->as_str() : "");
+                    std::string area = attr_str("area");
+                    e["area"] = json::Value::make_str(area.empty() ? attr_str("area_id") : area);
+                    if (const auto* b = attrs->get("brightness"); domain == "light" && b && b->is_num()) {
+                        e["brightness_pct"] = json::Value::make_int(std::lround(b->as_double(0.0) / 255.0 * 100.0));
+                    }
+                    std::string unit = attr_str("unit_of_measurement");
+                    if (!unit.empty()) e["unit"] = json::Value::make_str(unit);
+                    e["device_class"] = json::Value::make_str(dc);
+                    ents.push(std::move(e));
+                }
+                out["entities"] = std::move(ents);
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/apps/cache") {
                 json::Value v;
                 if (json::Parser::parse(req.body, v) && v.is_arr()) {
@@ -5024,6 +5661,8 @@ int main(int argc, char** argv) {
                     inputs.headphone_plugged());
             }
         }
+
+        alarm_tick();
 
         int sleep_ms = v_act ? 50 : (ws_cnt > 0 ? 100 : 250);
         if (spec_udp_fd >= 0) {

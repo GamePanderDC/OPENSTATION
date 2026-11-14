@@ -126,7 +126,7 @@ def check_usb_device() -> dict:
         try:
             ps = (
                 "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.DeviceID -like '*VID_1B8E&PID_C003*' } | "
+                "Where-Object { $_.Present -eq $true -and $_.DeviceID -like '*VID_1B8E&PID_C003*' } | "
                 "Select-Object -First 1 -Property Name,Status,Service | ConvertTo-Json -Compress"
             )
             p = subprocess.run(
@@ -414,7 +414,7 @@ def probe_usb_identify(preferred_service: str = "") -> dict:
         try:
             soc = proto.AmlogicSoC(backend=backend)
             try:
-                soc.dev.set_configuration()
+                _configure_worldcup(soc)
             except Exception:
                 pass
             info = classify_usb_id(soc.identify())
@@ -664,7 +664,7 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
         try:
             soc = proto.AmlogicSoC(backend=backend)
             try:
-                soc.dev.set_configuration()
+                _configure_worldcup(soc)
             except Exception:
                 pass
 
@@ -705,7 +705,11 @@ def run_usb_boot_step_inproc(img_path: str, preferred_service: str = "") -> int:
             raise RuntimeError("Превышено число блоков AMLC.")
         except Exception as ex:
             last_ex = ex
-            emit(f"  [!] [{be_name}] {type(ex).__name__}: {str(ex).strip()[:160]}")
+            msg = str(ex).strip()
+            emit(f"  [!] [{be_name}] {type(ex).__name__}: {msg[:160]}")
+            low = msg.lower()
+            if "claim_interface" in low or "timeout" in low or "control_msg" in low:
+                emit("  [!] Подсказка USB: закройте Amlogic USB Burning Tool и запустите от Администратора (попробуйте USB 2.0).")
             if transfer_started:
                 # A partial transfer can leave the device in transition. Do not send
                 # another loader using a different USB backend until it is identified again.
@@ -862,22 +866,141 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     return False
 
 
+PINNED_ROM_VERSION = "1.6.0"
+PINNED_ROM_TAG = "v1.6.0"
+PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.0.zip"
+PINNED_ROM_SIZE = 730845920
+PINNED_ROM_SHA256 = "b2f77c741c2bb3ec6f0de81617b59fedfbacd482905fbe3a4c680ba18d619ca9"
+
+
+def _parse_rom_manifest_files(manifest: dict) -> dict:
+    if not isinstance(manifest, dict):
+        raise RuntimeError("Некорректный формат rom_manifest.json")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise RuntimeError("В rom_manifest.json отсутствует секция files")
+    resolved = {}
+    for key in ("vbmeta", "vendor", "system"):
+        entry = files.get(key)
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"В rom_manifest.json отсутствует описание раздела {key}")
+        filename = str(entry.get("fileName") or f"{key}.img")
+        size = int(entry.get("size") or 0)
+        sha256 = str(entry.get("sha256") or "").strip().lower()
+        if size <= 0 or len(sha256) != 64:
+            raise RuntimeError(f"Некорректная контрольная сумма {filename} в rom_manifest.json")
+        resolved[filename] = (size, sha256)
+    return resolved
+
+
+def _resolve_latest_rom_release() -> dict:
+    """Resolve the newest ROM release and manifest from GitHub Releases, or fall back cleanly."""
+    headers = {"User-Agent": "OpenStationFlasher/1.6", "Accept": "application/vnd.github+json"}
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
+    req = urllib.request.Request(api_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        releases = json.loads(resp.read().decode("utf-8"))
+
+    if isinstance(releases, list):
+        for rel in releases:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            assets = rel.get("assets") or []
+            manifest_asset = None
+            zip_assets = []
+            for a in assets:
+                if not isinstance(a, dict):
+                    continue
+                aname = str(a.get("name") or "")
+                if aname == "rom_manifest.json":
+                    manifest_asset = a
+                elif aname.startswith("OpenStationMax-ROM-") and aname.endswith(".zip"):
+                    zip_assets.append(a)
+            if not zip_assets:
+                continue
+
+            if manifest_asset and manifest_asset.get("browser_download_url"):
+                mreq = urllib.request.Request(manifest_asset["browser_download_url"], headers=headers)
+                with urllib.request.urlopen(mreq, timeout=20) as mresp:
+                    raw_manifest = mresp.read()
+                manifest = json.loads(raw_manifest.decode("utf-8"))
+                files_map = _parse_rom_manifest_files(manifest)
+                arch = manifest.get("archive") or {}
+                arch_name = str(arch.get("fileName") or "")
+                arch_size = int(arch.get("size") or 0)
+                arch_sha = str(arch.get("sha256") or "").strip().lower()
+                matched_zip = next((z for z in zip_assets if z.get("name") == arch_name), None)
+                if matched_zip and arch_size > 0 and len(arch_sha) == 64:
+                    return {
+                        "version": str(manifest.get("version") or rel.get("tag_name") or "").lstrip("vV"),
+                        "name": arch_name,
+                        "url": matched_zip["browser_download_url"],
+                        "size": arch_size,
+                        "sha256": arch_sha,
+                        "files": files_map,
+                        "manifest_bytes": raw_manifest,
+                    }
+
+            # Fallback for releases without attached rom_manifest.json asset (e.g. pinned v1.5.1-rom)
+            z = zip_assets[0]
+            if z.get("name") == PINNED_ROM_NAME:
+                return {
+                    "version": PINNED_ROM_VERSION,
+                    "name": PINNED_ROM_NAME,
+                    "url": z.get("browser_download_url") or (
+                        f"https://github.com/Olegu621/OPENSTATION/releases/download/{PINNED_ROM_TAG}/{PINNED_ROM_NAME}"
+                    ),
+                    "size": PINNED_ROM_SIZE,
+                    "sha256": PINNED_ROM_SHA256,
+                    "files": dict(ROM_FILES),
+                    "manifest_bytes": None,
+                }
+
+    raise RuntimeError("Не найден совместимый релиз ROM на GitHub")
+
+
 def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) -> str:
-    """Download the pinned v1.5.1 release and verify it before extraction."""
-    name = "OpenStationMax-ROM-v1.5.1.zip"
-    url = "https://github.com/Olegu621/OPENSTATION/releases/download/v1.5.1/" + name
-    expected = "57e8273af5d28e96ab79ca3a4d82eec0a730174ece23a2959427f5675d1a20b5"
-    expected_size = 760870540
-    os.makedirs(dest_cache, exist_ok=True)
-    extract_dir = os.path.join(dest_cache, "rom_v1.5.1_verified")
+    """Download the latest verified ROM release (or pinned fallback) before extraction."""
     try:
+        meta = _resolve_latest_rom_release()
+        emit(f"[ROM] Выбран релиз GitHub v{meta['version']} ({meta['name']}).")
+    except Exception as ex:
+        emit(f"[ROM] GitHub Releases недоступен ({str(ex)[:100]}), используем резервную сборку v{PINNED_ROM_VERSION}.")
+        meta = {
+            "version": PINNED_ROM_VERSION,
+            "name": PINNED_ROM_NAME,
+            "url": f"https://github.com/Olegu621/OPENSTATION/releases/download/{PINNED_ROM_TAG}/{PINNED_ROM_NAME}",
+            "size": PINNED_ROM_SIZE,
+            "sha256": PINNED_ROM_SHA256,
+            "files": dict(ROM_FILES),
+            "manifest_bytes": None,
+        }
+
+    name = meta["name"]
+    url = meta["url"]
+    expected = meta["sha256"]
+    expected_size = meta["size"]
+    expected_files = meta["files"]
+    manifest_bytes = meta.get("manifest_bytes")
+
+    os.makedirs(dest_cache, exist_ok=True)
+    extract_dir = os.path.join(dest_cache, f"rom_v{meta['version']}_verified")
+    cached_manifest_path = os.path.join(extract_dir, "rom_manifest.json")
+    try:
+        if manifest_bytes is not None:
+            if not os.path.isfile(cached_manifest_path):
+                raise RuntimeError("cache manifest missing")
+            with open(cached_manifest_path, "rb") as mf:
+                if mf.read() != manifest_bytes:
+                    raise RuntimeError("cache manifest changed")
         verify_rom(extract_dir)
         return extract_dir
     except (OSError, RuntimeError):
         pass
+
     part = os.path.join(dest_cache, name + ".part")
     digest = hashlib.sha256()
-    request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/1.5.4"})
+    request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/1.6"})
     downloaded = 0
     with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as output:
         while True:
@@ -895,12 +1018,17 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
         raise RuntimeError("Контрольная сумма архива прошивки не совпала")
     os.makedirs(extract_dir, exist_ok=True)
     with zipfile.ZipFile(part) as archive:
-        for filename in ROM_FILES:
+        for filename, (exp_sz, _) in expected_files.items():
             entry = archive.getinfo(filename)
-            if entry.file_size != ROM_FILES[filename][0]:
+            if entry.file_size != exp_sz:
                 raise RuntimeError(f"Неверный размер {filename} в архиве")
             with archive.open(entry) as source, open(os.path.join(extract_dir, filename), "wb") as output:
                 shutil.copyfileobj(source, output, 1024 * 1024)
+    if manifest_bytes is not None:
+        with open(cached_manifest_path, "wb") as mf:
+            mf.write(manifest_bytes)
+    elif os.path.isfile(cached_manifest_path):
+        os.remove(cached_manifest_path)
     verify_rom(extract_dir)
     os.remove(part)
     return extract_dir
@@ -990,13 +1118,21 @@ def wait_for_usb_or_adb_reboot() -> None:
 
 ROM_FILES = {
     "vbmeta.img": (2097152, "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"),
-    "vendor.img": (536870912, "9ee367d61541e7dd237474d5a3d217496192014605e6f34ad08dd8592ac5d420"),
-    "system.img": (1551892480, "25e861a7eb86cfc269f9334b92f1373a030e9c08bd39e4ea1fe203a8cb0f33f9"),
+    "vendor.img": (536870912, "7f873aef9d55038512b8887d33e420f07167f673f72656f2e5cf3f7ab4c64079"),
+    "system.img": (1551892480, "a1438c7afa36fae4a9ab60ffc7d945fae7b1e519a934db6cdf0cc29c8f36efb7"),
 }
 
 
 def verify_rom(rom_dir):
-    for name, (size, expected) in ROM_FILES.items():
+    manifest_path = os.path.join(rom_dir, "rom_manifest.json")
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as mf:
+            manifest = json.load(mf)
+        expected_map = _parse_rom_manifest_files(manifest)
+    else:
+        expected_map = ROM_FILES
+
+    for name, (size, expected) in expected_map.items():
         path = os.path.join(rom_dir, name)
         if not os.path.isfile(path) or os.path.getsize(path) != size:
             raise RuntimeError(f"Неверный размер или отсутствует {name}; запись не начата")
@@ -1039,38 +1175,96 @@ def ensure_burn_mode() -> bool:
     if probe_burn_mode(timeout=8):
         return True
     info = check_usb_device()
-    observed = probe_usb_identify(info.get("usb_service", ""))
+    pref_svc = info.get("usb_service", "")
+    observed = probe_usb_identify(pref_svc)
     if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
         emit("[USB] Не удалось подтвердить начальный режим станции; загрузка не начата.")
         return False
-    for image in ("aml_00053.img", "aml_bundle.img"):
-        image_path = os.path.join(SCRIPT_DIR, image)
-        if not os.path.isfile(image_path):
-            continue
-        # Only try a loader while identify confirms BootROM, never on a live U-Boot.
-        observed = probe_usb_identify(info.get("usb_service", ""))
-        if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
-            return probe_burn_mode(timeout=8)
-        emit("[USB] Подготовка станции к записи (%s)..." % image)
-        cmd = [sys.executable]
-        if not getattr(sys, "frozen", False):
-            cmd.extend(["-u", os.path.abspath(__file__)])
-        cmd.extend(["--usb-boot-step", image_path, "--usb-service", info.get("usb_service", "")])
-        try:
-            result = subprocess.run(cmd, cwd=SCRIPT_DIR, stdin=subprocess.DEVNULL,
-                                    timeout=60, **hidden_subprocess_kwargs())
-            emit("[USB] Подготовка завершилась с кодом %s; ожидаем устройство." % result.returncode)
-        except subprocess.TimeoutExpired:
-            emit("[USB] Подготовка не завершилась вовремя; проверяем состояние устройства.")
+
+    warn_conflicting_usb_tools()
+
+    def _wait_for_burn_after_loader() -> bool:
         for attempt in range(15):
             time.sleep(1)
             if probe_burn_mode(timeout=3):
                 return True
             # Give Windows time to re-enumerate before treating BootROM as a failed loader.
             if attempt >= 4:
-                state = probe_usb_identify(info.get("usb_service", ""))
+                state = probe_usb_identify(pref_svc)
                 if state.get("mode") == "bootrom":
                     break
+        return False
+
+    for image in ("aml_00053.img", "aml_bundle.img", "aml.img"):
+        image_path = os.path.join(SCRIPT_DIR, image)
+        if not os.path.isfile(image_path):
+            continue
+        # Only try a loader while identify confirms BootROM, never on a live U-Boot.
+        observed = probe_usb_identify(pref_svc)
+        if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
+            return probe_burn_mode(timeout=8)
+        emit("[USB] Подготовка станции к записи (%s)..." % image)
+        cmd = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            cmd.extend(["-u", os.path.abspath(__file__)])
+        cmd.extend(["--usb-boot-step", image_path, "--usb-service", pref_svc])
+        failed_rc = 0
+        try:
+            result = subprocess.run(cmd, cwd=SCRIPT_DIR, stdin=subprocess.DEVNULL,
+                                    timeout=60, **hidden_subprocess_kwargs())
+            failed_rc = result.returncode
+            emit("[USB] Подготовка завершилась с кодом %s; ожидаем устройство." % result.returncode)
+        except subprocess.TimeoutExpired:
+            failed_rc = 1
+            emit("[USB] Подготовка не завершилась вовремя; проверяем состояние устройства.")
+        if _wait_for_burn_after_loader():
+            return True
+        if failed_rc != 0:
+            state = probe_usb_identify(pref_svc)
+            if state.get("rom") == (3, 2) and state.get("stage") == (0, 0):
+                emit("[USB] Сброс USB-порта после сбоя libusb перед следующей попыткой...")
+                reset_usb_device(pref_svc)
+                if os.name == "nt" and is_admin():
+                    reenumerate_worldcup_device()
+                time.sleep(2.0)
+
+    # Strategy 2 fallback: native update.exe bl2_boot (only if BootROM is still confirmed)
+    try:
+        update_exe = get_update_exe()
+    except FileNotFoundError:
+        update_exe = ""
+    if update_exe:
+        for image in ("aml_bundle.img", "aml_00053.img", "aml.img"):
+            image_path = os.path.join(SCRIPT_DIR, image)
+            if not os.path.isfile(image_path):
+                continue
+            observed = probe_usb_identify(pref_svc)
+            if not (observed.get("rom") == (3, 2) and observed.get("stage") == (0, 0)):
+                return probe_burn_mode(timeout=8)
+            emit("[USB] Резервный загрузчик update.exe bl2_boot (%s)..." % image)
+            try:
+                p = subprocess.run(
+                    [update_exe, "bl2_boot", image_path],
+                    cwd=SCRIPT_DIR,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=30,
+                    **hidden_subprocess_kwargs(),
+                )
+                out = safe_decode((p.stdout or b"") + (p.stderr or b"")).strip()
+                for ln in out.splitlines():
+                    if ln.strip():
+                        emit(f"  [BL2] {ln.strip()}")
+                if p.returncode == 0 and not _update_output_failed(out, p.returncode):
+                    if _wait_for_burn_after_loader():
+                        return True
+            except Exception as ex:
+                emit(f"  [!] update.exe bl2_boot: {str(ex)[:140]}")
+            time.sleep(1.5)
+
+    if os.name == "nt" and not is_admin():
+        emit("[USB] Подсказка: запустите OpenStationFlasher.exe от имени Администратора и закройте USB Burning Tool.")
+    emit("[USB] Переподключите питание 19В и сервисный Type-C (замкните 6-й контакт на GND), желательно в порт USB 2.0.")
     return False
 
 

@@ -1981,36 +1981,38 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         }
 
         float eye_ry = std::max(0.55f, base_ry * wake_ease * blink_k);
-        float eye_rx = 3.15f;
-        float eye_cy = 5.8f;
-        const float eye_cxs[2] = {6.3f, 17.7f};
+        float eye_rx = 2.65f;
+        float eye_cy = 5.35f;
+        const float eye_cxs[2] = {6.2f, 17.8f};
+        float ry_scale = eye_ry / 4.1f;
 
         for (int e = 0; e < 2; ++e) {
             float ecx = eye_cxs[e];
-            for (int y = 0; y < static_cast<int>(H) - 3; ++y) {
+            for (int y = 0; y < static_cast<int>(H) - 4; ++y) {
                 for (int x = 0; x < static_cast<int>(W); ++x) {
                     float dx = (static_cast<float>(x) - ecx) / eye_rx;
-                    float dy = (static_cast<float>(y) - eye_cy) / eye_ry;
+                    float dy = (static_cast<float>(y) - eye_cy) / std::max(0.52f, 3.35f * ry_scale);
                     // Cheek / smile arch slightly clips lower outer edge when Speaking
-                    if (vstate == VoiceVisualState::Speaking && dy > 0.42f && std::fabs(dx) < 0.72f) {
-                        dy += 0.25f * (1.0f - std::fabs(dx));
+                    if (vstate == VoiceVisualState::Speaking && dy > 0.38f && std::fabs(dx) < 0.72f) {
+                        dy += 0.28f * (1.0f - std::fabs(dx));
                     }
                     float d2 = dx * dx + dy * dy;
-                    if (d2 <= 1.75f) {
-                        float glow = std::exp(-std::max(0.0f, d2 - 0.85f) * 2.6f);
-                        Rgb px_c = lerp_rgb(rim_col, core_col, std::clamp(1.1f - d2 * 0.72f, 0.0f, 1.0f));
+                    if (d2 <= 1.18f) {
+                        // Crisp edge anti-aliasing so left/right eyes stay distinct without bloom bleeding
+                        float glow = (d2 <= 0.92f) ? 1.0f : std::exp(-(d2 - 0.92f) * 7.8f);
+                        Rgb px_c = lerp_rgb(rim_col, core_col, std::clamp(1.05f - d2 * 0.65f, 0.0f, 1.0f));
                         // Pupil & specular highlight inside open eye
-                        if (wake_ease * blink_k > 0.52f && d2 < 0.92f) {
-                            float px = static_cast<float>(x) - (ecx + gaze_x);
-                            float py = static_cast<float>(y) - (eye_cy + gaze_y);
+                        if (wake_ease * blink_k > 0.52f && d2 < 0.88f) {
+                            float px = static_cast<float>(x) - (ecx + gaze_x * 0.8f);
+                            float py = static_cast<float>(y) - (eye_cy + gaze_y * 0.7f);
                             float pd2 = px * px + py * py;
-                            if (pd2 < 1.35f) {
+                            if (pd2 < 1.10f) {
                                 // Luminous sapphire-obsidian iris + crisp white catchlight at top-left
-                                px_c = lerp_rgb(pupil_col, px_c, std::clamp(pd2 / 1.35f, 0.22f, 1.0f));
+                                px_c = lerp_rgb(pupil_col, px_c, std::clamp(pd2 / 1.10f, 0.18f, 1.0f));
                             }
-                            float hx = static_cast<float>(x) - (ecx + gaze_x - 0.85f);
-                            float hy = static_cast<float>(y) - (eye_cy + gaze_y - 0.9f);
-                            if (hx * hx + hy * hy < 0.72f) {
+                            float hx = static_cast<float>(x) - (ecx + gaze_x * 0.8f - 0.75f);
+                            float hy = static_cast<float>(y) - (eye_cy + gaze_y * 0.7f - 0.85f);
+                            if (hx * hx + hy * hy < 0.62f) {
                                 px_c = Rgb{255, 255, 255};
                             }
                         }
@@ -2021,30 +2023,35 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         }
 
         if (vstate == VoiceVisualState::Listening) {
-            // Soft listening acoustic shimmer at outer cheeks
-            float mic_pulse = 0.28f + 0.42f * (0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 5.2)));
-            padd(1, 6, 0.0f, 210.0f * mic_pulse, 255.0f * mic_pulse);
-            padd(23, 6, 0.0f, 210.0f * mic_pulse, 255.0f * mic_pulse);
+            // Centered cyan breathing acoustic bar along y = 13..14 + subtle outer cheek glow
+            float mic_pulse = 0.28f + 0.55f * (0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 5.2)));
+            for (int x = 9; x <= 15; ++x) {
+                float k = 1.0f - std::fabs(x - 12.0f) / 3.8f;
+                padd(x, 14, 0.0f, 220.0f * mic_pulse * k, 255.0f * mic_pulse * k);
+            }
+            padd(1, 6, 0.0f, 180.0f * mic_pulse, 235.0f * mic_pulse);
+            padd(23, 6, 0.0f, 180.0f * mic_pulse, 235.0f * mic_pulse);
         } else if (vstate == VoiceVisualState::Thinking) {
-            // Orbiting stardust sparkles across brow line
-            for (int k = 0; k < 4; ++k) {
-                float sx = std::fmod(static_cast<float>(t_sec * 16.0) + k * 2.0f, static_cast<float>(W));
-                int px = static_cast<int>(sx) % static_cast<int>(W);
-                float fade = 1.0f - k * 0.24f;
-                padd(px, 1, 120.0f * fade, 195.0f * fade, 255.0f * fade);
+            // Crisp 3-dot neural thinking constellation along bottom chin (no brow collisions)
+            const int dot_xs[3] = {9, 12, 15};
+            for (int k = 0; k < 3; ++k) {
+                float wave = 0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 6.8) - k * 1.15f);
+                float inten = 0.18f + 0.82f * wave * wave;
+                int dy = (wave > 0.78f) ? 13 : 14;
+                padd(dot_xs[k], dy, 130.0f * inten, 165.0f * inten, 255.0f * inten);
             }
         } else { // Speaking -> animated centered vocal wave bar along y = 12..15
             int bar_y_base = static_cast<int>(H) - 1;
             for (int x = 5; x <= 19; ++x) {
-                float dist_mid = std::fabs(x - 12.0f) / 7.0f;
+                float dist_mid = std::fabs(x - 12.0f) / 7.5f;
                 float falloff = 1.0f - dist_mid * dist_mid;
                 size_t bi = static_cast<size_t>((x - 5) * 24 / 15) % 24;
-                float v = std::clamp(spec[bi] * 1.15f + 0.16f + 0.14f * std::sin(static_cast<float>(t_sec * 14.0 + x * 0.65)), 0.08f, 1.0f);
-                float amp = v * falloff * 3.1f;
-                int rows = std::clamp(static_cast<int>(std::lround(amp)), 1, 3);
-                Rgb wc = lerp_rgb(Rgb{0, 224, 215}, Rgb{240, 210, 130}, amp / 3.1f);
+                float v = std::clamp(spec[bi] * 1.25f + 0.14f + 0.12f * spk_energy + 0.10f * std::sin(static_cast<float>(t_sec * 14.0 + x * 0.65)), 0.08f, 1.0f);
+                float amp = v * falloff * 3.4f;
+                int rows = std::clamp(static_cast<int>(std::lround(amp)), 1, 4);
+                Rgb wc = lerp_rgb(Rgb{0, 224, 215}, Rgb{240, 210, 130}, amp / 3.4f);
                 for (int r = 0; r < rows; ++r) {
-                    padd(x, bar_y_base - r, wc.r * 0.9f, wc.g * 0.9f, wc.b * 0.9f);
+                    padd(x, bar_y_base - r, wc.r * 0.92f, wc.g * 0.92f, wc.b * 0.92f);
                 }
             }
         }
@@ -2280,7 +2287,7 @@ void FramebufferHw::worker_loop() {
             last_fb5_health_tp = now;
         }
 
-        if (fb5_.fd >= 0 && now - last_fb5_refresh_tp >= std::chrono::milliseconds(2000)) {
+        if (fb5_.fd >= 0 && now - last_fb5_refresh_tp >= std::chrono::milliseconds(20000)) {
             fb5_.has_prev = false;
             last_fb5_refresh_tp = now;
         }
@@ -2347,11 +2354,11 @@ void FramebufferHw::worker_loop() {
             bool ring_static = (rcfg.mode == "off" || rcfg.mode == "solid");
             bool scr_has = fb5_present_.load();
             bool clock_smooth = (scfg.mode == "clock" &&
-                                 (scfg.clock_style == "neon" || scfg.clock_style == "minimal" || scfg.clock_style == "seconds" || scfg.clock_style == "binary"));
+                                 (scfg.clock_style == "neon" || scfg.clock_style == "seconds" || scfg.clock_style == "binary"));
             bool scr_static = (!scr_has || scfg.mode == "off" || (scfg.mode == "clock" && !clock_smooth));
-            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk) ? 25 : 33;
+            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk) ? 25 : 55;
             if (!transient_active && ring_static && scr_static) {
-                sleep_ms = (scr_has && scfg.mode == "clock") ? 180 : 500;
+                sleep_ms = (scr_has && scfg.mode == "clock") ? 200 : 500;
             }
             uint64_t seen_seq = wake_seq_;
             cv_.wait_for(lk, std::chrono::milliseconds(sleep_ms), [&] {

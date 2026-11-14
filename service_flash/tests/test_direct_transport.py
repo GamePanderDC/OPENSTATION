@@ -148,4 +148,63 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): f.run_flash(args)
                 finish.assert_not_called()
 
+    def test_verify_rom_uses_manifest_when_present_and_rejects_mismatch(self):
+        import hashlib
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            payloads = {
+                'vbmeta.img': b'vbm-test-bytes',
+                'vendor.img': b'vnd-test-bytes',
+                'system.img': b'sys-test-bytes',
+            }
+            files_meta = {}
+            for key, fn in (('vbmeta', 'vbmeta.img'), ('vendor', 'vendor.img'), ('system', 'system.img')):
+                data = payloads[fn]
+                with open(os.path.join(folder, fn), 'wb') as out:
+                    out.write(data)
+                files_meta[key] = {
+                    'fileName': fn,
+                    'size': len(data),
+                    'sha256': hashlib.sha256(data).hexdigest(),
+                }
+            manifest_path = os.path.join(folder, 'rom_manifest.json')
+            with open(manifest_path, 'w', encoding='utf-8') as mf:
+                json.dump({'version': '1.6.0', 'files': files_meta}, mf)
+
+            f.verify_rom(folder)
+
+            with open(os.path.join(folder, 'system.img'), 'wb') as out:
+                out.write(b'corrupted!!!!!')
+            with self.assertRaisesRegex(RuntimeError, 'SHA-256 system.img'):
+                f.verify_rom(folder)
+
+    def test_ensure_burn_mode_resets_usb_and_falls_back_to_update_bl2_boot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            open(os.path.join(folder, 'aml_00053.img'), 'wb').close()
+            open(os.path.join(folder, 'update.exe'), 'wb').close()
+            bootrom = {'rom': (3, 2), 'stage': (0, 0), 'mode': 'bootrom'}
+            calls = []
+
+            def fake_run(cmd, **kwargs):
+                calls.append(cmd)
+                if '--usb-boot-step' in cmd:
+                    return argparse.Namespace(returncode=1, stdout=b'', stderr=b'')
+                if len(cmd) >= 2 and cmd[1] == 'bl2_boot':
+                    return argparse.Namespace(returncode=0, stdout=b'ok', stderr=b'')
+                return argparse.Namespace(returncode=0, stdout=b'', stderr=b'')
+
+            with patch.object(f, 'SCRIPT_DIR', folder), \
+                 patch.object(f, 'probe_burn_mode', side_effect=[False, False, False, False, False, False, False, True]), \
+                 patch.object(f, 'check_usb_device', return_value={'usb_service': 'libusb0'}), \
+                 patch.object(f, 'probe_usb_identify', return_value=bootrom), \
+                 patch.object(f, 'warn_conflicting_usb_tools'), \
+                 patch.object(f, 'reset_usb_device', return_value=True) as reset_mock, \
+                 patch.object(f, 'is_admin', return_value=False), \
+                 patch.object(f.subprocess, 'run', side_effect=fake_run), \
+                 patch.object(f.time, 'sleep'):
+                self.assertTrue(f.ensure_burn_mode())
+            reset_mock.assert_called()
+            self.assertTrue(any('--usb-boot-step' in c for c in calls))
+            self.assertTrue(any(len(c) >= 2 and c[1] == 'bl2_boot' for c in calls))
+
 if __name__ == '__main__': unittest.main()

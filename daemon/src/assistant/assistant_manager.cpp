@@ -633,10 +633,18 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     Value sys_parts = Value::make_arr();
     Value sys_txt = Value::make_obj();
     {
+        const std::string asst_name = trim_str(c.name).empty() ? "Алиса" : trim_str(c.name);
+        const bool is_male_voice =
+            (c.voice_name == "Puck" || c.voice_name == "Charon" ||
+             c.voice_name == "Fenrir" || c.voice_name == "Orus");
         std::string sp =
-            "ВАЖНЕЙШЕЕ ПРАВИЛО ЛИЧНОСТИ И ПОЛА: ТЫ — ДЕВУШКА ПО ИМЕНИ АЛИСА. ТВОЙ ПОЛ — СТРОГО ЖЕНСКИЙ.\n"
-            "Всегда и везде говори о себе ИСКЛЮЧИТЕЛЬНО в женском роде: «я готова», «я нашла», «я услышала», «я поняла», «я включила», «я сделала», «я рада».\n"
-            "КАТЕГОРИЧЕСКИ И СТРОЖАЙШЕ ЗАПРЕЩЕНО говорить о себе в мужском роде («я готов», «я сделал», «я рад»)! За употребление мужского рода («я готов») ты получаешь критическую ошибку.\n\n"
+            std::string("ВАЖНЕЙШЕЕ ПРАВИЛО ЛИЧНОСТИ И ПОЛА: ТВОЁ ИМЯ — ") + asst_name + ". " +
+            (is_male_voice
+                ? "ТВОЙ ПОЛ — МУЖСКОЙ (ты — голосовой ассистент).\n"
+                  "Всегда и везде говори о себе в мужском роде: «я готов», «я нашёл», «я услышал», «я понял», «я включил», «я сделал», «я рад».\n\n"
+                : "ТВОЙ ПОЛ — ЖЕНСКИЙ (ты — девушка, голосовая помощница).\n"
+                  "Всегда и везде говори о себе ИСКЛЮЧИТЕЛЬНО в женском роде: «я готова», «я нашла», «я услышала», «я поняла», «я включила», «я сделала», «я рада».\n"
+                  "КАТЕГОРИЧЕСКИ И СТРОЖАЙШЕ ЗАПРЕЩЕНО говорить о себе в мужском роде («я готов», «я сделал», «я рад»)! За употребление мужского рода («я готов») ты получаешь критическую ошибку.\n\n") +
             "СТРОГОЕ ПРАВИЛО ЯЗЫКА И РАСПОЗНАВАНИЯ: Распознавай и понимай ТОЛЬКО русский (основной) и английский (второстепенный) языки. "
             "Категорически запрещено принимать входящую речь за французский, португальский, испанский, турецкий, арабский или любой другой иностранный язык! "
             "Если звуки микрофона, помехи или тихий голос напоминают иностранные слова (например, французские «oui», «ça», «d'accord», «le», «un»), это исключительно акустический шум микрофона или неразборчивый русский — интерпретируй их ВСЕГДА ТОЛЬКО как русскую речь (или английскую, если фраза полностью на понятном английском). "
@@ -649,9 +657,13 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             custom_sp.erase(gpos, legacy_gs.size());
         }
         const std::string masc_phrase = "Ты — голосовой ассистент Алиса";
-        size_t mpos = custom_sp.find(masc_phrase);
-        if (mpos != std::string::npos) {
-            custom_sp.replace(mpos, masc_phrase.size(), "Ты — девушка, голосовая помощница Алиса");
+        const std::string fem_phrase = "Ты — девушка, голосовая помощница Алиса";
+        const std::string replacement_phrase =
+            (is_male_voice ? std::string("Ты — голосовой ассистент ") : std::string("Ты — девушка, голосовая помощница ")) + asst_name;
+        if (size_t mpos = custom_sp.find(masc_phrase); mpos != std::string::npos) {
+            custom_sp.replace(mpos, masc_phrase.size(), replacement_phrase);
+        } else if (size_t fpos = custom_sp.find(fem_phrase); fpos != std::string::npos && (is_male_voice || asst_name != "Алиса")) {
+            custom_sp.replace(fpos, fem_phrase.size(), replacement_phrase);
         }
         sp += trim_str(custom_sp);
 
@@ -669,11 +681,14 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
         if (!sp.empty()) sp += "\n\n";
         sp += "Системный контекст OpenStation Max:\n"
-              "- Текущие дата и время на колонке: " + std::string(dt_buf) + ".\n"
-              "- Напоминание: ТЫ — ДЕВУШКА. Всегда говори исключительно в женском роде («я готова», «я нашла», «я услышала»).\n"
+              "- Текущие дата и время на колонке: " + std::string(dt_buf) + ".\n" +
+              "- Напоминание: Твоё имя — «" + asst_name + "». " +
+              (is_male_voice
+                  ? "Говори о себе в мужском роде («я готов», «я нашёл», «я услышал»).\n"
+                  : "ТЫ — ДЕВУШКА. Всегда говори исключительно в женском роде («я готова», «я нашла», «я услышала»).\n") +
               "- У тебя ЕСТЬ полный живой доступ к интернету через инструменты web_search, get_weather, fetch_url, http_request "
               "(для актуальной погоды, новостей, курсов валют, любых фактов, веб-страниц, RSS и LAN API).\n"
-              "- У тебя ЕСТЬ полный root-доступ ко всей колонке и Android TV: аппаратный звук/эквалайзер (set_volume, set_eq_preset, "
+              "- У тебя ЕСТЬ полный root-доступ ко всей колонке и Android TV: аппаратный звук/эквалайзер (set_volume, set_eq_preset, set_hardware_eq, "
               "set_audio_route, play_sound, set_mic_mute), LED-кольцо и экран-матрица (set_led_ring, set_led_screen, show_screen_banner), "
               "таймеры/будильники (manage_timer), HDMI-CEC и пульт ТВ (tv_hdmi_cec, remote_control, type_text), встроенный нативный плеер "
               "Яндекс Музыка (music_control), приложения и ссылки (manage_apps), умный дом MQTT/HTTP (mqtt_publish, http_request), "
@@ -687,14 +702,16 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "ВСЕГДА сразу вызывай bluetooth_control(action=\"discoverable\"). Колонка станет видимой на телефоне как OpenStation Max, и пользователь сможет "
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
-              "- При просьбе «настрой пульт» или «подключи пульт» вызывай setup_remote, это открывает инструкцию и поиск пульта на телевизоре.\n"
+              "- Настройка пульта (setup_remote): при просьбе «настрой пульт», «подключи пульт» или «сопряги пульт» сразу вызывай setup_remote(), это открывает интерактивную пошаговую инструкцию и поиск BLE-пульта на телевизоре.\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
               "- Ты — полноценный ИИ-агент колонки: можешь менять свой голос (set_assistant_voice — при запросе поменять голос сразу вызывай инструмент, сессия мгновенно переключится на новый голос), "
-              "менять стили часов и визуализатора (set_styles), детально настраивать 10-полосный эквалайзер и бас (set_eq_preset), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
+              "менять своё имя и слово активации (set_assistant_name — при просьбах вроде «тебя теперь зовут Джарвис», «поменяй имя на Пятница»), "
+              "менять стили часов и визуализатора (set_styles), настраивать программный 10-полосный эквалайзер (set_eq_preset) и аппаратный DSP усилителя SY6045S на Станции Макс "
+              "(set_hardware_eq — профили: original, hifi, night, bass, club, например «включи Hi-Fi / ночной режим звука»), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
               "- Адаптивный режим диалога: если пользователь дал конкретную команду (включить/переключить музыку, изменить громкость, включить/выключить блютуз, установить таймер или будильник, выключить ТВ, открыть приложение): "
-              "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Включаю», «Сделала», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
+              "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Включаю», «Сделано», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
               "Если же пользователь просто разговаривает, задаёт вопросы, рассуждает или просит что-то рассказать — отвечай развёрнуто, поддерживай беседу и продолжай живой диалог.\n"
               "- Визуализация задач на экранчике (draw_led_icon): при выполнении команды автоматически или через draw_led_icon выводи на передний LED-экранчик станции подходящую иконку "
               "(например: youtube при запуске YouTube/SmartTube, music при музыке, telegram при Telegram, timer при таймере, search/browser при поиске, eq при эквалайзере, terminal при системных командах), после чего экран плавно вернётся к обычному виду.\n";
@@ -862,9 +879,35 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             {"Aoede", "Kore", "Leda", "Zephyr", "Puck", "Charon", "Fenrir", "Orus"});
         decls.push(make_func_decl(
             "set_assistant_voice",
-            "Change Alice's voice immediately and seamlessly continue talking in the new voice.",
+            "Change the assistant's voice immediately and seamlessly continue talking in the new voice.",
             std::move(p),
             {"voice"},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["name"] = make_prop("STRING", "New display/wake name for the assistant (e.g. Алиса, Джарвис, Пятница, Макс)");
+        p["update_wake_word"] = make_prop("BOOLEAN", "Also set wake word KWS keyword to the new name (default true)");
+        decls.push(make_func_decl(
+            "set_assistant_name",
+            "Rename the assistant and optionally update the wake-word activation phrase immediately.",
+            std::move(p),
+            {"name"},
+            nb));
+    }
+
+    {
+        Value p = Value::make_obj();
+        p["profile"] = make_enum_prop(
+            "Hardware SY6045S DSP amplifier profile: 'original' (stock factory curve), 'hifi' (clean balanced), "
+            "'night' (gentle bass, clear voice), 'bass' (deep bass boost), 'club' (loud dynamic boost)",
+            {"original", "hifi", "night", "bass", "club"});
+        decls.push(make_func_decl(
+            "set_hardware_eq",
+            "Apply hardware amplifier SY6045S DSP profile on OpenStation Max and persist it.",
+            std::move(p),
+            {"profile"},
             nb));
     }
 
@@ -1398,6 +1441,7 @@ void AssistantManager::session_worker(uint64_t sid,
         bool retry_alternate = false;
         bool retry_without_search = false;
         bool switch_voice_now = false;
+        bool switch_persona_now = false;
         bool session_done = false;
         model_turn_done = false;
         awaiting_playback_drain = false;
@@ -1518,6 +1562,9 @@ void AssistantManager::session_worker(uint64_t sid,
                         if (const auto* rv = res.get("reloadVoice"); rv && rv->as_bool(false)) {
                             switch_voice_now = true;
                         }
+                        if (const auto* rp = res.get("reloadPersona"); rp && rp->as_bool(false)) {
+                            switch_persona_now = true;
+                        }
 
                         json::Value fr = json::Value::make_obj();
                         if (!id.empty()) fr["id"] = json::Value::make_str(id);
@@ -1535,7 +1582,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     if (!ws.send_text(tr_msg.dump(-1))) {
                         return false;
                     }
-                    if (switch_voice_now) {
+                    if (switch_voice_now || switch_persona_now) {
                         if (cb_.clear_playback) cb_.clear_playback();
                         return false;
                     }
@@ -1826,17 +1873,29 @@ void AssistantManager::session_worker(uint64_t sid,
             }
         }
 
-        if (switch_voice_now && running_.load() && !session_abort_.load()) {
-            LOGI("Assistant", "Reconnecting WebSocket cleanly for live voice change...");
+        if ((switch_voice_now || switch_persona_now) && running_.load() && !session_abort_.load()) {
+            LOGI("Assistant", "Reconnecting WebSocket cleanly for live voice/persona change...");
             if (ws.is_connected()) ws.send_close(1000);
             ws.close();
             {
                 std::lock_guard<std::mutex> lk(cfg_mu_);
                 cfg_snap = cfg_;
             }
-            pending_voice_greeting =
-                "[Системное событие] Голос ассистента только что переключён на " + cfg_snap.voice_name +
-                ". Подтверди смену голоса пользователю 1–2 короткими фразами этим новым голосом.";
+            if (switch_voice_now && switch_persona_now) {
+                pending_voice_greeting =
+                    "[Системное событие] Имя ассистента изменено на «" + cfg_snap.name +
+                    "», а голос переключён на " + cfg_snap.voice_name +
+                    ". Подтверди это пользователю 1–2 короткими фразами.";
+            } else if (switch_persona_now) {
+                pending_voice_greeting =
+                    "[Системное событие] Имя ассистента изменено на «" + cfg_snap.name +
+                    "» (ключевое слово отклика: «" + cfg_snap.kws_keywords +
+                    "»). Коротко подтверди смену имени пользователю 1 фразой.";
+            } else {
+                pending_voice_greeting =
+                    "[Системное событие] Голос ассистента только что переключён на " + cfg_snap.voice_name +
+                    ". Подтверди смену голоса пользователю 1–2 короткими фразами этим новым голосом.";
+            }
             fatal_error = false;
             retried_route = false;
             continue;

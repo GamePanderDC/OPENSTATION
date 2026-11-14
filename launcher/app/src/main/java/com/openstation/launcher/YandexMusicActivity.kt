@@ -467,7 +467,7 @@ class YandexMusicActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         }
         tvTrackArtist = TextView(this).apply {
-            text = "Нажмите «Моя волна» или скажите Алисе"
+            text = "Нажмите «Моя волна» или скажите «${LiveOrbState.effectiveName()}»"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 13f
             gravity = Gravity.CENTER
@@ -757,7 +757,7 @@ class YandexMusicActivity : Activity() {
         searchRow.addView(btnFind)
 
         tvSearchStatus = TextView(this).apply {
-            text = "Введите запрос или попросите Алису: «Алиса, включи Кино»"
+            text = "Введите запрос или скажите «${LiveOrbState.effectiveName()}, включи Кино»"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 12.5f
             setPadding(0, 0, 0, dp(8))

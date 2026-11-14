@@ -16,9 +16,11 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.AttributeSet
 import android.util.Log
 import android.view.Choreographer
+import android.view.Display
 import android.view.View
 import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArraySet
@@ -71,6 +73,49 @@ object LiveOrbState {
     @Volatile var autoMusicVisualizer: Boolean = true
     @Volatile var previewUntilMs: Long = 0L
     @Volatile private var styleSyncedOnce: Boolean = false
+    @Volatile var assistantName: String = "Алиса"
+    @Volatile var assistantVoice: String = "Aoede"
+    @Volatile var hardwareEqProfile: String = "original"
+    @Volatile var hardwareEqSupported: Boolean = false
+
+    fun effectiveName(): String =
+        assistantName.trim().ifEmpty { "Алиса" }
+
+    fun assistantIsMale(): Boolean =
+        assistantVoice in setOf("Puck", "Charon", "Fenrir", "Orus")
+
+    fun isGrammaticallyMale(): Boolean =
+        assistantIsMale() || effectiveName().lowercase() in setOf("джарвис", "макс", "jarvis", "max")
+
+    fun readyWord(caps: Boolean = false): String =
+        if (isGrammaticallyMale()) (if (caps) "ГОТОВ" else "готов") else (if (caps) "ГОТОВА" else "готова")
+
+    fun activeWord(): String =
+        if (isGrammaticallyMale()) "активен" else "активна"
+
+    fun offWord(): String =
+        if (isGrammaticallyMale()) "выключен" else "выключена"
+
+    fun updateAssistantPersona(name: String?, voice: String?) {
+        val cleanName = name?.trim().orEmpty()
+        if (cleanName.isNotEmpty()) {
+            assistantName = cleanName
+        }
+        val cleanVoice = voice?.trim().orEmpty()
+        if (cleanVoice.isNotEmpty()) {
+            assistantVoice = cleanVoice
+        }
+    }
+
+    fun updateHardwareEq(profile: String?, supported: Boolean? = null) {
+        val cleanProfile = profile?.trim()?.lowercase().orEmpty()
+        if (cleanProfile.isNotEmpty()) {
+            hardwareEqProfile = cleanProfile
+        }
+        if (supported != null) {
+            hardwareEqSupported = supported
+        }
+    }
 
     @Volatile var weatherTemp: Int = 0
     @Volatile var weatherCondition: String = ""
@@ -334,6 +379,14 @@ class AliceOrbView @JvmOverloads constructor(
     private var activeHoldUntilNs = 0L
     private var lastBoost = 0f
     private var running = false
+    private val powerManager: PowerManager? by lazy(LazyThreadSafetyMode.NONE) {
+        context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    }
+    private val wakeCheckRunnable = Runnable {
+        if (running) {
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
 
     // 0f on Screen 0 hero, 0..1f during morph -> 1f in docked/overlay bar for luminous gem visibility
     @Volatile
@@ -456,16 +509,28 @@ class AliceOrbView @JvmOverloads constructor(
         if (running) return
         running = true
         lastNs = 0L
+        removeCallbacks(wakeCheckRunnable)
         Choreographer.getInstance().postFrameCallback(this)
     }
 
     private fun stopAnim() {
         running = false
+        removeCallbacks(wakeCheckRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
     }
 
     override fun doFrame(frameTimeNanos: Long) {
         if (!running) return
+        val disp = display
+        val displayOff = disp != null && disp.state == Display.STATE_OFF
+        val interactive = powerManager?.isInteractive ?: true
+        if (!isShown || displayOff || !interactive) {
+            lastNs = 0L
+            removeCallbacks(wakeCheckRunnable)
+            postDelayed(wakeCheckRunnable, 450L)
+            return
+        }
+
         val boost = compactGlowBoost
         val morphing = abs(boost - lastBoost) > 0.004f
         val st = LiveOrbState.assistantState
@@ -476,16 +541,16 @@ class AliceOrbView @JvmOverloads constructor(
         }
         val highRate = activeNow || frameTimeNanos < activeHoldUntilNs
         if (!highRate && lastNs != 0L) {
-            val minStepNs = if (boost > 0.85f) 52_000_000L else 36_000_000L
+            val minStepNs = if (boost > 0.85f) 110_000_000L else 85_000_000L
             if ((frameTimeNanos - lastNs) < minStepNs) {
-                // Calm idle: 1:2 VSync (~25fps) for hero orb, 1:3 (~16.7fps) when docked miniature
+                // Calm idle: ~11.8 Hz hero orb, ~9 Hz docked miniature (zero idle GPU churn)
                 Choreographer.getInstance().postFrameCallback(this)
                 return
             }
         }
 
         lastBoost = boost
-        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.08f)
+        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.14f)
         lastNs = frameTimeNanos
         stepPhysics(dt)
         invalidate()

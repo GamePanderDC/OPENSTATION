@@ -19,8 +19,8 @@ using System.Windows.Media;
 [assembly: AssemblyTitle("OpenStation Max Installer")]
 [assembly: AssemblyDescription("One-Click Installer powered by yasta_flasher engine")]
 [assembly: AssemblyProduct("OpenStation Max")]
-[assembly: AssemblyVersion("2.2.0.5")]
-[assembly: AssemblyFileVersion("2.2.0.5")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 namespace OpenStationFlasher
 {
@@ -73,7 +73,7 @@ namespace OpenStationFlasher
 
     public class MainWindow : Window
     {
-        private const string FW_VERSION = "USB Max 1.4";
+        private const string FW_VERSION = "v1.6.0";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -624,6 +624,7 @@ namespace OpenStationFlasher
             public bool AdbConnected;
             public string AdbSerial = "";
             public string LocalRomVer = "";
+            public string LocalRomDir = "";
         }
 
         private DeviceSnapshot ProbeDeviceSnapshot()
@@ -642,7 +643,7 @@ namespace OpenStationFlasher
             try
             {
                 using (var searcher = new ManagementObjectSearcher(
-                    "SELECT Name, Status, Service FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%'"))
+                    "SELECT Name, Status, Service, Present FROM Win32_PnPEntity WHERE DeviceID LIKE '%VID_1B8E&PID_C003%' AND Present = TRUE"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
@@ -720,13 +721,28 @@ namespace OpenStationFlasher
                 catch { }
             }
 
-            // Check local ROM
-            string[] romDirs = new string[]
+            // Check local / cached ROM
+            string appDataRomCache = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "OpenStation", "rom_cache"
+            );
+            var romDirs = new List<string>
             {
                 Path.Combine(_repoRoot, "rom"),
+                Path.Combine(_repoRoot, "service_flash", "rom"),
+                Path.Combine(_repoRoot, "boot_out"),
                 Path.Combine(_toolsRoot, "rom"),
                 Path.Combine(_toolsRoot, "rom_cache")
             };
+            if (Directory.Exists(appDataRomCache))
+            {
+                try
+                {
+                    foreach (string sub in Directory.GetDirectories(appDataRomCache, "rom_v*_verified"))
+                        romDirs.Add(sub);
+                }
+                catch { }
+            }
             foreach (string rd in romDirs)
             {
                 if (Directory.Exists(rd) &&
@@ -734,14 +750,45 @@ namespace OpenStationFlasher
                     File.Exists(Path.Combine(rd, "vendor.img")) &&
                     File.Exists(Path.Combine(rd, "system.img")))
                 {
-                    snap.LocalRomVer = "Готов (v1.5.1)";
+                    string romVer = ReadRomManifestVersion(rd);
+                    snap.LocalRomVer = string.IsNullOrEmpty(romVer) ? "Готов (локальный)" : ("Готов (v" + romVer.TrimStart('v', 'V') + ")");
+                    if (rd.StartsWith(_repoRoot, StringComparison.OrdinalIgnoreCase))
+                        snap.LocalRomDir = rd;
                     break;
                 }
+            }
+            if (string.IsNullOrEmpty(snap.LocalRomVer))
+            {
+                try
+                {
+                    string[] zips = Directory.Exists(_repoRoot)
+                        ? Directory.GetFiles(_repoRoot, "OpenStationMax-ROM-*.zip")
+                        : new string[0];
+                    if (zips.Length > 0)
+                        snap.LocalRomVer = "Готов (локальный ZIP)";
+                }
+                catch { }
             }
             if (string.IsNullOrEmpty(snap.LocalRomVer))
                 snap.LocalRomVer = "Скачается с GitHub";
 
             return snap;
+        }
+
+        private static string ReadRomManifestVersion(string romDir)
+        {
+            try
+            {
+                string mf = Path.Combine(romDir, "rom_manifest.json");
+                if (!File.Exists(mf)) return "";
+                string txt = File.ReadAllText(mf, Encoding.UTF8);
+                var m = Regex.Match(txt, "\"version\"\\s*:\\s*\"([^\"]+)\"");
+                return m.Success ? m.Groups[1].Value.Trim() : "";
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         private void ApplySnapshotToUi(DeviceSnapshot s)
@@ -974,7 +1021,21 @@ namespace OpenStationFlasher
                     source.CopyTo(dest);
             }
             AppendLog("Запуск встроенного модуля прошивки. Не отключайте питание и кабель.");
-            int rc = RunPythonStream(engine, "--flash");
+            string engineArgs = "--flash";
+            if (!string.IsNullOrEmpty(snap.LocalRomDir) && Directory.Exists(snap.LocalRomDir))
+            {
+                string mfVer = ReadRomManifestVersion(snap.LocalRomDir);
+                if (string.IsNullOrEmpty(mfVer) || IsVersionAtLeast(mfVer, FW_VERSION))
+                {
+                    AppendLog("Используется локальный образ ROM: " + snap.LocalRomDir);
+                    engineArgs = "--flash --rom-dir \"" + snap.LocalRomDir.Replace("\"", "\\\"") + "\"";
+                }
+                else
+                {
+                    AppendLog("Локальный ROM (" + mfVer + ") старше " + FW_VERSION + " — загружаем актуальный с GitHub.");
+                }
+            }
+            int rc = RunPythonStream(engine, engineArgs);
             if (rc != 0) throw new Exception("Операция остановлена (код " + rc + "). Сохраните журнал.");
             SetProgress(100, "Запись и завершающие команды выполнены");
             Dispatcher.Invoke(() => {
@@ -1040,7 +1101,7 @@ namespace OpenStationFlasher
         private string HttpGetString(string url)
         {
             var req = (HttpWebRequest)WebRequest.Create(url);
-            req.UserAgent = "OpenStationFlasher/1.5";
+            req.UserAgent = "OpenStationFlasher/1.6";
             req.Timeout = 20000;
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
@@ -1052,7 +1113,7 @@ namespace OpenStationFlasher
         private void DownloadFile(string url, string dest)
         {
             var req = (HttpWebRequest)WebRequest.Create(url);
-            req.UserAgent = "OpenStationFlasher/1.5";
+            req.UserAgent = "OpenStationFlasher/1.6";
             req.Timeout = 60000;
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (var s = resp.GetResponseStream())

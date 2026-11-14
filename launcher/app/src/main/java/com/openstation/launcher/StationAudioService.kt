@@ -11,6 +11,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.provider.Settings
 import android.media.AudioManager
 import android.media.audiofx.BassBoost
 import android.media.audiofx.DynamicsProcessing
@@ -451,7 +453,13 @@ class StationAudioService : Service() {
                     val vis = obj.optString("visualizerStyle", "")
                     val autoVis = if (obj.has("autoMusicVisualizer")) obj.optBoolean("autoMusicVisualizer") else null
                     LiveOrbState.updateStyles(clk, vis, autoVis)
-                    Log.i(TAG, "Synced styles: clock=$clk, vis=$vis, autoVis=$autoVis")
+                    val aName = obj.optString("assistantName", "")
+                    val aVoice = obj.optString("voiceName", "")
+                    LiveOrbState.updateAssistantPersona(aName, aVoice)
+                    val hwEq = obj.optString("hardwareEqProfile", "")
+                    val hwEqSup = if (obj.has("hardwareEqSupported")) obj.optBoolean("hardwareEqSupported") else null
+                    LiveOrbState.updateHardwareEq(hwEq, hwEqSup)
+                    Log.i(TAG, "Synced styles: clock=$clk, vis=$vis, autoVis=$autoVis, name=$aName, hwEq=$hwEq")
                 }
                 "weather_event" -> {
                     val valid = obj.optBoolean("valid", false)
@@ -855,10 +863,7 @@ class StationAudioService : Service() {
 
     private fun launchPackage(pkg: String) {
         try {
-            var intent = packageManager.getLeanbackLaunchIntentForPackage(pkg)
-            if (intent == null) {
-                intent = packageManager.getLaunchIntentForPackage(pkg)
-            }
+            val intent = packageManager.appLaunchIntent(pkg)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
@@ -1042,4 +1047,11 @@ class StationAudioService : Service() {
             }
         }
     }
+}
+
+internal fun PackageManager.appLaunchIntent(pkg: String): Intent? {
+    getLeanbackLaunchIntentForPackage(pkg)?.let { return it }
+    getLaunchIntentForPackage(pkg)?.let { return it }
+    val settingsIntent = Intent(Settings.ACTION_SETTINGS).setPackage(pkg)
+    return settingsIntent.takeIf { resolveActivity(it, 0) != null }
 }

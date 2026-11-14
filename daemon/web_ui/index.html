@@ -15,40 +15,104 @@
       <feDisplacementMap in="SourceGraphic" in2="blurred" scale="70" xChannelSelector="R" yChannelSelector="G" />
     </filter>
   </svg>
-  <div class="app-shell">
-    <header class="topbar">
+  <div class="app">
+    <aside class="sidebar">
       <div class="brand">
         <div class="logo-dot"></div>
-        <div>
+        <div class="brand-text">
           <h1>OpenStation Max</h1>
           <div class="sub" id="sysSubtitle">Подключение...</div>
         </div>
       </div>
 
-      <div class="badges">
-        <span class="badge" id="badgeVol">Громкость: --%</span>
-        <button class="btn btn-sm btn-danger" id="btnQuickMute">Микрофон: ВКЛ</button>
-        <button class="btn btn-sm" id="btnQuickBt" title="Режим Bluetooth (A2DP колонка для телефона)">ᛒ Bluetooth: ВЫКЛ</button>
-        <button class="btn btn-sm btn-accent" id="btnQuickAlice">Алиса: Спит</button>
-        <button class="btn btn-sm" id="btnQuickMusic">🌊 Моя волна</button>
-        <button class="btn btn-sm btn-ota" id="badgeOtaUpdate" style="display:none;">⬇ Обновление</button>
-        <button class="btn btn-sm btn-accent" id="btnOpenWizard">✨ Мастер</button>
+      <nav class="side-nav" id="tabNav" aria-label="Разделы">
+        <button class="tab active" data-tab="music" data-title="Музыка">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>
+          <span>Музыка</span>
+        </button>
+        <button class="tab" data-tab="remote" data-title="Пульт и Приложения">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="4"/><circle cx="12" cy="8.5" r="2.5"/><path d="M10 15h4M10 18h4"/></svg>
+          <span>Пульт</span>
+        </button>
+        <button class="tab" data-tab="alice" data-title="Алиса" id="sideTabAlice">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+          <span class="js-ast-name">Алиса</span>
+        </button>
+        <button class="tab" data-tab="sound" data-title="Звук и Подсветка">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M3 14h4M10 8h4M17 16h4"/></svg>
+          <span>Звук и подсветка</span>
+        </button>
+        <button class="tab" data-tab="home" data-title="Умный дом">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+          <span>Умный дом</span>
+        </button>
+        <button class="tab" data-tab="system" data-title="Система">
+          <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          <span>Система</span>
+        </button>
+      </nav>
+
+      <div class="mini-player mini-side">
+        <img class="mini-cover" data-mini="cover" src="https://images.unsplash.com/photo-1619983081593-e2ba5b543168?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=400" alt="" />
+        <div class="mini-meta">
+          <span class="mini-title" data-mini="title">Моя волна</span>
+          <span class="mini-artist" data-mini="artist">Яндекс Музыка</span>
+        </div>
+        <div class="mini-progress"><div data-mini="progress"></div></div>
+        <div class="mini-ctrls">
+          <button class="icon-btn hide-mobile" data-mini-cmd="btnMusicPrev" aria-label="Предыдущий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM20 5v14L10 12z"/></svg></button>
+          <button class="icon-btn mini-play" data-mini-cmd="btnMusicPlayPause" data-mini="play" aria-label="Пауза или воспроизведение"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg></button>
+          <button class="icon-btn" data-mini-cmd="btnMusicNext" aria-label="Следующий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5h2v14h-2zM4 5v14l10-7z"/></svg></button>
+        </div>
       </div>
-    </header>
+    </aside>
 
-    <nav class="tabs" id="tabNav">
-      <button class="tab active" data-tab="remote">Музыка и Пульт</button>
-      <button class="tab" data-tab="alice">Алиса</button>
-      <button class="tab" data-tab="sound">Звук и Подсветка</button>
-      <button class="tab" data-tab="system">Система</button>
-    </nav>
+    <div class="main">
+      <header class="appbar">
+        <h1 class="page-title" id="pageTitle">Музыка</h1>
+        <div class="badges">
+          <span class="badge hide-mobile" id="badgeVol">Громкость: --%</span>
+          <button class="btn btn-sm btn-danger" id="btnQuickMute">Микрофон: ВКЛ</button>
+          <button class="btn btn-sm hide-mobile" id="btnQuickBt" title="Режим Bluetooth (A2DP колонка для телефона)">ᛒ Bluetooth: ВЫКЛ</button>
+          <button class="btn btn-sm btn-accent hide-mobile" id="btnQuickAlice">Алиса: Спит</button>
+          <button class="btn btn-sm hide-mobile" id="btnQuickMusic">🌊 Моя волна</button>
+          <button class="btn btn-sm btn-ota" id="badgeOtaUpdate" style="display:none;">⬇ Обновление</button>
+          <button class="btn btn-sm btn-accent hide-mobile" id="btnOpenWizard">✨ Мастер</button>
+          <button class="icon-btn tab only-mobile" data-tab="system" data-title="Система" aria-label="Система">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </button>
+        </div>
+      </header>
 
-    <main class="content">
-      <!-- TAB 1: MUSIC, TV REMOTE & APPS -->
-      <section class="panel active" id="tab-remote">
+      <div class="conn-banner" id="connBanner" role="status" hidden>
+        <div><b>Станция не отвечает</b><span id="connBannerSub">Переподключаемся…</span></div>
+        <button class="btn btn-sm" id="btnConnRetry" type="button">Повторить</button>
+      </div>
+      <div class="alarm-banner" id="alarmBanner" role="alert" hidden>
+        <div><b id="alarmBannerTitle">Будильник</b><span id="alarmBannerSub"></span></div>
+        <button class="btn btn-sm" id="btnAlarmSnooze" type="button">Отложить 5 мин</button>
+        <button class="btn btn-sm btn-accent" id="btnAlarmStop" type="button">Стоп</button>
+      </div>
+
+      <main class="content">
+      <!-- TAB 1: MUSIC & TIMERS -->
+      <section class="panel active" id="tab-music">
+        <div class="card login-card" id="musicLoginCard" hidden style="margin-bottom:18px;">
+          <div class="login-ico"><svg class="ico" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></div>
+          <h2>Подключите Яндекс Музыку</h2>
+          <p class="hint">Откройте вход по QR-коду на ТВ-экране станции или вставьте OAuth-токен — Моя волна, лайки и треки появятся здесь и на телевизоре.</p>
+          <div class="btn-row center-row" style="margin-bottom:12px;">
+            <button class="btn btn-accent" id="btnMusicTvLogin" type="button">📺 Открыть вход на ТВ (QR)</button>
+          </div>
+          <div class="input-send-row" style="width:100%;">
+            <input type="password" id="musicLoginOAuthInput" placeholder="Или вставьте OAuth-токен (y0_...) / ссылку" autocomplete="off" />
+            <button class="btn btn-sm btn-accent" id="btnPushMusicLoginOAuth" type="button">Войти</button>
+          </div>
+        </div>
+
         <div class="grid-2">
-          <div class="stack">
-            <!-- LIQUID GLASS MUSIC PLAYER (from Текстовый документ.txt) -->
+          <div class="stack" id="musicMain">
+            <!-- LIQUID GLASS MUSIC PLAYER -->
             <div class="glass-container glass-container--rounded glass-container--large player-glass-card">
               <div class="glass-filter"></div>
               <div class="glass-overlay"></div>
@@ -93,7 +157,7 @@
             </div>
 
             <!-- PLAYER CONTROLS & MOODS -->
-            <div class="card" style="margin-top: 14px;">
+            <div class="card">
               <div class="status-banner" id="musicStatusBanner">Ожидание состояния плеера...</div>
               <div class="btn-row" style="margin-bottom: 12px; margin-top: 10px;">
                 <button class="btn btn-sm btn-accent" id="btnMusicWave">🌊 Моя волна</button>
@@ -118,7 +182,45 @@
                 </div>
               </details>
             </div>
+          </div>
 
+          <div class="stack">
+            <div class="card" id="timersCard">
+              <h2>Таймеры и будильники</h2>
+              <div class="timer-list" id="timerList"><div class="hint">Нет активных таймеров и будильников.</div></div>
+              <div class="create-box">
+                <h3>Создать</h3>
+                <div class="seg-group" id="tmKind">
+                  <button class="seg active" data-kind="timer" type="button">Таймер</button>
+                  <button class="seg" data-kind="alarm" type="button">Будильник</button>
+                </div>
+                <div class="grid-3-tight" id="tmTimerFields">
+                  <div class="form-row"><label for="tmMin">Минуты</label><input type="number" id="tmMin" min="0" max="1440" value="10" /></div>
+                  <div class="form-row"><label for="tmSec">Секунды</label><input type="number" id="tmSec" min="0" max="59" value="0" /></div>
+                  <div class="form-row"><label for="tmLabel">Название</label><input type="text" id="tmLabel" placeholder="Чайник" /></div>
+                </div>
+                <div id="tmAlarmFields" hidden>
+                  <div class="grid-2-tight">
+                    <div class="form-row"><label for="alTime">Время</label><input type="time" id="alTime" value="07:30" /></div>
+                    <div class="form-row"><label for="alSound">Звук</label><select id="alSound"><option value="wave">Моя волна</option><option value="calm">Спокойная волна</option><option value="chime">Мелодия станции</option></select></div>
+                  </div>
+                  <div class="days" id="alDays">
+                    <button class="seg active" data-day="0" type="button">Пн</button><button class="seg active" data-day="1" type="button">Вт</button><button class="seg active" data-day="2" type="button">Ср</button><button class="seg active" data-day="3" type="button">Чт</button><button class="seg active" data-day="4" type="button">Пт</button><button class="seg" data-day="5" type="button">Сб</button><button class="seg" data-day="6" type="button">Вс</button>
+                  </div>
+                  <div class="form-row"><label for="alLabel">Название</label><input type="text" id="alLabel" placeholder="Подъём" /></div>
+                </div>
+                <button class="btn btn-accent" id="btnTmAdd" type="button">Добавить</button>
+                <p class="hint" id="tmVoiceHint">Или голосом: «Алиса, разбуди меня в 7:30 по будням».</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: TV REMOTE & APPS -->
+      <section class="panel" id="tab-remote">
+        <div class="grid-2">
+          <div class="stack">
             <div class="card">
               <h2>Ввод текста на ТВ</h2>
               <p class="hint">Отправляет текст напрямую в активное поле поиска или ввода на экране телевизора.</p>
@@ -236,12 +338,12 @@
         </div>
       </section>
 
-      <!-- TAB 2: ALICE -->
+      <!-- TAB 3: ALICE -->
       <section class="panel" id="tab-alice">
         <div class="grid-2">
           <div class="card">
             <div class="row-between">
-              <h2>Голосовой ассистент «Алиса»</h2>
+              <h2 id="aliceCardTitle">Голосовой ассистент «Алиса»</h2>
               <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                 <span class="badge" id="badgeAgentMode">Агент: выкл</span>
                 <span class="badge" id="badgeWakeWord">Голос: --</span>
@@ -298,12 +400,27 @@
               <div class="live-line model" id="aliceLiveModel"></div>
             </div>
             <div class="dialog-box" id="aliceHistory">
-              <div class="hint">Скажите «Алиса...» или нажмите «Разбудить Алису».</div>
+              <div class="hint" id="aliceEmptyHint">Скажите «Алиса...» или нажмите «Разбудить Алису».</div>
             </div>
           </div>
 
           <div class="card">
-            <h2>Настройки Алисы</h2>
+            <h2 id="astSettingsTitle">Настройки Алисы</h2>
+            <div class="form-row">
+              <label for="astName">Имя и слово активации</label>
+              <div class="input-send-row">
+                <input type="text" id="astName" maxlength="32" placeholder="Алиса" value="Алиса" />
+                <button class="btn btn-sm btn-accent" id="btnApplyAstName" type="button">Применить</button>
+              </div>
+              <div class="seg-group" id="astNamePresets" style="margin-top:8px;">
+                <button class="seg active" type="button" data-aname="Алиса" data-gender="female">Алиса</button>
+                <button class="seg" type="button" data-aname="Джарвис" data-gender="male">Джарвис</button>
+                <button class="seg" type="button" data-aname="Пятница" data-gender="female">Пятница</button>
+                <button class="seg" type="button" data-aname="Макс" data-gender="male">Макс</button>
+              </div>
+              <div class="hint" id="astNameHint">Ассистент сразу переключает фразу активации, голос и подачу ответов.</div>
+            </div>
+
             <div class="form-row">
               <label>Голос ответа</label>
               <select id="astVoice">
@@ -501,6 +618,49 @@
               </div>
             </details>
 
+            <details class="adv-details" id="maxDsp" hidden>
+              <summary>Аппаратный DSP (SY6045S Hi-Fi)</summary>
+              <div class="adv-details-body">
+                <div class="btn-row">
+                  <button class="btn btn-sm" type="button" data-dsp="hifi">Hi-Fi Studio</button>
+                  <button class="btn btn-sm" type="button" data-dsp="original">Вернуть исходный</button>
+                  <button class="btn btn-sm" type="button" data-dsp="night">Ночной</button>
+                  <button class="btn btn-sm" type="button" data-dsp="bass">Deep Punch</button>
+                  <button class="btn btn-sm" type="button" data-dsp="club">Club Bass</button>
+                </div>
+                <div class="eq-curve-wrap" style="margin-top:10px;">
+                  <svg id="maxDspCurve" viewBox="0 0 360 110" class="eq-svg" role="img" aria-label="Расчётная АЧХ"></svg>
+                </div>
+                <p class="hint" id="maxDspLegend">Расчётная АЧХ · НЧ / СЧ и ВЧ / Система</p>
+                <div class="form-row">
+                  <label for="maxDspBass">Мощность баса <output id="maxDspBassValue"></output></label>
+                  <input type="range" id="maxDspBass" min="-6" max="8" step="0.5" value="0" />
+                </div>
+                <div class="form-row">
+                  <label for="maxDspSub">Срез инфранизких <output id="maxDspSubValue"></output></label>
+                  <input type="range" id="maxDspSub" min="35" max="80" step="1" value="48" />
+                </div>
+                <div class="form-row">
+                  <label for="maxDspTreble">Высокие частоты <output id="maxDspTrebleValue"></output></label>
+                  <input type="range" id="maxDspTreble" min="-6" max="6" step="0.5" value="3" />
+                </div>
+                <div class="form-row toggle-row"><label for="maxDsp-subsonic">Антивибрация (Subsonic)</label><input type="checkbox" id="maxDsp-subsonic" checked /></div>
+                <div class="form-row toggle-row"><label for="maxDsp-notch120">Режекторный фильтр 120 Гц</label><input type="checkbox" id="maxDsp-notch120" checked /></div>
+                <div class="form-row toggle-row"><label for="maxDsp-phase">Фазовая компенсация APF-2 (260 Гц)</label><input type="checkbox" id="maxDsp-phase" checked /></div>
+                <div class="form-row toggle-row"><label for="maxDsp-treble">Воздух ВЧ (13,5 кГц)</label><input type="checkbox" id="maxDsp-treble" checked /></div>
+                <div class="btn-row">
+                  <button class="btn btn-sm btn-accent" type="button" data-dsp="custom">Применить свои настройки</button>
+                </div>
+                <p class="hint" id="maxDspStatus" role="status"></p>
+                <hr class="adv-divider" />
+                <div class="form-row toggle-row">
+                  <label for="maxDspDrc">Обход лимитера (DRC Bypass — осторожно)</label>
+                  <input type="checkbox" id="maxDspDrc" aria-describedby="maxDspDrcStatus" disabled />
+                </div>
+                <p class="hint" id="maxDspDrcStatus" role="status"></p>
+              </div>
+            </details>
+
             <details class="adv-details">
               <summary>Тонкий баланс громкости</summary>
               <div class="adv-details-body">
@@ -693,14 +853,45 @@
         </div>
       </section>
 
-      <!-- TAB 4: SYSTEM, BOOTANIMATION, OTA & SMART HOME -->
+      <!-- TAB 5: SMART HOME (HOME ASSISTANT) -->
+      <section class="panel" id="tab-home">
+        <div class="card" id="haSetupCard" hidden>
+          <h2>Подключите Home Assistant</h2>
+          <p class="hint">Адрес сервера и долгоживущий токен (Профиль → Безопасность → Долгоживущие токены). Токен хранится только на станции и не возвращается обратно.</p>
+          <div class="grid-2-tight">
+            <div class="form-row"><label for="haUrl">Адрес Home Assistant</label><input type="text" id="haUrl" placeholder="http://192.168.1.10:8123" /></div>
+            <div class="form-row"><label for="haToken">Долгоживущий токен</label><input type="password" id="haToken" placeholder="eyJ…" autocomplete="off" /></div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-accent" id="btnHaSave" type="button">Подключить</button>
+          </div>
+        </div>
+        <div id="haMain" hidden>
+          <div class="row-between" style="margin-bottom:12px;">
+            <div class="chips" id="haRooms"></div>
+            <span class="conn-pill" id="haStatus">Home Assistant</span>
+          </div>
+          <div class="card" id="haScenesCard" style="margin-bottom:14px;">
+            <h2>Сценарии</h2>
+            <div class="chips" id="haScenes"></div>
+          </div>
+          <div class="device-grid" id="haDevices"></div>
+          <div class="sensor-grid" id="haSensors"></div>
+          <p class="hint" id="haVoiceHint" style="margin-top:12px;">Устройства синхронизируются с Home Assistant. Можно сказать: «Алиса, выключи свет в гостиной».</p>
+          <div class="btn-row">
+            <button class="btn btn-sm" id="btnHaReconfig" type="button">Изменить подключение</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: SYSTEM, BOOTANIMATION, OTA & SMART HOME -->
       <section class="panel" id="tab-system">
         <div class="grid-2">
           <div class="stack">
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.5.0</span>
+                <span class="badge ok" id="otaVersionBadge">v1.6.0</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -901,7 +1092,30 @@
           </div>
         </div>
       </section>
-    </main>
+      </main>
+    </div>
+
+    <div class="mini-player mini-bottom">
+      <img class="mini-cover" data-mini="cover" src="https://images.unsplash.com/photo-1619983081593-e2ba5b543168?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&q=80&w=400" alt="" />
+      <div class="mini-meta">
+        <span class="mini-title" data-mini="title">Моя волна</span>
+        <span class="mini-artist" data-mini="artist">Яндекс Музыка</span>
+      </div>
+      <div class="mini-progress"><div data-mini="progress"></div></div>
+      <div class="mini-ctrls">
+        <button class="icon-btn hide-mobile" data-mini-cmd="btnMusicPrev" aria-label="Предыдущий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h2v14H7zM20 5v14L10 12z"/></svg></button>
+        <button class="icon-btn mini-play" data-mini-cmd="btnMusicPlayPause" data-mini="play" aria-label="Пауза или воспроизведение"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4l13 8-13 8z"/></svg></button>
+        <button class="icon-btn" data-mini-cmd="btnMusicNext" aria-label="Следующий трек"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15 5h2v14h-2zM4 5v14l10-7z"/></svg></button>
+      </div>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Разделы">
+      <button class="tab active" data-tab="music" data-title="Музыка"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></span><span>Музыка</span></button>
+      <button class="tab" data-tab="remote" data-title="Пульт"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="4"/><circle cx="12" cy="8.5" r="2.5"/><path d="M10 15h4M10 18h4"/></svg></span><span>Пульт</span></button>
+      <button class="tab" data-tab="alice" data-title="Алиса" id="mobTabAlice"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg></span><span class="js-ast-name">Алиса</span></button>
+      <button class="tab" data-tab="sound" data-title="Звук и подсветка"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4v16M12 4v16M19 4v16M3 14h4M10 8h4M17 16h4"/></svg></span><span>Звук</span></button>
+      <button class="tab" data-tab="home" data-title="Умный дом"><span class="pill"><svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span><span>Дом</span></button>
+    </nav>
   </div>
 
   <!-- INTERACTIVE SETUP WIZARD MODAL (Synced live with TV SetupWizardActivity) -->
@@ -913,14 +1127,14 @@
           <div class="sub" id="wizSubtitle">Настройки сразу синхронизируются с телевизором</div>
         </div>
         <div class="wizard-header-actions">
-          <span class="badge ok" id="wizFwBadge">v1.5.0</span>
+          <span class="badge ok" id="wizFwBadge">v1.6.0</span>
           <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
         </div>
       </div>
 
       <div class="wizard-steps" id="wizStepsNav">
         <button class="wiz-step-pill active" data-step="1" type="button">1. Станция и сеть</button>
-        <button class="wiz-step-pill" data-step="2" type="button">2. Алиса</button>
+        <button class="wiz-step-pill" data-step="2" type="button">2. <span class="js-ast-name">Алиса</span></button>
         <button class="wiz-step-pill" data-step="3" type="button">3. Музыка и Звук</button>
         <button class="wiz-step-pill" data-step="4" type="button">4. Подсветка и Кнопки</button>
         <button class="wiz-step-pill" data-step="5" type="button">5. Готовность</button>
@@ -971,6 +1185,16 @@
         <div class="wiz-pane" id="wizStep2">
           <div class="status-banner" id="wizGeminiBanner">Укажите API-ключ Google Gemini Live (бесплатно на aistudio.google.com/apikey).</div>
           <div class="form-row">
+            <label for="wizName">Имя и слово активации</label>
+            <input type="text" id="wizName" maxlength="32" placeholder="Алиса" value="Алиса" />
+            <div class="seg-group" id="wizNamePresets" style="margin-top:8px;">
+              <button class="seg active" type="button" data-aname="Алиса" data-gender="female">Алиса</button>
+              <button class="seg" type="button" data-aname="Джарвис" data-gender="male">Джарвис</button>
+              <button class="seg" type="button" data-aname="Пятница" data-gender="female">Пятница</button>
+              <button class="seg" type="button" data-aname="Макс" data-gender="male">Макс</button>
+            </div>
+          </div>
+          <div class="form-row">
             <label>Gemini API Key</label>
             <div class="input-send-row">
               <input type="password" id="wizApiKey" placeholder="AIza... или AQ.Ab8..." autocomplete="off" />
@@ -983,7 +1207,7 @@
               <input type="text" id="wizProxyHost" placeholder="ai-pool.comss.one" value="ai-pool.comss.one" />
             </div>
             <div class="form-row">
-              <label>Голос Алисы</label>
+              <label id="wizVoiceLabel">Голос ассистента</label>
               <select id="wizVoice">
                 <option value="Aoede">Aoede (женский, мягкий)</option>
                 <option value="Kore">Kore (женский, яркий)</option>
@@ -997,7 +1221,7 @@
             </div>
           </div>
           <div class="form-row toggle-row">
-            <label>Откликаться на слово «Алиса»</label>
+            <label id="wizWakeLabel">Откликаться на слово «Алиса»</label>
             <input type="checkbox" id="wizWakeEn" checked />
           </div>
           <div class="btn-row">

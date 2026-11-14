@@ -251,6 +251,9 @@ class WeatherOverlayView @JvmOverloads constructor(
             }
         }
 
+        private var cachedSunW = -1f
+        private var cachedSunH = -1f
+
         fun start() {
             if (running) return
             running = true
@@ -297,12 +300,16 @@ class WeatherOverlayView @JvmOverloads constructor(
             val cy = h * 0.32f
             val baseR = min(w, h) * 0.14f
 
-            sunPaint.shader = RadialGradient(
-                cx, cy, baseR * 1.8f,
-                intArrayOf(Color.parseColor("#FFFACC15"), Color.parseColor("#66F59E0B"), Color.TRANSPARENT),
-                floatArrayOf(0f, 0.45f, 1f),
-                Shader.TileMode.CLAMP
-            )
+            if (sunPaint.shader == null || cachedSunW != w || cachedSunH != h) {
+                cachedSunW = w
+                cachedSunH = h
+                sunPaint.shader = RadialGradient(
+                    cx, cy, baseR * 1.8f,
+                    intArrayOf(Color.parseColor("#FFFACC15"), Color.parseColor("#66F59E0B"), Color.TRANSPARENT),
+                    floatArrayOf(0f, 0.45f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+            }
             canvas.drawCircle(cx, cy, baseR * 1.8f, sunPaint)
 
             // Pulsing rotating rays

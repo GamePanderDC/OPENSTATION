@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.5.5",
-    [string]$Changelog = "Исправления пульта, Алисы, Яндекс Музыки, обновления и стабильности.",
+    [string]$Version = "1.6.0",
+    [string]$Changelog = "OpenStation Max v1.6.0: аппаратный DSP/EQ SY6045S, таймеры и будильники, интеграция Home Assistant, смена имени и ключевого слова ассистента, оптимизация CPU/температуры в простое, обновлённая LED-матрица 25x16, адаптивный веб-пульт LiquidGlass и надёжный USB-установщик.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

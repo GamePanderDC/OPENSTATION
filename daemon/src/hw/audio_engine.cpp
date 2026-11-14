@@ -164,6 +164,45 @@ std::array<float, 24> compute_spectrum_16k(const int16_t* samples, size_t count)
     return bands;
 }
 
+void decimate_to_16k(const float* in, size_t frames, int sample_rate,
+                     double& resamp_phase,
+                     std::vector<float>& rem48, std::vector<float>& comb_scratch,
+                     std::vector<float>& out16) {
+    out16.clear();
+    if (!in || frames == 0 || sample_rate <= 0) return;
+
+    if (sample_rate == 16000) {
+        rem48.clear();
+        out16.assign(in, in + frames);
+    } else if (sample_rate == 48000) {
+        // 3-sample FIR box decimation (anti-aliasing lowpass before /3), preserving trailing remainder
+        comb_scratch.clear();
+        comb_scratch.insert(comb_scratch.end(), rem48.begin(), rem48.end());
+        comb_scratch.insert(comb_scratch.end(), in, in + frames);
+        rem48.clear();
+
+        const size_t total = comb_scratch.size();
+        const size_t usable = (total / 3) * 3;
+        out16.resize(usable / 3);
+        const float* comb = comb_scratch.data();
+        for (size_t i = 0, o = 0; i < usable; i += 3, ++o) {
+            out16[o] = (comb[i] + comb[i + 1] + comb[i + 2]) * (1.0f / 3.0f);
+        }
+        if (usable < total) {
+            rem48.assign(comb + usable, comb + total);
+        }
+    } else {
+        rem48.clear();
+        const double ratio = static_cast<double>(sample_rate) / 16000.0;
+        while (resamp_phase < static_cast<double>(frames)) {
+            const size_t idx = static_cast<size_t>(resamp_phase);
+            out16.push_back(in[idx]);
+            resamp_phase += ratio;
+        }
+        resamp_phase -= static_cast<double>(frames);
+    }
+}
+
 void write_le32(uint8_t* p, uint32_t v) {
     p[0] = v & 0xFF;
     p[1] = (v >> 8) & 0xFF;
@@ -191,14 +230,11 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     pcm_cb_ = std::move(pcm_cb);
     spec_cb_ = std::move(spec_cb);
     wav_ring_.assign(kWavRingMax, 0);
-    aec_w_.assign(kAecTaps, 0.0f);
-    aec_x_.assign(kAecTaps, 0.0f);
+    aec_.reset(true);
     aec_x_clean_ = true;
     aec_hangover_ = 0;
-    hp1_x_ = 0.0f;
-    hp1_y_ = 0.0f;
-    hp2_x_ = 0.0f;
-    hp2_y_ = 0.0f;
+    hp_mic_.reset();
+    hp_ref_.reset();
     agc_gain_ = 1.0f;
     agc_noise_floor_ = 55.0f;
     agc_hold_frames_ = 0;
@@ -207,6 +243,9 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     f48_buf_.reserve(1024);
     f48_comb_buf_.reserve(1040);
     f16_batch_buf_.reserve(400);
+    ref48_buf_.reserve(1024);
+    ref48_comb_buf_.reserve(1040);
+    ref16_batch_buf_.reserve(400);
     mono_buf_.reserve(1024);
     combined_buf_.reserve(1040);
     out_batch_buf_.reserve(400);
@@ -327,33 +366,42 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         }
     }
 
-    // Check if speaker loopback channel has active signal before running 64-tap NLMS
+    // Check if speaker loopback channels have active signal before running 16 kHz NLMS AEC
     bool use_aec = cfg_copy.aec_enable && tracked_ch >= 10 &&
                    cfg_copy.loopback_channel >= 0 && cfg_copy.loopback_channel < tracked_ch;
+    const bool has_stereo_lb = (cfg_copy.loopback_channel == 8 && tracked_ch >= 10);
     if (use_aec && frames > 0) {
-        double lb_sq = ch_sq[cfg_copy.loopback_channel];
+        const double lb_sq = has_stereo_lb
+                                 ? 0.5 * (ch_sq[8] + ch_sq[9])
+                                 : ch_sq[cfg_copy.loopback_channel];
         if (lb_sq > static_cast<double>(frames) * 25.0) {
-            aec_hangover_ = 25; // ~500 ms hangover after playback stops
+            aec_hangover_ = 30; // ~600 ms hangover after playback stops
             aec_x_clean_ = false;
         } else if (aec_hangover_ > 0) {
             --aec_hangover_;
         } else {
             if (!aec_x_clean_) {
-                std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
-                aec_pos_ = 0;
+                aec_.reset_history();
+                hp_ref_.reset();
                 aec_x_clean_ = true;
             }
             use_aec = false;
         }
     }
 
-    // 2. Mix/select mono channel + optional NLMS AEC in float32 (preserve full headroom before AGC)
+    // 2. Mix/select mono mic channel and aligned loopback reference in float32
     f48_buf_.resize(frames);
     float* f48 = f48_buf_.data();
+    float* ref48 = nullptr;
+    if (use_aec) {
+        ref48_buf_.resize(frames);
+        ref48 = ref48_buf_.data();
+    }
+
     if (cfg_copy.mic_muted) {
         std::fill(f48_buf_.begin(), f48_buf_.end(), 0.0f);
+        if (use_aec) std::fill(ref48_buf_.begin(), ref48_buf_.end(), 0.0f);
     } else {
-        constexpr size_t kAecMask = kAecTaps - 1;
         int best_c = 0;
         if (tracked_ch >= 7) {
             float max_nrms = ch_rms_[0];
@@ -380,82 +428,49 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
                                 samp[4] + samp[5] + samp[6]) * (1.0f / 7.0f);
                 mic_f = 0.70f * best_s + 0.30f * omni_s;
             }
-
-            // NLMS Acoustic Echo Cancellation using hardware loopback reference
-            if (use_aec) {
-                float ref_f = samp[cfg_copy.loopback_channel];
-                aec_x_[aec_pos_] = ref_f;
-                float y_hat = 0.0f;
-                float power = 1e-3f;
-                for (size_t k = 0; k < kAecTaps; ++k) {
-                    size_t idx = (aec_pos_ + kAecTaps - k) & kAecMask;
-                    float xk = aec_x_[idx];
-                    y_hat += aec_w_[k] * xk;
-                    power += xk * xk;
-                }
-                float err = mic_f - y_hat;
-                float step = (0.18f * err) / (power + 5000.0f);
-                for (size_t k = 0; k < kAecTaps; ++k) {
-                    size_t idx = (aec_pos_ + kAecTaps - k) & kAecMask;
-                    aec_w_[k] = std::clamp(aec_w_[k] + step * aec_x_[idx], -3.0f, 3.0f);
-                }
-                aec_pos_ = (aec_pos_ + 1) & kAecMask;
-                mic_f = err;
-            }
-
             f48[f] = mic_f;
+
+            if (use_aec) {
+                ref48[f] = has_stereo_lb
+                               ? 0.5f * (samp[8] + samp[9])
+                               : samp[cfg_copy.loopback_channel];
+            }
         }
     }
 
-    // 3. Downsample in float32 (e.g. 48000 Hz -> 16000 Hz) reusing persistent scratch buffers
-    f16_batch_buf_.clear();
-    if (sample_rate == 16000) {
-        f48_rem_.clear();
-        f16_batch_buf_.assign(f48_buf_.begin(), f48_buf_.end());
-    } else if (sample_rate == 48000) {
-        // 3-sample FIR box decimation (anti-aliasing lowpass before /3), preserving trailing remainder across callbacks
-        f48_comb_buf_.clear();
-        f48_comb_buf_.insert(f48_comb_buf_.end(), f48_rem_.begin(), f48_rem_.end());
-        f48_comb_buf_.insert(f48_comb_buf_.end(), f48_buf_.begin(), f48_buf_.end());
-        f48_rem_.clear();
-
-        size_t total = f48_comb_buf_.size();
-        size_t usable = (total / 3) * 3;
-        f16_batch_buf_.resize(usable / 3);
-        const float* comb = f48_comb_buf_.data();
-        for (size_t i = 0, o = 0; i < usable; i += 3, ++o) {
-            f16_batch_buf_[o] = (comb[i] + comb[i + 1] + comb[i + 2]) * (1.0f / 3.0f);
-        }
-        if (usable < total) {
-            f48_rem_.assign(comb + usable, comb + total);
-        }
-    } else if (sample_rate > 0) {
-        f48_rem_.clear();
-        double ratio = static_cast<double>(sample_rate) / 16000.0;
-        while (resamp_phase_ < static_cast<double>(frames)) {
-            size_t idx = static_cast<size_t>(resamp_phase_);
-            f16_batch_buf_.push_back(f48[idx]);
-            resamp_phase_ += ratio;
-        }
-        resamp_phase_ -= static_cast<double>(frames);
+    // 3. Downsample mic (and synchronized loopback ref when active) to 16 kHz
+    decimate_to_16k(f48_buf_.data(), frames, sample_rate,
+                    resamp_phase_, f48_rem_, f48_comb_buf_, f16_batch_buf_);
+    if (use_aec && !cfg_copy.mic_muted) {
+        decimate_to_16k(ref48_buf_.data(), frames, sample_rate,
+                        ref_resamp_phase_, ref48_rem_, ref48_comb_buf_, ref16_batch_buf_);
+    } else {
+        ref48_rem_.assign(f48_rem_.size(), 0.0f);
+        ref_resamp_phase_ = resamp_phase_;
     }
 
-    // 4. 2-stage 95 Hz High-Pass Filter + Smart Far-Field Speech AGC + Gentle Sub-Floor Gate + Soft Limiter
+    // 4. 2-stage 95 Hz High-Pass Filter on mic & ref -> 16 kHz Delay-Aligned NLMS AEC -> Far-Field AGC
     out_batch_buf_.resize(f16_batch_buf_.size());
     if (cfg_copy.mic_muted || f16_batch_buf_.empty()) {
         std::fill(out_batch_buf_.begin(), out_batch_buf_.end(), 0);
     } else {
         const size_t n16 = f16_batch_buf_.size();
+        for (size_t i = 0; i < n16; ++i) {
+            f16_batch_buf_[i] = hp_mic_.process(f16_batch_buf_[i]);
+        }
+        if (use_aec) {
+            const size_t nref = std::min(n16, ref16_batch_buf_.size());
+            for (size_t i = 0; i < nref; ++i) {
+                ref16_batch_buf_[i] = hp_ref_.process(ref16_batch_buf_[i]);
+            }
+            if (nref > 0) {
+                aec_.process_block(f16_batch_buf_.data(), ref16_batch_buf_.data(), nref);
+            }
+        }
+
         double raw_sq = 0.0;
         for (size_t i = 0; i < n16; ++i) {
-            float x = f16_batch_buf_[i];
-            float y1 = 0.964f * (hp1_y_ + x - hp1_x_);
-            hp1_x_ = x;
-            hp1_y_ = y1;
-            float y2 = 0.964f * (hp2_y_ + y1 - hp2_x_);
-            hp2_x_ = y1;
-            hp2_y_ = y2;
-            f16_batch_buf_[i] = y2;
+            const float y2 = f16_batch_buf_[i];
             raw_sq += static_cast<double>(y2) * y2;
         }
         float raw_rms = static_cast<float>(std::sqrt(raw_sq / static_cast<double>(n16)));
@@ -733,28 +748,27 @@ void AudioEngine::run_alsa_capture_session() {
             std::lock_guard<std::mutex> lk(stat_mu_);
             capture_backend_ = "alsa_busy_fallback_aaudio";
         }
-        LOGW("AudioEngine", "Direct /dev/snd/pcmC0D1c busy/unavailable (%s), sleeping 1s", strerror(errno));
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        LOGW("AudioEngine", "Direct /dev/snd/pcmC0D1c busy/unavailable (%s), retrying", strerror(errno));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
         return;
     }
 
     f48_rem_.clear();
+    ref48_rem_.clear();
     mono48k_rem_.clear();
     out16k_acc_.clear();
     out16k_head_ = 0;
     resamp_phase_ = 0.0;
+    ref_resamp_phase_ = 0.0;
     dc_prev_x_.fill(0.0f);
     dc_prev_y_.fill(0.0f);
-    hp1_x_ = 0.0f;
-    hp1_y_ = 0.0f;
-    hp2_x_ = 0.0f;
-    hp2_y_ = 0.0f;
+    hp_mic_.reset();
+    hp_ref_.reset();
     agc_gain_ = 1.0f;
     agc_noise_floor_ = 55.0f;
     agc_hold_frames_ = 0;
     cap_warmup_frames_ = 24;
-    std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
-    aec_pos_ = 0;
+    aec_.reset(true);
     aec_hangover_ = 0;
     aec_x_clean_ = true;
     mic_spec_zero_sent_ = false;
@@ -793,8 +807,12 @@ void AudioEngine::run_alsa_capture_session() {
 
 void AudioEngine::capture_loop() {
     bool prefer_alsa_after_silence = false;
+    int alsa_short_retries = 0;
     while (running_.load()) {
-        if (reopen_capture_.exchange(false)) prefer_alsa_after_silence = false;
+        if (reopen_capture_.exchange(false)) {
+            prefer_alsa_after_silence = false;
+            alsa_short_retries = 0;
+        }
         if (!capture_enabled_.load()) {
             {
                 std::lock_guard<std::mutex> lk(stat_mu_);
@@ -819,10 +837,17 @@ void AudioEngine::capture_loop() {
             const auto started = std::chrono::steady_clock::now();
             run_alsa_capture_session();
             if (!running_.load() || !capture_enabled_.load() || reopen_capture_.load()) continue;
-            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(5)) continue;
-            // If direct capture is busy or repeatedly fails immediately, let
-            // Android audio try again instead of spinning on the ALSA device.
+            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(5)) {
+                alsa_short_retries = 0;
+                continue;
+            }
+            // Retry brief ALSA EIO/EBUSY up to 3 times before falling back to AAudio.
+            if (++alsa_short_retries < 3) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                continue;
+            }
             prefer_alsa_after_silence = false;
+            alsa_short_retries = 0;
         }
 
         AAudioStream* stream = nullptr;
@@ -862,22 +887,21 @@ void AudioEngine::capture_loop() {
         }
 
         f48_rem_.clear();
+        ref48_rem_.clear();
         mono48k_rem_.clear();
         out16k_acc_.clear();
         out16k_head_ = 0;
         resamp_phase_ = 0.0;
+        ref_resamp_phase_ = 0.0;
         dc_prev_x_.fill(0.0f);
         dc_prev_y_.fill(0.0f);
-        hp1_x_ = 0.0f;
-        hp1_y_ = 0.0f;
-        hp2_x_ = 0.0f;
-        hp2_y_ = 0.0f;
+        hp_mic_.reset();
+        hp_ref_.reset();
         agc_gain_ = 1.0f;
         agc_noise_floor_ = 120.0f;
         agc_hold_frames_ = 0;
         cap_warmup_frames_ = 0;
-        std::fill(aec_x_.begin(), aec_x_.end(), 0.0f);
-        aec_pos_ = 0;
+        aec_.reset(true);
         aec_hangover_ = 0;
         aec_x_clean_ = true;
         mic_spec_zero_sent_ = false;

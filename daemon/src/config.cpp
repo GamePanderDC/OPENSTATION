@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <sys/stat.h>
@@ -209,6 +210,14 @@ void DaemonConfig::sanitize_and_validate() {
     }
     audio.primary_mic_channel = std::clamp(audio.primary_mic_channel, -1, 15);
     audio.loopback_channel = std::clamp(audio.loopback_channel, 0, 15);
+    if (!is_one_of(audio.hardware_eq_profile, {"original", "hifi", "night", "bass", "club", "custom"})) {
+        audio.hardware_eq_profile = "original";
+    }
+    if (!std::isfinite(audio.hardware_eq_bass_gain)) audio.hardware_eq_bass_gain = 0.0;
+    audio.hardware_eq_bass_gain = std::clamp(audio.hardware_eq_bass_gain, -6.0, 8.0);
+    if (!std::isfinite(audio.hardware_eq_treble_gain)) audio.hardware_eq_treble_gain = 3.0;
+    audio.hardware_eq_treble_gain = std::clamp(audio.hardware_eq_treble_gain, -6.0, 6.0);
+    audio.hardware_eq_subsonic = std::clamp(audio.hardware_eq_subsonic, 35, 80);
 
     input.rotary_step = std::clamp(input.rotary_step, 1, 5);
     if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
@@ -220,6 +229,13 @@ void DaemonConfig::sanitize_and_validate() {
 
     if (!is_one_of(assistant.mode, {"gemini", "wyoming", "off"})) {
         assistant.mode = "gemini";
+    }
+    {
+        auto& nm = assistant.name;
+        while (!nm.empty() && std::isspace(static_cast<unsigned char>(nm.front()))) nm.erase(nm.begin());
+        while (!nm.empty() && std::isspace(static_cast<unsigned char>(nm.back()))) nm.pop_back();
+        utf8_truncate(nm, 48);
+        if (nm.empty()) nm = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     }
     if (assistant.gemini_api_key.size() > 256) assistant.gemini_api_key.resize(256);
     while (!assistant.gemini_api_key.empty() &&
@@ -248,7 +264,7 @@ void DaemonConfig::sanitize_and_validate() {
     if (assistant.system_prompt.size() > 4096) {
         assistant.system_prompt.resize(4096);
     }
-    if (assistant.kws_keywords.empty() || assistant.kws_keywords.size() > 512) {
+    if (assistant.kws_keywords.empty() || assistant.kws_keywords.size() > 2048) {
         assistant.kws_keywords = "\xE2\x96\x81\xD0\xB0 \xD0\xBB\xD0\xB8 \xD1\x81\xD0\xB0 @\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     }
     if (!std::isfinite(assistant.kws_threshold)) assistant.kws_threshold = 0.20f;
@@ -289,6 +305,70 @@ void DaemonConfig::sanitize_and_validate() {
     if (network.wifi_adb_port < 1024 || network.wifi_adb_port > 65535) {
         network.wifi_adb_port = 5555;
     }
+
+    {
+        std::vector<AlarmEntry> clean;
+        int max_id = 0;
+        for (const auto& a : alarms) max_id = std::max(max_id, a.id);
+        for (AlarmEntry a : alarms) {
+            const std::string& t = a.time;
+            size_t colon = t.find(':');
+            bool ok = (t.size() == 4 || t.size() == 5) && colon == t.size() - 3;
+            for (size_t i = 0; ok && i < t.size(); ++i) {
+                if (i != colon && !std::isdigit(static_cast<unsigned char>(t[i]))) ok = false;
+            }
+            int h = ok ? atoi(t.substr(0, colon).c_str()) : -1;
+            int m = ok ? atoi(t.substr(colon + 1).c_str()) : -1;
+            if (h < 0 || h > 23 || m < 0 || m > 59) continue;
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%02d:%02d", h, m);
+            a.time = buf;
+            utf8_truncate(a.label, 64);
+            if (!is_one_of(a.sound, {"wave", "calm", "chime"})) a.sound = "chime";
+            bool dup = std::any_of(clean.begin(), clean.end(), [&](const AlarmEntry& c) { return c.id == a.id; });
+            if (a.id <= 0 || dup) a.id = ++max_id;
+            clean.push_back(std::move(a));
+            if (clean.size() >= 20) break;
+        }
+        alarms = std::move(clean);
+    }
+
+    {
+        auto strip_ascii = [](const std::string& s, size_t max_len) {
+            std::string out;
+            out.reserve(std::min(s.size(), max_len));
+            for (unsigned char uc : s) {
+                if (uc <= 0x20 || uc >= 0x7F) continue;
+                out.push_back(static_cast<char>(uc));
+                if (out.size() >= max_len) break;
+            }
+            return out;
+        };
+        home_assistant.url = strip_ascii(home_assistant.url, 256);
+        while (!home_assistant.url.empty() && home_assistant.url.back() == '/') home_assistant.url.pop_back();
+        home_assistant.token = strip_ascii(home_assistant.token, 2048);
+    }
+}
+
+json::Value AudioConfig::hardware_eq_request() const {
+    using json::Value;
+    Value req = Value::make_obj();
+    req["profile"] = Value::make_str(hardware_eq_profile);
+    if (hardware_eq_profile == "custom") {
+        Value params = Value::make_obj();
+        params["bass_gain"] = Value::make_num(hardware_eq_bass_gain);
+        params["treble_gain"] = Value::make_num(hardware_eq_treble_gain);
+        params["subsonic_freq"] = Value::make_int(hardware_eq_subsonic);
+        req["params"] = std::move(params);
+
+        Value filters = Value::make_obj();
+        filters["subsonic"] = Value::make_bool(hardware_eq_subsonic_on);
+        filters["notch120"] = Value::make_bool(hardware_eq_notch120);
+        filters["phase"] = Value::make_bool(hardware_eq_phase);
+        filters["treble"] = Value::make_bool(hardware_eq_treble_air);
+        req["filters"] = std::move(filters);
+    }
+    return req;
 }
 
 json::Value DaemonConfig::to_json() const {
@@ -353,6 +433,14 @@ json::Value DaemonConfig::to_json() const {
     au["captureMode"] = Value::make_str(audio.capture_mode);
     au["primaryMicChannel"] = Value::make_int(audio.primary_mic_channel);
     au["loopbackChannel"] = Value::make_int(audio.loopback_channel);
+    au["hardwareEqProfile"] = Value::make_str(audio.hardware_eq_profile);
+    au["hardwareEqBassGain"] = Value::make_num(audio.hardware_eq_bass_gain);
+    au["hardwareEqTrebleGain"] = Value::make_num(audio.hardware_eq_treble_gain);
+    au["hardwareEqSubsonic"] = Value::make_int(audio.hardware_eq_subsonic);
+    au["hardwareEqSubsonicOn"] = Value::make_bool(audio.hardware_eq_subsonic_on);
+    au["hardwareEqNotch120"] = Value::make_bool(audio.hardware_eq_notch120);
+    au["hardwareEqPhase"] = Value::make_bool(audio.hardware_eq_phase);
+    au["hardwareEqTrebleAir"] = Value::make_bool(audio.hardware_eq_treble_air);
     root["audio"] = std::move(au);
 
     Value loc = Value::make_obj();
@@ -375,6 +463,7 @@ json::Value DaemonConfig::to_json() const {
     Value ast = Value::make_obj();
     ast["enabled"] = Value::make_bool(assistant.enabled);
     ast["mode"] = Value::make_str(assistant.mode);
+    ast["name"] = Value::make_str(assistant.name);
     ast["geminiApiKey"] = Value::make_str(assistant.gemini_api_key);
     ast["geminiModel"] = Value::make_str(assistant.gemini_model);
     ast["geminiProxyHost"] = Value::make_str(assistant.gemini_proxy_host);
@@ -431,6 +520,26 @@ json::Value DaemonConfig::to_json() const {
     nw["wifiAdbPort"] = Value::make_int(network.wifi_adb_port);
     nw["wifiPowerSaveOff"] = Value::make_bool(network.wifi_power_save_off);
     root["network"] = std::move(nw);
+
+    Value al = Value::make_arr();
+    for (const auto& a : alarms) {
+        Value o = Value::make_obj();
+        o["id"] = Value::make_int(a.id);
+        o["time"] = Value::make_str(a.time);
+        Value d = Value::make_arr();
+        for (bool b : a.days) d.push(Value::make_bool(b));
+        o["days"] = std::move(d);
+        o["label"] = Value::make_str(a.label);
+        o["enabled"] = Value::make_bool(a.enabled);
+        o["sound"] = Value::make_str(a.sound);
+        al.push(std::move(o));
+    }
+    root["alarms"] = std::move(al);
+
+    Value ha = Value::make_obj();
+    ha["url"] = Value::make_str(home_assistant.url);
+    ha["token"] = Value::make_str(home_assistant.token);
+    root["homeAssistant"] = std::move(ha);
 
     return root;
 }
@@ -523,6 +632,14 @@ void DaemonConfig::from_json(const json::Value& v) {
             }
         }
         if (auto* x = au->get("loopbackChannel"); x && x->is_num()) audio.loopback_channel = x->as_int();
+        if (auto* x = au->get("hardwareEqProfile"); x && x->is_str()) audio.hardware_eq_profile = x->as_str();
+        if (auto* x = au->get("hardwareEqBassGain"); x && x->is_num()) audio.hardware_eq_bass_gain = x->as_double();
+        if (auto* x = au->get("hardwareEqTrebleGain"); x && x->is_num()) audio.hardware_eq_treble_gain = x->as_double();
+        if (auto* x = au->get("hardwareEqSubsonic"); x && x->is_num()) audio.hardware_eq_subsonic = x->as_int();
+        if (auto* x = au->get("hardwareEqSubsonicOn"); x && x->is_bool()) audio.hardware_eq_subsonic_on = x->as_bool();
+        if (auto* x = au->get("hardwareEqNotch120"); x && x->is_bool()) audio.hardware_eq_notch120 = x->as_bool();
+        if (auto* x = au->get("hardwareEqPhase"); x && x->is_bool()) audio.hardware_eq_phase = x->as_bool();
+        if (auto* x = au->get("hardwareEqTrebleAir"); x && x->is_bool()) audio.hardware_eq_treble_air = x->as_bool();
     }
 
     if (auto* loc = v.get("location"); loc && loc->is_obj()) {
@@ -545,7 +662,9 @@ void DaemonConfig::from_json(const json::Value& v) {
     if (auto* ast = v.get("assistant"); ast && ast->is_obj()) {
         if (auto* x = ast->get("enabled"); x && x->is_bool()) assistant.enabled = x->as_bool();
         if (auto* x = ast->get("mode"); x && x->is_str()) assistant.mode = x->as_str();
-        if (auto* x = ast->get("geminiApiKey"); x && x->is_str()) assistant.gemini_api_key = x->as_str();
+        if (auto* x = ast->get("name"); x && x->is_str()) assistant.name = x->as_str();
+        // Empty = preserve stored secret because status JSON masks secrets.
+        if (auto* x = ast->get("geminiApiKey"); x && x->is_str() && !x->as_str().empty()) assistant.gemini_api_key = x->as_str();
         if (auto* x = ast->get("geminiModel"); x && x->is_str()) assistant.gemini_model = x->as_str();
         if (auto* x = ast->get("geminiProxyHost"); x && x->is_str()) assistant.gemini_proxy_host = x->as_str();
         if (auto* x = ast->get("voiceName"); x && x->is_str()) assistant.voice_name = x->as_str();
@@ -585,7 +704,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = mq->get("host"); x && x->is_str()) mqtt.host = x->as_str();
         if (auto* x = mq->get("port"); x && x->is_num()) mqtt.port = x->as_int();
         if (auto* x = mq->get("username"); x && x->is_str()) mqtt.username = x->as_str();
-        if (auto* x = mq->get("password"); x && x->is_str()) mqtt.password = x->as_str();
+        if (auto* x = mq->get("password"); x && x->is_str() && !x->as_str().empty()) mqtt.password = x->as_str();
         if (auto* x = mq->get("baseTopic"); x && x->is_str()) mqtt.base_topic = x->as_str();
         if (auto* x = mq->get("discovery"); x && x->is_bool()) mqtt.discovery = x->as_bool();
     }
@@ -604,6 +723,34 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = nw->get("wifiAdbEnabled"); x && x->is_bool()) network.wifi_adb_enabled = x->as_bool();
         if (auto* x = nw->get("wifiAdbPort"); x && x->is_num()) network.wifi_adb_port = x->as_int();
         if (auto* x = nw->get("wifiPowerSaveOff"); x && x->is_bool()) network.wifi_power_save_off = x->as_bool();
+    }
+
+    if (auto* al = v.get("alarms"); al && al->is_arr()) {
+        alarms.clear();
+        for (const auto& item : al->arr_val) {
+            AlarmEntry a;
+            a.time.clear();
+            if (item.is_obj()) {
+                if (auto* x = item.get("id"); x && x->is_num()) a.id = x->as_int();
+                if (auto* x = item.get("time"); x && x->is_str()) a.time = x->as_str();
+                if (auto* d = item.get("days"); d && d->is_arr()) {
+                    for (size_t i = 0; i < 7 && i < d->arr_val.size(); ++i) a.days[i] = d->arr_val[i].as_bool(false);
+                }
+                if (auto* x = item.get("label"); x && x->is_str()) a.label = x->as_str();
+                if (auto* x = item.get("enabled"); x && x->is_bool()) a.enabled = x->as_bool();
+                if (auto* x = item.get("sound"); x && x->is_str()) a.sound = x->as_str();
+            }
+            alarms.push_back(std::move(a));
+        }
+    }
+
+    if (auto* ha = v.get("homeAssistant"); ha && ha->is_obj()) {
+        if (auto* x = ha->get("url"); x && x->is_str()) home_assistant.url = x->as_str();
+        if (auto* clr = ha->get("clearToken"); clr && clr->is_bool() && clr->as_bool()) {
+            home_assistant.token.clear();
+        } else if (auto* x = ha->get("token"); x && x->is_str() && !x->as_str().empty()) {
+            home_assistant.token = x->as_str();
+        }
     }
 
     sanitize_and_validate();

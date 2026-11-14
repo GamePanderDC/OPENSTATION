@@ -84,9 +84,16 @@ class SetupWizardActivity : Activity() {
     private var curAudioRms = 0
     private var curAudioNoise = 0
     private var curAudioBackend = "aaudio_1ch_16k_vqe"
+    private val namePills = LinkedHashMap<String, TextView>()
     private val voicePills = LinkedHashMap<String, TextView>()
     private val proxyPills = LinkedHashMap<String, TextView>()
     private val promptPills = LinkedHashMap<String, TextView>()
+    private val hwEqPills = LinkedHashMap<String, TextView>()
+    private var tvStep2HeadingTitle: TextView? = null
+    private var tvStep2HeadingSub: TextView? = null
+    private var btnWakeTest: TextView? = null
+    private var tvPersonalityLabel: TextView? = null
+    private var llHwEqSection: LinearLayout? = null
 
     // Step 3: Yandex Music & Audio
     private lateinit var tvStep3MusicStatus: TextView
@@ -110,7 +117,10 @@ class SetupWizardActivity : Activity() {
     private var curDnsMode = ""
     private var curDnsHost = ""
     private var curHasKey = false
+    private var curAssistantName = "Алиса"
     private var curVoice = "Aoede"
+    private var curHwEqSupported = false
+    private var curHwEqProfile = "original"
     private var curProxyHost = "ai-pool.comss.one"
     private var curWakeEn = true
     private var curKwsReady = false
@@ -239,7 +249,7 @@ class SetupWizardActivity : Activity() {
         titleCol.addView(tvTitle)
         titleCol.addView(tvSub)
 
-        val stepLabels = arrayOf("1. Старт", "2. Алиса", "3. Музыка", "4. Свет", "5. Готово")
+        val stepLabels = arrayOf("1. Старт", "2. Ассистент", "3. Музыка", "4. Свет", "5. Готово")
         val stepsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -330,7 +340,7 @@ class SetupWizardActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
         tvOrbCaption = TextView(this).apply {
-            text = "Алиса и сервер готовы"
+            text = "${LiveOrbState.effectiveName()} и сервер готовы"
             setTextColor(Color.WHITE)
             textSize = 13.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
@@ -349,7 +359,7 @@ class SetupWizardActivity : Activity() {
         tvChkDaemon = makeCheckRow("● Службы станции")
         tvChkDns = makeCheckRow("● Private DNS (dns.comss.one)")
         tvChkGemini = makeCheckRow("● Ключ Gemini Live API")
-        tvChkKws = makeCheckRow("● Офлайн фраза «Алиса»")
+        tvChkKws = makeCheckRow("● Офлайн фраза «${LiveOrbState.effectiveName()}»")
         tvChkMusic = makeCheckRow("● Яндекс Музыка (опц.)")
         listOf(tvChkDaemon, tvChkDns, tvChkGemini, tvChkKws, tvChkMusic).forEach { chkBox.addView(it) }
         leftCard.addView(chkBox)
@@ -594,10 +604,13 @@ class SetupWizardActivity : Activity() {
 
     private fun buildStep2Pane(): ScrollView {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(makePaneHeading(
-            "Шаг 2 · Голосовой ассистент «Алиса» (Gemini Live)",
-            "Офлайн-распознавание фразы «Алиса» + двусторонний голосовой ИИ без облака Яндекса."
-        ))
+        val heading = makePaneHeading(
+            "Шаг 2 · Ассистент «${curAssistantName}» (Gemini Live)",
+            "Офлайн-распознавание фразы «${curAssistantName}» + двусторонний голосовой ИИ без облака Яндекса."
+        )
+        tvStep2HeadingTitle = heading.getChildAt(0) as? TextView
+        tvStep2HeadingSub = heading.getChildAt(1) as? TextView
+        col.addView(heading)
 
         tvStep2GeminiStatus = TextView(this).apply {
             text = "Проверка ключа Gemini Live..."
@@ -627,11 +640,29 @@ class SetupWizardActivity : Activity() {
         keyBtns.addView(makeActionPill("⚡ Проверить Gemini Live", goldHighlight = true) {
             testGeminiLiveConnection()
         }.apply { (layoutParams as LinearLayout.LayoutParams).marginEnd = dp(8) })
-        keyBtns.addView(makeActionPill("🎤 Разбудить Алису") {
+        btnWakeTest = makeActionPill("🎤 Разбудить «${curAssistantName}»") {
             postAsync("http://127.0.0.1:8080/api/assistant/trigger", """{"reason":"wizard"}""")
-            Toast.makeText(this, "Алиса слушает...", Toast.LENGTH_SHORT).show()
-        })
+            Toast.makeText(this, "«${curAssistantName}» слушает...", Toast.LENGTH_SHORT).show()
+        }
+        keyBtns.addView(btnWakeTest)
         col.addView(keyBtns)
+
+        col.addView(makeSubLabel("Имя и отклик (Wake Word)"))
+        val nameRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(8)
+            }
+        }
+        listOf("Алиса", "Джарвис", "Пятница", "Макс").forEach { n ->
+            val p = makeChoicePill(n) { applyAssistantNameChoice(n) }
+            namePills[n] = p
+            nameRow.addView(p)
+        }
+        val customNamePill = makeChoicePill("✏ Своё") { openAssistantNameDialog() }
+        namePills["custom"] = customNamePill
+        nameRow.addView(customNamePill)
+        col.addView(nameRow)
 
         col.addView(makeSubLabel("Голос ответа (Gemini TTS)"))
         val voiceRow = LinearLayout(this).apply {
@@ -649,6 +680,7 @@ class SetupWizardActivity : Activity() {
         ).forEach { (id, label) ->
             val p = makeChoicePill(label) {
                 curVoice = id
+                LiveOrbState.updateAssistantPersona(curAssistantName, id)
                 pushConfigPatch(JSONObject().put("assistant", JSONObject().put("voiceName", id)), "Голос: $id")
                 syncChoicesHighlight()
             }
@@ -657,7 +689,8 @@ class SetupWizardActivity : Activity() {
         }
         col.addView(voiceRow)
 
-        col.addView(makeSubLabel("Характер Алисы"))
+        tvPersonalityLabel = makeSubLabel("Характер ассистента «${curAssistantName}»")
+        col.addView(tvPersonalityLabel)
         val promptRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -694,7 +727,7 @@ class SetupWizardActivity : Activity() {
         col.addView(proxyRow)
 
         tvStep2KwsLive = TextView(this).apply {
-            text = "Офлайн Wake Word: ожидание — попробуйте сказать вслух «Алиса»!"
+            text = "Офлайн Wake Word: ожидание — попробуйте сказать вслух «${curAssistantName}»!"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11.5f
             setPadding(dp(10), dp(7), dp(10), dp(7))
@@ -861,6 +894,36 @@ class SetupWizardActivity : Activity() {
             eqRow.addView(p)
         }
         col.addView(eqRow)
+
+        val hwSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (curHwEqSupported) View.VISIBLE else View.GONE
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(10)
+            }
+        }
+        hwSection.addView(makeSubLabel("Аппаратный DSP усилителя (SY6045S)"))
+        val hwRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(
+            "original" to "Оригинал",
+            "hifi" to "Hi-Fi",
+            "night" to "Ночь",
+            "bass" to "Бас",
+            "club" to "Клуб"
+        ).forEach { (id, lbl) ->
+            val p = makeChoicePill(lbl) {
+                curHwEqProfile = id
+                LiveOrbState.updateHardwareEq(id, curHwEqSupported)
+                postAsync("http://127.0.0.1:8080/api/audio/hardware_eq", JSONObject().put("profile", id).toString())
+                Toast.makeText(this, "DSP SY6045S: $lbl", Toast.LENGTH_SHORT).show()
+                syncChoicesHighlight()
+            }
+            hwEqPills[id] = p
+            hwRow.addView(p)
+        }
+        hwSection.addView(hwRow)
+        llHwEqSection = hwSection
+        col.addView(hwSection)
         return wrapStepScroll(col)
     }
 
@@ -904,7 +967,7 @@ class SetupWizardActivity : Activity() {
             }
         }
         listOf(
-            "assistant" to "Алиса (Gemini)",
+            "assistant" to "Ассистент (Gemini)",
             "wyoming" to "Home Assistant",
             "play_pause" to "Пауза / Плей",
             "led_cycle" to "Смена подсветки"
@@ -976,9 +1039,9 @@ class SetupWizardActivity : Activity() {
 
         col.addView(makeSubLabel("Памятка по управлению"))
         val cheats = listOf(
-            "🎙 «Алиса, включи музыку»" to "Нативно запустит «Мою волну» Яндекса прямо в лаунчере.",
+            "🎙 Голос «включи музыку»" to "Нативно запустит «Мою волну» Яндекса прямо в лаунчере.",
             "◀ / ▶ Экраны BORK × Duo" to "Плавный морфинг: «Сфера» ↔ «Музыка и ТВ» ↔ «Станция».",
-            "✨ Системный оверлей" to "Вызов «Алисы» поверх YouTube или любого приложения выводит живую сферу внизу.",
+            "✨ Системный оверлей" to "Вызов ассистента поверх YouTube или любого приложения выводит живую сферу внизу.",
             "☁ Автономный пульт и OTA" to "Пульт по http://<IP>:8080 или station-max.local; обновления приходят с GitHub."
         )
         for (i in cheats.indices step 2) {
@@ -1064,14 +1127,70 @@ class SetupWizardActivity : Activity() {
                 tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
             }
         }
+        val presetName = listOf("Алиса", "Джарвис", "Пятница", "Макс")
+            .firstOrNull { it.equals(curAssistantName, ignoreCase = true) }
+        namePills["custom"]?.text = if (presetName == null) "✏ $curAssistantName" else "✏ Своё"
+        styleMap(namePills, presetName ?: "custom")
         styleMap(voicePills, curVoice)
         styleMap(proxyPills, curProxyHost)
         styleMap(promptPills, activePromptPreset)
         styleMap(routePills, curRoute)
         styleMap(eqPills, curEq)
+        llHwEqSection?.visibility = if (curHwEqSupported) View.VISIBLE else View.GONE
+        styleMap(hwEqPills, curHwEqProfile)
         styleMap(ringPills, curRingMode)
         styleMap(actionPills, curActShort)
         btnAutoBri.text = if (curAutoBri) "☀ Автояркость: ВКЛ" else "☀ Автояркость: ВЫКЛ"
+    }
+
+    private fun applyAssistantNameChoice(newName: String) {
+        val clean = newName.trim().ifEmpty { "Алиса" }
+        curAssistantName = clean
+        val patch = JSONObject().put("name", clean)
+        val wantMale = clean.lowercase() in setOf("джарвис", "макс", "jarvis", "max")
+        val wantFem = clean.lowercase() in setOf("алиса", "пятница", "alice", "friday")
+        val curIsMale = curVoice in setOf("Puck", "Charon", "Fenrir", "Orus")
+        if (wantMale && !curIsMale) {
+            curVoice = "Puck"
+            patch.put("voiceName", curVoice)
+        } else if (wantFem && curIsMale) {
+            curVoice = "Aoede"
+            patch.put("voiceName", curVoice)
+        }
+        LiveOrbState.updateAssistantPersona(curAssistantName, curVoice)
+        pushConfigPatch(
+            JSONObject().put("assistant", patch),
+            "Имя: «$clean» (отклик обновлён)"
+        )
+        syncChoicesHighlight()
+        renderDynamicAssistantTexts()
+    }
+
+    private fun openAssistantNameDialog() {
+        val et = EditText(this).apply {
+            hint = "Например: Алиса, Джарвис, Ника..."
+            setText(curAssistantName)
+            setSingleLine(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Своё имя ассистента (Wake Word)")
+            .setMessage("Ассистент и офлайн-распознавание отклика перестроятся на это имя автоматически.")
+            .setView(et)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val v = et.text?.toString()?.trim().orEmpty()
+                if (v.isNotEmpty()) {
+                    applyAssistantNameChoice(v)
+                }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun renderDynamicAssistantTexts() {
+        tvStep2HeadingTitle?.text = "Шаг 2 · Ассистент «$curAssistantName» (Gemini Live)"
+        tvStep2HeadingSub?.text = "Офлайн-распознавание фразы «$curAssistantName» + двусторонний голосовой ИИ без облака Яндекса."
+        btnWakeTest?.text = "🎤 Разбудить «$curAssistantName»"
+        tvPersonalityLabel?.text = "Характер ассистента «$curAssistantName»"
     }
 
     private fun openGeminiKeyDialog() {
@@ -1216,6 +1335,9 @@ class SetupWizardActivity : Activity() {
                     val ww = ast?.optJSONObject("wakeWord")
                     val music = root.optJSONObject("music")
                     val audio = root.optJSONObject("audio")
+                    val hwEq = root.optJSONObject("hardwareEq")
+                    val mHwEqSup = hwEq?.optBoolean("supported", false) ?: false
+                    val mHwEqProf = hwEq?.optString("profile", "original") ?: "original"
                     val engine = audio?.optJSONObject("engine")
                     val aRms = engine?.optDouble("monoRms", 0.0)?.toInt() ?: 0
                     val aNoise = engine?.optInt("noiseFloor", 0) ?: 0
@@ -1245,7 +1367,12 @@ class SetupWizardActivity : Activity() {
                         curDnsHost = dnsHost
                         curHasKey = astCfg?.optBoolean("geminiApiKeySet", false) == true ||
                             !(astCfg?.optString("geminiApiKey", "") ?: "").isBlank()
+                        curAssistantName = (astCfg?.optString("name", "") ?: "").trim().ifEmpty { "Алиса" }
                         curVoice = astCfg?.optString("voiceName", "Aoede") ?: "Aoede"
+                        curHwEqSupported = mHwEqSup
+                        curHwEqProfile = mHwEqProf
+                        LiveOrbState.updateAssistantPersona(curAssistantName, curVoice)
+                        LiveOrbState.updateHardwareEq(curHwEqProfile, curHwEqSupported)
                         activePromptPreset = AssistantPersonalities.keyForPrompt(astCfg?.optString("systemPrompt", "") ?: "")
                         curProxyHost = astCfg?.optString("geminiProxyHost", "ai-pool.comss.one") ?: "ai-pool.comss.one"
                         curWakeEn = astCfg?.optBoolean("wakeWordEnabled", true) ?: true
@@ -1275,11 +1402,12 @@ class SetupWizardActivity : Activity() {
     private fun renderPolledStatus(ast: JSONObject?, ww: JSONObject?) {
         updateQrCode(curIp)
 
+        renderDynamicAssistantTexts()
         tvOrbCaption.text = when (LiveOrbState.assistantState) {
             "listening" -> "Слушает..."
-            "speaking" -> "Алиса говорит"
+            "speaking" -> "«$curAssistantName» говорит"
             "thinking" -> "Думает..."
-            else -> if (curHasKey) "Алиса готова" else "Ждёт ключ API"
+            else -> if (curHasKey) "«$curAssistantName» ${LiveOrbState.readyWord()}" else "Ждёт ключ API"
         }
 
         // Left Checklist
@@ -1303,10 +1431,10 @@ class SetupWizardActivity : Activity() {
         }
 
         if (curKwsReady) {
-            tvChkKws.text = "✓ Фраза «Алиса» (${curKwsDetections})"
+            tvChkKws.text = "✓ Фраза «$curAssistantName» (${curKwsDetections})"
             tvChkKws.setTextColor(Color.parseColor("#6EE7B7"))
         } else {
-            tvChkKws.text = "• Wake Word «Алиса» выкл"
+            tvChkKws.text = "• Wake Word «$curAssistantName» ${LiveOrbState.offWord()}"
             tvChkKws.setTextColor(Color.parseColor("#94A3B8"))
         }
 
@@ -1354,11 +1482,11 @@ class SetupWizardActivity : Activity() {
         lastKwsDetections = curKwsDetections
         tvStep2KwsLive.text = when {
             newDetect || (ast?.optString("state", "idle") == "listening") ->
-                "✓ Отлично! «Алиса» услышала вас (срабатываний: $curKwsDetections)"
+                "✓ Отлично! «$curAssistantName» слышит вас (срабатываний: $curKwsDetections)"
             vadSpeech ->
-                "🎙 Речь слышна (скажите чётко «Алиса»)"
+                "🎙 Речь слышна (скажите чётко «$curAssistantName»)"
             curKwsReady ->
-                "Офлайн Wake Word активен — скажите вслух «Алиса» для проверки (срабатываний: $curKwsDetections)"
+                "Офлайн Wake Word активен — скажите вслух «$curAssistantName» для проверки (срабатываний: $curKwsDetections)"
             else ->
                 "Wake Word выключен (активация кнопкой Action или с экрана)"
         }
@@ -1391,7 +1519,7 @@ class SetupWizardActivity : Activity() {
         // Step 5 Summary
         tvStep5Summary.text = buildString {
             append(if (SetupAddress.isUsableIpv4(curIp)) "• Веб-пульт: http://$curIp:8080 ($curHostname.local)\n" else "• Веб-пульт: подключите станцию к сети\n")
-            append("• Голосовой ассистент «Алиса»: ").append(if (curHasKey) "Ключ API задан · Голос $curVoice\n" else "Без ключа API (можно добавить позже в веб-пульте)\n")
+            append("• Голосовой ассистент «$curAssistantName»: ").append(if (curHasKey) "Ключ API задан · Голос $curVoice\n" else "Без ключа API (можно добавить позже в веб-пульте)\n")
             append("• Яндекс Музыка: ").append(if (curMusicLoggedIn) "@$curMusicUser · Моя волна готова\n" else "Не авторизована (можно войти позже)\n")
             append("• Звук и подсветка: Выход $curRoute · EQ $curEq · Кольцо $curRingMode")
         }

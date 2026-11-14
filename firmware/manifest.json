@@ -1,25 +1,25 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "autonomous": true,
-  "changelog": "Исправления пульта, Алисы, Яндекс Музыки, обновления и стабильности.",
-  "buildTimeUtc": "2026-11-14T14:14:44Z",
+  "changelog": "OpenStation Max v1.6.0: аппаратный DSP/EQ SY6045S, таймеры и будильники, интеграция Home Assistant, смена имени и ключевого слова ассистента, оптимизация CPU/температуры в простое, обновлённая LED-матрица 25x16, адаптивный веб-пульт LiquidGlass и надёжный USB-установщик.",
+  "buildTimeUtc": "2026-11-14T19:24:12Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 2500280,
-      "sha256": "67018944a329784fa121b382ae7db85df1b8195ca6c268119ac2f7657b5ba7ab"
+      "size": 2950216,
+      "sha256": "165c32819df541840526f7e02a79f1dec87cb0503d5fe58a409ac6afa8fef2b0"
     },
     "bootlogod": {
       "fileName": "bootlogod",
-      "size": 657728,
-      "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
+      "size": 657888,
+      "sha256": "2c0fc741c070ae1e187522a0411a9e5f97cfd56a72e53663f3c187c66189a556"
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 4630862,
-      "sha256": "bff1b4d6b2c59f8e6d70646f57522d35d796c0a731c3856270fbe673117724e0"
+      "size": 4680074,
+      "sha256": "709b78001948a9c3d1a9cef5c9680e5433475700b9fe51c3d3a350a770452850"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",

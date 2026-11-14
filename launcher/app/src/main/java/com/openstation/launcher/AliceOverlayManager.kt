@@ -205,7 +205,7 @@ class AliceOverlayManager(private val context: Context) {
         }
 
         val stateTv = TextView(context).apply {
-            text = "АЛИСА · СЛУШАЮ"
+            text = "${LiveOrbState.effectiveName().uppercase()} · СЛУШАЮ"
             setTextColor(Color.parseColor("#E8C686"))
             textSize = 11f
             letterSpacing = 0.08f
@@ -281,37 +281,37 @@ class AliceOverlayManager(private val context: Context) {
             "connecting" -> {
                 accent = Color.parseColor("#38BDF8")
                 borderColor = Color.parseColor("#8838BDF8")
-                stateLabel = "АЛИСА · ПОДКЛЮЧЕНИЕ"
+                stateLabel = "${LiveOrbState.effectiveName().uppercase()} · ПОДКЛЮЧЕНИЕ"
                 fallbackReply = "Подключаю голосовой поток..."
             }
             "listening" -> {
                 accent = Color.parseColor("#2DD4BF")
                 borderColor = Color.parseColor("#992DD4BF")
-                stateLabel = "АЛИСА · СЛУШАЮ"
+                stateLabel = "${LiveOrbState.effectiveName().uppercase()} · СЛУШАЮ"
                 fallbackReply = if (userTxt.isNotEmpty()) "«$userTxt»" else "Говорите, я внимательно слушаю..."
             }
             "thinking" -> {
                 accent = Color.parseColor("#E8C686")
                 borderColor = Color.parseColor("#AAE8C686")
-                stateLabel = "АЛИСА · ДУМАЮ"
+                stateLabel = "${LiveOrbState.effectiveName().uppercase()} · ДУМАЮ"
                 fallbackReply = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
             }
             "speaking" -> {
                 accent = Color.parseColor("#C084FC")
                 borderColor = Color.parseColor("#AAC084FC")
-                stateLabel = "АЛИСА · ОТВЕЧАЮ"
+                stateLabel = "${LiveOrbState.effectiveName().uppercase()} · ОТВЕЧАЮ"
                 fallbackReply = "Отвечаю голосом..."
             }
             "error" -> {
                 accent = Color.parseColor("#F87171")
                 borderColor = Color.parseColor("#AAF87171")
-                stateLabel = "АЛИСА · ОШИБКА"
+                stateLabel = "${LiveOrbState.effectiveName().uppercase()} · ОШИБКА"
                 fallbackReply = "Не удалось выполнить запрос"
             }
             else -> {
                 accent = Color.parseColor("#E8C686")
                 borderColor = Color.parseColor("#7AE8C686")
-                stateLabel = "АЛИСА"
+                stateLabel = LiveOrbState.effectiveName().uppercase()
                 fallbackReply = ""
             }
         }

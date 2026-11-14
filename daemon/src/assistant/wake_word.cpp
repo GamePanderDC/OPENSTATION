@@ -1,4 +1,5 @@
 #include "assistant/wake_word.hpp"
+#include "assistant/wake_word_tokens.hpp"
 #include "sherpa_onnx/c-api.h"
 #include "utils/logger.hpp"
 
@@ -100,11 +101,13 @@ struct SherpaApi {
 SherpaApi g_sherpa;
 std::mutex g_sherpa_load_mu;
 
-std::string normalize_keywords_buf(std::string kw) {
-    // Convert optional `/` separators between lines into `\n` and strip `\r`
+std::string normalize_keywords_buf(std::string kw, const SentencePieceTokenizer* tokenizer) {
     kw.erase(std::remove(kw.begin(), kw.end(), '\r'), kw.end());
     if (kw.empty()) {
         kw = "\xE2\x96\x81\xD0\xB0 \xD0\xBB\xD0\xB8 \xD1\x81\xD0\xB0 @\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
+    }
+    if (tokenizer && !tokenizer->empty()) {
+        return tokenizer->format_keywords_buf(kw);
     }
     if (kw.back() != '\n') kw.push_back('\n');
     return kw;
@@ -237,6 +240,11 @@ void WakeWordEngine::worker_loop() {
         }
     }
 
+    SentencePieceTokenizer tokenizer;
+    if (!tokenizer.load_tokens_file(tok_path)) {
+        LOGW("WakeWord", "Failed to parse SentencePiece tokens from %s", tok_path.c_str());
+    }
+
     const SherpaOnnxVoiceActivityDetector* vad = nullptr;
     const SherpaOnnxKeywordSpotter* kws = nullptr;
     const SherpaOnnxOnlineStream* kws_stream = nullptr;
@@ -257,15 +265,15 @@ void WakeWordEngine::worker_loop() {
         }
 
         const float sens_norm = std::clamp(cur.mic_sensitivity, 10, 100) / 100.0f;
-        const float vad_thr = std::clamp(0.20f - sens_norm * 0.12f, 0.06f, 0.25f);
-        const float eff_kws_thr = std::clamp(cur.threshold * (0.75f - sens_norm * 0.25f), 0.02f, 0.25f);
+        const float vad_thr = std::clamp(0.40f - sens_norm * 0.15f, 0.22f, 0.45f);
+        const float eff_kws_thr = std::clamp(cur.threshold * (1.16f - sens_norm * 0.16f), 0.19f, 0.40f);
 
         SherpaOnnxVadModelConfig vad_cfg {};
         memset(&vad_cfg, 0, sizeof(vad_cfg));
         vad_cfg.silero_vad.model = kVadModelPath;
         vad_cfg.silero_vad.threshold = vad_thr;
-        vad_cfg.silero_vad.min_silence_duration = 0.55f;
-        vad_cfg.silero_vad.min_speech_duration = 0.04f;
+        vad_cfg.silero_vad.min_silence_duration = 0.45f;
+        vad_cfg.silero_vad.min_speech_duration = 0.08f;
         vad_cfg.silero_vad.window_size = 512;
         vad_cfg.silero_vad.max_speech_duration = 15.0f;
         vad_cfg.sample_rate = 16000;
@@ -280,7 +288,7 @@ void WakeWordEngine::worker_loop() {
             return false;
         }
 
-        std::string kw_buf = normalize_keywords_buf(cur.keywords);
+        std::string kw_buf = normalize_keywords_buf(cur.keywords, &tokenizer);
 
         SherpaOnnxKeywordSpotterConfig kws_cfg {};
         memset(&kws_cfg, 0, sizeof(kws_cfg));
@@ -367,6 +375,7 @@ void WakeWordEngine::worker_loop() {
     };
 
     bool kws_active = false;
+    bool vad_had_speech = false;
     int hangover_wins = 0;
     uint32_t vad_clr_cnt = 0;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
@@ -407,6 +416,7 @@ void WakeWordEngine::worker_loop() {
             lead_head = 0;
             lead_count = 0;
             kws_active = false;
+            vad_had_speech = false;
             hangover_wins = 0;
             create_engines(cur_cfg);
         }
@@ -417,6 +427,7 @@ void WakeWordEngine::worker_loop() {
             lead_head = 0;
             lead_count = 0;
             kws_active = false;
+            vad_had_speech = false;
             hangover_wins = 0;
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
@@ -431,10 +442,29 @@ void WakeWordEngine::worker_loop() {
         while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
             const float* win = acc.data() + acc_head;
 
-            // Feed every window to Silero VAD so quiet speech is not gated out.
+            // Fast dead-silence energy gate before invoking Silero ONNX when KWS is idle.
+            if (!kws_active && hangover_wins == 0) {
+                float sum_sq = 0.0f;
+                for (size_t i = 0; i < kVadWin; ++i) {
+                    sum_sq += win[i] * win[i];
+                }
+                const float mean_sq = sum_sq / static_cast<float>(kVadWin);
+                if (mean_sq < 2.0e-7f) {
+                    if (vad_had_speech) {
+                        g_sherpa.vadReset(vad);
+                        vad_had_speech = false;
+                    }
+                    vad_speech_active_.store(false);
+                    push_lead_win(win);
+                    acc_head += kVadWin;
+                    continue;
+                }
+            }
+
             g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
             bool speech = (g_sherpa.vadDetected(vad) != 0);
             vad_speech_active_.store(speech);
+            if (speech) vad_had_speech = true;
 
             if (speech || (++vad_clr_cnt & 31U) == 0U) {
                 g_sherpa.vadClear(vad);
@@ -446,7 +476,7 @@ void WakeWordEngine::worker_loop() {
                     feed_lead_to_kws();
                     kws_active = true;
                 }
-                hangover_wins = 30; // ~960 ms extra KWS tail across syllables ("а-ли-са")
+                hangover_wins = 16; // ~512 ms extra KWS tail across syllables ("а-ли-са")
                 g_sherpa.streamAccept(kws_stream, 16000, win, static_cast<int32_t>(kVadWin));
                 fed_current = true;
             } else if (kws_active && hangover_wins > 0) {

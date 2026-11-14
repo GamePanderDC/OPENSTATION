@@ -47,6 +47,7 @@ import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.ImageView
@@ -243,6 +244,25 @@ class MainActivity : Activity() {
     private lateinit var tileEq: HwTileViews
     private lateinit var tileVis: HwTileViews
     private lateinit var tileCec: HwTileViews
+
+    // Quick service strip & modal state (Screen 2)
+    private lateinit var btnServicePersona: LinearLayout
+    private lateinit var tvServicePersona: TextView
+    private lateinit var btnServiceHwEq: LinearLayout
+    private lateinit var tvServiceHwEq: TextView
+    private lateinit var btnServiceTimers: LinearLayout
+    private lateinit var tvServiceTimers: TextView
+    private var assistantNameState = "Алиса"
+    private var assistantVoiceState = "Aoede"
+    private var assistantPromptState = ""
+    private var hwEqSupportedState = false
+    private var hwEqProfileState = "original"
+    private var hwEqDrcBypassedState = false
+    private var lastTimersJson: JSONArray? = null
+    private var lastAlarmsJson: JSONArray? = null
+    private var lastRingingAlarmJson: JSONObject? = null
+    private var lastTimersFetchedMs: Long = 0L
+    private var timersScreenRef: TimersScreen? = null
 
     // Screen 1: Apps grid & Native Yandex Music Vinyl Hero card
     private lateinit var appsGrid: GridLayout
@@ -1282,7 +1302,7 @@ class MainActivity : Activity() {
             }
         }
         tvHeroState = TextView(this).apply {
-            text = "АЛИСА · ГОТОВА"
+            text = "${LiveOrbState.effectiveName().uppercase()} · ${LiveOrbState.readyWord(caps = true)}"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 11f
             letterSpacing = 0.08f
@@ -1306,7 +1326,7 @@ class MainActivity : Activity() {
         heroReplyHeader.addView(tvHeroUser)
 
         tvHeroReply = TextView(this).apply {
-            text = "Скажите «Алиса» или нажмите OK"
+            text = "Скажите «${LiveOrbState.effectiveName()}» или нажмите OK"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 13.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -1429,7 +1449,7 @@ class MainActivity : Activity() {
                     LiveOrbState.weatherCity
                 )
             } else {
-                Toast.makeText(this, "Спросите Алису: «Какая погода?»", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Спросите «${LiveOrbState.effectiveName()}»: «Какая погода?»", Toast.LENGTH_SHORT).show()
             }
         }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -1690,7 +1710,7 @@ class MainActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         }
         tvHomeTrackArtist = TextView(this).apply {
-            text = "Скажите «Алиса, включи музыку» или жмите «Моя волна»"
+            text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или жмите «Моя волна»"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 12.5f
             maxLines = 1
@@ -2065,6 +2085,86 @@ class MainActivity : Activity() {
         topSplit.addView(hwPanel)
         col.addView(topSplit)
 
+        // Quick Services Strip (Persona, SY6045S DSP, Timers & Alarms, BLE Remote)
+        val serviceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(36)
+            ).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(2)
+            }
+        }
+        fun makeServiceChip(initialText: String, accentHex: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
+            val tv = TextView(this).apply {
+                text = initialText
+                setTextColor(Color.parseColor(accentHex))
+                textSize = 11.5f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(4), dp(12), dp(4))
+                isFocusable = true
+                isClickable = true
+                LiquidGlassKit.applyGlass(
+                    this,
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#5C0B1324"),
+                    focusTint = Color.parseColor("#99192948"),
+                    normalStroke = Color.parseColor("#24FFFFFF"),
+                    focusStroke = Color.parseColor("#CCFFFFFF")
+                )
+                setOnFocusChangeListener { v, hasFocus ->
+                    v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(90).start()
+                }
+                setOnClickListener { onClick() }
+                addView(tv)
+            }
+            return box to tv
+        }
+        val (pBox, pTv) = makeServiceChip("🎙 Имя: ${LiveOrbState.effectiveName()}", "#7DD3FC") {
+            showAssistantPersonaModal()
+        }
+        btnServicePersona = pBox
+        tvServicePersona = pTv
+        pBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+            marginEnd = dp(6)
+        }
+        serviceRow.addView(pBox)
+
+        val (hwBox, hwTv) = makeServiceChip("🎚 DSP SY6045S", "#FFE8C686") {
+            showHardwareEqModal()
+        }
+        btnServiceHwEq = hwBox
+        tvServiceHwEq = hwTv
+        hwBox.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
+        hwBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+            marginEnd = dp(6)
+        }
+        serviceRow.addView(hwBox)
+
+        val (tmBox, tmTv) = makeServiceChip("⏱ Таймеры и будильники", "#E2E8F0") {
+            showTimersModal()
+        }
+        btnServiceTimers = tmBox
+        tvServiceTimers = tmTv
+        tmBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+            marginEnd = dp(6)
+        }
+        serviceRow.addView(tmBox)
+
+        val (remBox, _) = makeServiceChip("🎮 Пульт BLE", "#CBD5E1") {
+            startActivity(Intent(this, RemoteSetupActivity::class.java))
+        }
+        remBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.85f)
+        serviceRow.addView(remBox)
+        col.addView(serviceRow)
+
         // System Settings Dock (5 unified monochrome spatial categories)
         col.addView(makeSectionTitle("Настройки Android TV", R.drawable.ic_settings))
         val sysRow = LinearLayout(this).apply {
@@ -2088,7 +2188,7 @@ class MainActivity : Activity() {
                 openSettingsIntent(Settings.ACTION_DATE_SETTINGS, "com.android.tv.settings")
             },
             SysItem(R.drawable.ic_hw_apps, false, "Приложения") {
-                openSettingsIntent(Settings.ACTION_APPLICATION_SETTINGS, "com.android.tv.settings")
+                openSettingsIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS, "com.android.tv.settings")
             },
             SysItem(R.drawable.ic_settings, false, "Настройки TV") {
                 launchPackageName("com.android.tv.settings")
@@ -2170,7 +2270,7 @@ class MainActivity : Activity() {
             }
         }
         tvDockState = TextView(this).apply {
-            text = "АЛИСА · ГОТОВА"
+            text = "${LiveOrbState.effectiveName().uppercase()} · ${LiveOrbState.readyWord(caps = true)}"
             setTextColor(Color.parseColor("#E8C686"))
             textSize = 11f
             letterSpacing = 0.08f
@@ -2194,7 +2294,7 @@ class MainActivity : Activity() {
         metaRow.addView(tvDockMusic)
 
         tvDockReply = TextView(this).apply {
-            text = "Скажите «Алиса» или нажмите сюда для вопроса"
+            text = "Скажите «${LiveOrbState.effectiveName()}» или нажмите сюда для вопроса"
             setTextColor(Color.parseColor("#F8FAFC"))
             textSize = 13.5f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -2415,12 +2515,15 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     private fun renderOrbAssistantUi() {
         val st = LiveOrbState.assistantState
+        val effName = LiveOrbState.effectiveName()
+        val effMale = LiveOrbState.isGrammaticallyMale()
         val userTxt = if (st == "idle") "" else LiveOrbState.liveUserText.trim()
         val display = LiveOrbState.bestDisplayText()
-        val uiKey = "$st|$assistantEnabled|$userTxt|$display"
+        val uiKey = "$st|$assistantEnabled|$effName|$effMale|$userTxt|$display"
         if (uiKey == lastOrbUiKey) return
         lastOrbUiKey = uiKey
 
+        val effCaps = effName.uppercase()
         val accent: Int
         val borderColor: Int
         val stateLabel: String
@@ -2431,44 +2534,45 @@ class MainActivity : Activity() {
             "connecting" -> {
                 accent = Color.parseColor("#38BDF8")
                 borderColor = Color.parseColor("#8838BDF8")
-                stateLabel = "АЛИСА · ПОДКЛЮЧЕНИЕ"
+                stateLabel = "$effCaps · ПОДКЛЮЧЕНИЕ"
                 heroFallback = "Подключаю голосовой поток..."
                 dockFallback = "Подключаю голосовой поток..."
             }
             "listening" -> {
                 accent = Color.parseColor("#2DD4BF")
                 borderColor = Color.parseColor("#992DD4BF")
-                stateLabel = "АЛИСА · СЛУШАЮ"
+                stateLabel = "$effCaps · СЛУШАЮ"
                 heroFallback = "Говорите, я внимательно слушаю..."
                 dockFallback = "Говорите, я внимательно слушаю..."
             }
             "thinking" -> {
                 accent = Color.parseColor("#E8C686")
                 borderColor = Color.parseColor("#AAE8C686")
-                stateLabel = "АЛИСА · ДУМАЮ"
+                stateLabel = "$effCaps · ДУМАЮ"
                 heroFallback = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
                 dockFallback = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
             }
             "speaking" -> {
                 accent = Color.parseColor("#C084FC")
                 borderColor = Color.parseColor("#AAC084FC")
-                stateLabel = "АЛИСА · ОТВЕЧАЮ"
+                stateLabel = "$effCaps · ОТВЕЧАЮ"
                 heroFallback = "Отвечаю голосом..."
                 dockFallback = "Отвечаю голосом..."
             }
             "error" -> {
                 accent = Color.parseColor("#F87171")
                 borderColor = Color.parseColor("#AAF87171")
-                stateLabel = "АЛИСА · ОШИБКА"
+                stateLabel = "$effCaps · ОШИБКА"
                 heroFallback = "Не удалось выполнить запрос"
                 dockFallback = "Ошибка ассистента"
             }
             else -> {
                 accent = if (assistantEnabled) Color.parseColor("#E2E8F0") else Color.parseColor("#64748B")
                 borderColor = Color.parseColor("#18FFFFFF")
-                stateLabel = if (assistantEnabled) "АЛИСА · ГОТОВА" else "АЛИСА · ВЫКЛЮЧЕНА"
-                heroFallback = if (assistantEnabled) "Алиса готова · Нажмите OK" else "Микрофон выключен · Нажмите OK"
-                dockFallback = "Скажите «Алиса» или нажмите, чтобы задать вопрос"
+                val offUpper = if (effMale) "ВЫКЛЮЧЕН" else "ВЫКЛЮЧЕНА"
+                stateLabel = if (assistantEnabled) "$effCaps · ${LiveOrbState.readyWord(caps = true)}" else "$effCaps · $offUpper"
+                heroFallback = if (assistantEnabled) "$effName ${LiveOrbState.readyWord()} · Нажмите OK" else "Микрофон выключен · Нажмите OK"
+                dockFallback = "Скажите «$effName» или нажмите, чтобы задать вопрос"
             }
         }
 
@@ -3034,8 +3138,7 @@ class MainActivity : Activity() {
         }
         launchWithGlassTransition(null) {
             try {
-                val i = packageManager.getLeanbackLaunchIntentForPackage(pkg)
-                    ?: packageManager.getLaunchIntentForPackage(pkg)
+                val i = packageManager.appLaunchIntent(pkg)
                 if (i != null) {
                     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(i)
@@ -3224,6 +3327,28 @@ class MainActivity : Activity() {
                     volumePct = audio?.optInt("volumePercent", volumePct) ?: volumePct
                     assistantState = ast?.optString("state", "idle") ?: "idle"
                     assistantEnabled = astCfg?.optBoolean("enabled", true) ?: true
+                    val pName = (astCfg?.optString("name", "") ?: "").trim().ifEmpty { "Алиса" }
+                    val pVoice = (astCfg?.optString("voiceName", "") ?: "").trim().ifEmpty { "Aoede" }
+                    val pPrompt = astCfg?.optString("systemPrompt", "") ?: ""
+                    assistantNameState = pName
+                    assistantVoiceState = pVoice
+                    assistantPromptState = pPrompt
+                    LiveOrbState.updateAssistantPersona(pName, pVoice)
+
+                    val hwEqObj = root.optJSONObject("hardwareEq")
+                    hwEqSupportedState = hwEqObj?.optBoolean("supported", false) ?: false
+                    hwEqProfileState = hwEqObj?.optString("profile", "original") ?: "original"
+                    LiveOrbState.updateHardwareEq(hwEqProfileState, hwEqSupportedState)
+
+                    val timersArr = root.optJSONArray("timers")
+                    val alarmsArr = root.optJSONArray("alarms")
+                    val ringingObj = root.optJSONObject("ringingAlarm")
+                    val fetchedNowMs = SystemClock.elapsedRealtime()
+                    lastTimersJson = timersArr
+                    lastAlarmsJson = alarmsArr
+                    lastRingingAlarmJson = ringingObj
+                    lastTimersFetchedMs = fetchedNowMs
+
                     val setupDone = cfg?.optBoolean("setupCompleted", false) ?: false
                     val wasOffline = !daemonOnline
                     daemonOnline = true
@@ -3274,11 +3399,18 @@ class MainActivity : Activity() {
                     } else {
                         "● Громкость $volumePct%"
                     }
-                    val astTxt = if (assistantState != "idle") "Алиса активна" else "Алиса готова"
+                    val astTxt = if (assistantState != "idle") {
+                        "${LiveOrbState.effectiveName()} ${LiveOrbState.activeWord()}"
+                    } else {
+                        "${LiveOrbState.effectiveName()} ${LiveOrbState.readyWord()}"
+                    }
                     val telStr = "● $astTxt · v$fwVer"
 
                     handler.post {
                         updateNetworkHeader(ip)
+                        renderOrbAssistantUi()
+                        syncServiceChips()
+                        timersScreenRef?.update(lastTimersJson, lastTimersFetchedMs, lastAlarmsJson, lastRingingAlarmJson)
                         if (statusStr != lastStatusLineText) {
                             lastStatusLineText = statusStr
                             tvStatusLine.text = statusStr
@@ -3553,7 +3685,7 @@ class MainActivity : Activity() {
                 }
             } else {
                 tvHomeTrackTitle.text = "Моя волна — поток музыки"
-                tvHomeTrackArtist.text = "Скажите «Алиса, включи музыку» или жмите «Моя волна»"
+                tvHomeTrackArtist.text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или жмите «Моя волна»"
                 pbHomeTrack.progress = 0
                 tvHomeTrackTime.text = "00:00 / 00:00"
                 if (forceViews || lastTrackLiked != false) {
@@ -4400,7 +4532,7 @@ class MainActivity : Activity() {
         panel.addView(drawerScrollView)
 
         val footerHint = TextView(this).apply {
-            text = "▲ или BACK — вернуться на рабочий стол с Алисой"
+            text = "▲ или BACK — вернуться на рабочий стол (${LiveOrbState.effectiveName()})"
             setTextColor(Color.parseColor("#64748B"))
             textSize = 11f
             gravity = Gravity.CENTER
@@ -4480,6 +4612,7 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     private fun showHomeCustomizationMenu() {
         if (!::homeCustomOverlay.isInitialized) return
+        timersScreenRef = null
         homeCustomOverlay.removeAllViews()
 
         val scrim = View(this).apply {
@@ -4804,6 +4937,7 @@ class MainActivity : Activity() {
 
     private fun closeHomeCustomizationMenu(immediate: Boolean = false) {
         if (!::homeCustomOverlay.isInitialized) return
+        timersScreenRef = null
         if (!homeCustomOpen && homeCustomOverlay.visibility != View.VISIBLE) return
         homeCustomOpen = false
         syncLayerFocusability()
@@ -4831,6 +4965,446 @@ class MainActivity : Activity() {
                 }
             }
             .start()
+    }
+
+    private fun syncServiceChips() {
+        if (::tvServicePersona.isInitialized) {
+            val eff = LiveOrbState.effectiveName()
+            tvServicePersona.text = "🎙 Имя: $eff"
+        }
+        if (::btnServiceHwEq.isInitialized && ::tvServiceHwEq.isInitialized) {
+            btnServiceHwEq.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
+            val profLbl = when (hwEqProfileState) {
+                "hifi" -> "Hi-Fi"
+                "night" -> "Ночь"
+                "bass" -> "Бас"
+                "club" -> "Клуб"
+                else -> "Оригинал"
+            }
+            tvServiceHwEq.text = "🎚 DSP · $profLbl"
+        }
+        if (::tvServiceTimers.isInitialized) {
+            val ringing = lastRingingAlarmJson
+            val tCount = lastTimersJson?.length() ?: 0
+            val aEnabled = (0 until (lastAlarmsJson?.length() ?: 0)).count {
+                lastAlarmsJson?.optJSONObject(it)?.optBoolean("enabled", false) == true
+            }
+            tvServiceTimers.text = when {
+                ringing != null -> "🔔 Звонит будильник!"
+                tCount > 0 -> "⏱ Таймеры ($tCount) · Буд: $aEnabled"
+                aEnabled > 0 -> "⏱ Будильники ($aEnabled)"
+                else -> "⏱ Таймеры и будильники"
+            }
+            tvServiceTimers.setTextColor(Color.parseColor(if (ringing != null) "#FCA5A5" else "#E2E8F0"))
+        }
+    }
+
+    private fun makeModalGlassPanel(widthDp: Int): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(22), dp(18), dp(22), dp(18))
+        LiquidGlassKit.applyGlass(
+            this,
+            radiusDp = 24f,
+            baseTint = Color.parseColor("#D8080D18"),
+            focusTint = Color.parseColor("#E010182C"),
+            normalStroke = Color.parseColor("#2AFFFFFF"),
+            focusStroke = Color.parseColor("#AAFFFFFF"),
+            refractStrength = 1.05f
+        )
+        elevation = dp(28).toFloat()
+        isClickable = true
+        layoutParams = FrameLayout.LayoutParams(
+            dp(widthDp),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER
+        )
+    }
+
+    private fun presentOverlayModal(panel: View, initialFocus: View?) {
+        if (!::homeCustomOverlay.isInitialized) return
+        homeCustomOverlay.removeAllViews()
+        val scrim = View(this).apply {
+            setBackgroundColor(Color.parseColor("#A6030711"))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        homeCustomOverlay.addView(scrim)
+        homeCustomOverlay.addView(panel)
+        homeCustomOpen = true
+        homeCustomOverlay.animate().cancel()
+        homeCustomOverlay.visibility = View.VISIBLE
+        syncLayerFocusability()
+        homeCustomOverlay.alpha = 0f
+        panel.scaleX = 0.94f
+        panel.scaleY = 0.94f
+        homeCustomOverlay.animate()
+            .alpha(1f)
+            .setDuration(200L)
+            .setInterpolator(easeOutCubic)
+            .start()
+        panel.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(220L)
+            .setInterpolator(easeOutCubic)
+            .start()
+        initialFocus?.requestFocus()
+        handler.post { if (homeCustomOpen && !appInfoOpen) initialFocus?.requestFocus() }
+    }
+
+    private fun makeModalSubHeading(title: String): TextView = TextView(this).apply {
+        text = title.uppercase(Locale.getDefault())
+        setTextColor(Color.parseColor("#E8C686"))
+        textSize = 10.5f
+        letterSpacing = 0.08f
+        typeface = Typeface.DEFAULT_BOLD
+        setPadding(0, dp(8), 0, dp(5))
+    }
+
+    private fun makeModalChoicePill(label: String, selected: Boolean, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = label
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(Color.parseColor(if (selected) "#FFE8C686" else "#E2E8F0"))
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            setBackgroundResource(R.drawable.bg_tile)
+            isSelected = selected
+            isFocusable = true
+            isClickable = true
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = dp(6)
+            }
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(90).start()
+            }
+            setOnClickListener { onClick() }
+        }
+
+    private fun showAssistantPersonaModal() {
+        timersScreenRef = null
+        val panel = makeModalGlassPanel(690)
+        panel.addView(TextView(this).apply {
+            text = "ИМЯ, ГОЛОС И ХАРАКТЕР АССИСТЕНТА"
+            setTextColor(Color.WHITE)
+            textSize = 17.5f
+            letterSpacing = 0.05f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 11.5f
+            setPadding(0, dp(2), 0, dp(8))
+        })
+
+        val nameMap = LinkedHashMap<String, TextView>()
+        val voiceMap = LinkedHashMap<String, TextView>()
+        val promptMap = LinkedHashMap<String, TextView>()
+        var curPromptKey = AssistantPersonalities.keyForPrompt(assistantPromptState)
+
+        fun refreshHighlights() {
+            val preset = listOf("Алиса", "Джарвис", "Пятница", "Макс")
+                .firstOrNull { it.equals(assistantNameState, ignoreCase = true) }
+            nameMap["custom"]?.text = if (preset == null) "✏ $assistantNameState" else "✏ Своё имя"
+            nameMap.forEach { (k, tv) ->
+                val sel = (k == (preset ?: "custom"))
+                tv.isSelected = sel
+                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+            }
+            voiceMap.forEach { (k, tv) ->
+                val sel = (k == assistantVoiceState)
+                tv.isSelected = sel
+                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+            }
+            promptMap.forEach { (k, tv) ->
+                val sel = (k == curPromptKey)
+                tv.isSelected = sel
+                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+            }
+        }
+
+        fun applyName(newName: String) {
+            val clean = newName.trim().ifEmpty { "Алиса" }
+            assistantNameState = clean
+            val patch = JSONObject().put("name", clean)
+            val wantMale = clean.lowercase() in setOf("джарвис", "макс", "jarvis", "max")
+            val wantFem = clean.lowercase() in setOf("алиса", "пятница", "alice", "friday")
+            val curIsMale = assistantVoiceState in setOf("Puck", "Charon", "Fenrir", "Orus")
+            if (wantMale && !curIsMale) {
+                assistantVoiceState = "Puck"
+                patch.put("voiceName", assistantVoiceState)
+            } else if (wantFem && curIsMale) {
+                assistantVoiceState = "Aoede"
+                patch.put("voiceName", assistantVoiceState)
+            }
+            LiveOrbState.updateAssistantPersona(assistantNameState, assistantVoiceState)
+            renderOrbAssistantUi()
+            syncServiceChips()
+            refreshHighlights()
+            postAsync("http://127.0.0.1:8080/api/config", JSONObject().put("assistant", patch).toString())
+            Toast.makeText(this, "Имя ассистента: «$clean»", Toast.LENGTH_SHORT).show()
+        }
+
+        panel.addView(makeModalSubHeading("Ключевое слово отклика (Wake Word)"))
+        val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        var firstFocusView: View? = null
+        listOf("Алиса", "Джарвис", "Пятница", "Макс").forEachIndexed { idx, n ->
+            val pill = makeModalChoicePill(n, n.equals(assistantNameState, ignoreCase = true)) {
+                applyName(n)
+            }
+            if (idx == 0) firstFocusView = pill
+            nameMap[n] = pill
+            nameRow.addView(pill)
+        }
+        val customBtn = makeModalChoicePill("✏ Своё имя", false) {
+            val et = EditText(this).apply {
+                hint = "Например: Алиса, Джарвис, Ника..."
+                setText(assistantNameState)
+                setSingleLine(true)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Своё имя ассистента")
+                .setMessage("Ключевое слово Wake Word и фразы приветствия автоматически перестроятся.")
+                .setView(et)
+                .setPositiveButton("Сохранить") { _, _ ->
+                    val entered = et.text?.toString()?.trim().orEmpty()
+                    if (entered.isNotEmpty()) applyName(entered)
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+        nameMap["custom"] = customBtn
+        nameRow.addView(customBtn)
+        panel.addView(nameRow)
+
+        panel.addView(makeModalSubHeading("Голос ассистента (Gemini Live TTS)"))
+        val voiceRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(
+            "Aoede" to "Aoede (жен.)",
+            "Kore" to "Kore (жен.)",
+            "Leda" to "Leda (живой)",
+            "Puck" to "Puck (муж.)",
+            "Charon" to "Charon (глуб.)",
+            "Fenrir" to "Fenrir (энерг.)"
+        ).forEach { (id, lbl) ->
+            val pill = makeModalChoicePill(lbl, id == assistantVoiceState) {
+                assistantVoiceState = id
+                LiveOrbState.updateAssistantPersona(assistantNameState, id)
+                renderOrbAssistantUi()
+                refreshHighlights()
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("assistant", JSONObject().put("voiceName", id)).toString()
+                )
+                Toast.makeText(this, "Голос: $lbl", Toast.LENGTH_SHORT).show()
+            }
+            voiceMap[id] = pill
+            voiceRow.addView(pill)
+        }
+        panel.addView(voiceRow)
+
+        panel.addView(makeModalSubHeading("Характер ответов"))
+        val promptRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        AssistantPersonalities.presets.forEach { (key, label, fullPrompt) ->
+            val pill = makeModalChoicePill(label, key == curPromptKey) {
+                curPromptKey = key
+                assistantPromptState = fullPrompt
+                refreshHighlights()
+                postAsync(
+                    "http://127.0.0.1:8080/api/config",
+                    JSONObject().put("assistant", JSONObject().put("systemPrompt", fullPrompt)).toString()
+                )
+                Toast.makeText(this, "Характер: $label", Toast.LENGTH_SHORT).show()
+            }
+            promptMap[key] = pill
+            promptRow.addView(pill)
+        }
+        panel.addView(promptRow)
+
+        refreshHighlights()
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(16) }
+        }
+        val btnDone = makeTextIconPill(R.drawable.ic_play, "Готово", gold = true) {
+            closeHomeCustomizationMenu()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+        }
+        footer.addView(btnDone)
+        panel.addView(footer)
+        presentOverlayModal(panel, firstFocusView ?: btnDone)
+    }
+
+    private fun showHardwareEqModal() {
+        if (!hwEqSupportedState) {
+            Toast.makeText(this, "Аппаратный DSP SY6045S не обнаружен", Toast.LENGTH_SHORT).show()
+            return
+        }
+        timersScreenRef = null
+        val panel = makeModalGlassPanel(650)
+        panel.addView(TextView(this).apply {
+            text = "АППАРАТНЫЙ DSP УСИЛИТЕЛЯ (SY6045S)"
+            setTextColor(Color.WHITE)
+            textSize = 17.5f
+            letterSpacing = 0.05f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = "24-битные I2C-фильтры усилителя Яндекс Станции Макс"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 11.5f
+            setPadding(0, dp(2), 0, dp(8))
+        })
+
+        panel.addView(makeModalSubHeading("Профиль звучания"))
+        val profMap = LinkedHashMap<String, TextView>()
+        val profRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        var firstFocus: View? = null
+        listOf(
+            "original" to "Оригинал (Яндекс)",
+            "hifi" to "Hi-Fi",
+            "night" to "Ночь",
+            "bass" to "Бас",
+            "club" to "Клуб"
+        ).forEachIndexed { idx, (id, lbl) ->
+            val p = makeModalChoicePill(lbl, id == hwEqProfileState) {
+                hwEqProfileState = id
+                LiveOrbState.updateHardwareEq(id, hwEqSupportedState)
+                syncServiceChips()
+                profMap.forEach { (k, tv) ->
+                    val sel = (k == hwEqProfileState)
+                    tv.isSelected = sel
+                    tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+                }
+                postAsync("http://127.0.0.1:8080/api/audio/hardware_eq", JSONObject().put("profile", id).toString())
+                Toast.makeText(this, "DSP профиль: $lbl", Toast.LENGTH_SHORT).show()
+            }
+            if (idx == 0) firstFocus = p
+            profMap[id] = p
+            profRow.addView(p)
+        }
+        panel.addView(profRow)
+
+        panel.addView(makeModalSubHeading("Аппаратная защита динамиков (DRC)"))
+        val tvDrcInfo = TextView(this).apply {
+            text = "Проверка состояния DRC..."
+            setTextColor(Color.parseColor("#CBD5E1"))
+            textSize = 12f
+            setPadding(0, 0, 0, dp(8))
+        }
+        panel.addView(tvDrcInfo)
+
+        lateinit var btnDrc: TextView
+        fun renderDrcBtn() {
+            if (hwEqDrcBypassedState) {
+                tvDrcInfo.text = "⚠ Защита динамиков (DRC): ОТКЛЮЧЕНА (Bypass) — берегите громкость!"
+                tvDrcInfo.setTextColor(Color.parseColor("#FCA5A5"))
+                btnDrc.text = "Включить защиту DRC"
+            } else {
+                tvDrcInfo.text = "✓ Защита динамиков (DRC): АКТИВНА (рекомендуется)"
+                tvDrcInfo.setTextColor(Color.parseColor("#6EE7B7"))
+                btnDrc.text = "Отключить защиту DRC (опасно)"
+            }
+        }
+        btnDrc = makeModalChoicePill("Проверка...", false) {
+            if (hwEqDrcBypassedState) {
+                hwEqDrcBypassedState = false
+                renderDrcBtn()
+                postAsync("http://127.0.0.1:8080/api/audio/drc_bypass", JSONObject().put("bypass", false).toString())
+                Toast.makeText(this, "Защита DRC включена", Toast.LENGTH_SHORT).show()
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle("Опасное отключение DRC (SY6045S)")
+                    .setMessage(
+                        "Внимание! Аппаратный лимитер DRC защищает вуфер и твитеры от перегрузки и физического повреждения на высокой громкости.\n\nПродолжить отключение DRC на свой страх и риск?"
+                    )
+                    .setPositiveButton("Отключить защиту") { _, _ ->
+                        hwEqDrcBypassedState = true
+                        renderDrcBtn()
+                        postAsync("http://127.0.0.1:8080/api/audio/drc_bypass", JSONObject().put("bypass", true).toString())
+                        Toast.makeText(this, "DRC Bypass активен", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            }
+        }
+        panel.addView(btnDrc)
+        renderDrcBtn()
+
+        thread(isDaemon = true) {
+            try {
+                val conn = (URL("http://127.0.0.1:8080/api/audio/drc_bypass").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 900
+                    readTimeout = 900
+                }
+                if (conn.responseCode == 200) {
+                    val txt = conn.inputStream.bufferedReader().use { it.readText() }
+                    val j = JSONObject(txt)
+                    val woofer = j.optBoolean("wooferDrc", true)
+                    val tweeters = j.optBoolean("tweetersDrc", true)
+                    handler.post {
+                        if (homeCustomOpen) {
+                            hwEqDrcBypassedState = !(woofer && tweeters)
+                            renderDrcBtn()
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Throwable) {}
+        }
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(16) }
+        }
+        val btnDone = makeTextIconPill(R.drawable.ic_play, "Закрыть", gold = true) {
+            closeHomeCustomizationMenu()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+        }
+        footer.addView(btnDone)
+        panel.addView(footer)
+        presentOverlayModal(panel, firstFocus ?: btnDone)
+    }
+
+    private fun showTimersModal() {
+        val screen = TimersScreen(
+            this,
+            post = { path, body ->
+                thread(isDaemon = true) {
+                    httpPostJson("http://127.0.0.1:8080$path", body)
+                    pollDaemonStatus()
+                }
+            },
+            onClose = { closeHomeCustomizationMenu() }
+        ).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                dp(820),
+                dp(450),
+                Gravity.CENTER
+            )
+        }
+        presentOverlayModal(screen, null)
+        timersScreenRef = screen
+        screen.update(lastTimersJson, lastTimersFetchedMs, lastAlarmsJson, lastRingingAlarmJson)
+        screen.focusFirst()
+        thread(isDaemon = true) { pollDaemonStatus() }
     }
 
     // -----------------------------------------------------------------------------------------

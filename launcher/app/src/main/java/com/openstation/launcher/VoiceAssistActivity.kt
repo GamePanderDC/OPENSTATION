@@ -13,7 +13,7 @@ import java.net.URL
 class VoiceAssistActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Toast.makeText(this, "Голосовой ассистент «Алиса»", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Голосовой ассистент «${LiveOrbState.effectiveName()}»", Toast.LENGTH_SHORT).show()
         Thread {
             var handled = false
             try {

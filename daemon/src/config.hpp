@@ -9,6 +9,14 @@
 
 namespace openstation {
 
+// Cut to at most max_bytes without splitting a UTF-8 sequence.
+inline void utf8_truncate(std::string& s, size_t max_bytes) {
+    if (s.size() <= max_bytes) return;
+    size_t n = max_bytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    s.resize(n);
+}
+
 // 10 ISO EQ center frequencies: 31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz
 void apply_eq_preset_defaults(const std::string& preset,
                               std::array<float, 10>& out_bands,
@@ -65,6 +73,18 @@ struct AudioConfig {
     std::string capture_mode = "aaudio"; // aaudio (stock 1ch 16k libyandexvqe hardware DSP) or alsa_16ch
     int primary_mic_channel = -1;      // 0..15 or -1 = 7-mic array beamform average
     int loopback_channel = 8;          // reference channel in 16ch frame (calibrated empirically)
+
+    // SY6045S persistent hardware DSP equalizer settings (Station Max amp pair 2-002a / 2-002b)
+    std::string hardware_eq_profile = "original"; // original, hifi, night, bass, club, custom
+    double hardware_eq_bass_gain = 0.0;
+    double hardware_eq_treble_gain = 3.0;
+    int hardware_eq_subsonic = 48;
+    bool hardware_eq_subsonic_on = true;
+    bool hardware_eq_notch120 = true;
+    bool hardware_eq_phase = true;
+    bool hardware_eq_treble_air = true;
+
+    json::Value hardware_eq_request() const;
 };
 
 struct LocationConfig {
@@ -87,6 +107,7 @@ struct InputConfig {
 struct AssistantConfig {
     bool enabled = true;
     std::string mode = "gemini"; // gemini, wyoming, off
+    std::string name = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"; // Алиса (dynamic custom wake & persona name)
     std::string gemini_api_key;
     std::string gemini_model = "gemini-3.8-live";
     std::string gemini_proxy_host = "ai-pool.comss.one"; // SNI proxy fallback on geo-block (1007)
@@ -146,6 +167,20 @@ struct NetworkConfig {
     bool wifi_power_save_off = true;
 };
 
+struct AlarmEntry {
+    int id = 0;
+    std::string time = "07:00";        // HH:MM local time (normalized, zero-padded)
+    std::array<bool, 7> days{};        // Mon..Sun; all false = one-shot
+    std::string label;
+    bool enabled = true;
+    std::string sound = "chime";       // wave, calm, chime
+};
+
+struct HomeAssistantConfig {
+    std::string url;   // e.g. http://192.168.1.10:8123 (no trailing slash)
+    std::string token; // long-lived access token; never exposed via status JSON
+};
+
 struct DaemonConfig {
     std::string path = "/data/local/openstation/config.json";
     int web_port = 8080;
@@ -161,6 +196,8 @@ struct DaemonConfig {
     MqttConfig mqtt;
     OtaConfig ota;
     NetworkConfig network;
+    std::vector<AlarmEntry> alarms;
+    HomeAssistantConfig home_assistant;
 
     json::Value to_json() const;
     void from_json(const json::Value& v);

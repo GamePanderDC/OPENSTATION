@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "hw/aec_filter.hpp"
 #include "utils/json_min.hpp"
 
 #include <array>
@@ -108,17 +109,11 @@ private:
     size_t wav_filled_ = 0;
     std::mutex wav_mu_;
 
-    static constexpr size_t kAecTaps = 64;
-    static_assert((kAecTaps & (kAecTaps - 1)) == 0, "kAecTaps must be power of two");
-    std::vector<float> aec_w_;
-    std::vector<float> aec_x_;
-    size_t aec_pos_ = 0;
+    Aec16kFilter aec_;
     int aec_hangover_ = 0;
     bool aec_x_clean_ = true;
-    float hp1_x_ = 0.0f;
-    float hp1_y_ = 0.0f;
-    float hp2_x_ = 0.0f;
-    float hp2_y_ = 0.0f;
+    Hpf95State hp_mic_;
+    Hpf95State hp_ref_;
     float agc_gain_ = 1.0f;
     float agc_noise_floor_ = 55.0f;
     int agc_hold_frames_ = 0;
@@ -128,11 +123,16 @@ private:
     bool mic_spec_zero_sent_ = false;
 
     double resamp_phase_ = 0.0;
+    double ref_resamp_phase_ = 0.0;
     std::vector<float> clean_buf_;
     std::vector<float> f48_buf_;
     std::vector<float> f48_comb_buf_;
     std::vector<float> f48_rem_;
     std::vector<float> f16_batch_buf_;
+    std::vector<float> ref48_buf_;
+    std::vector<float> ref48_comb_buf_;
+    std::vector<float> ref48_rem_;
+    std::vector<float> ref16_batch_buf_;
     std::vector<int16_t> mono_buf_;
     std::vector<int16_t> combined_buf_;
     std::vector<int16_t> out_batch_buf_;
