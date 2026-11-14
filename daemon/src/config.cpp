@@ -242,8 +242,7 @@ void DaemonConfig::sanitize_and_validate() {
     if (assistant.voice_name.empty() || assistant.voice_name.size() > 32) {
         assistant.voice_name = "Aoede";
     }
-    if (assistant.system_prompt.empty() ||
-        assistant.system_prompt.rfind("Ты — голосовой ассистент", 0) == 0) {
+    if (assistant.system_prompt.empty()) {
         assistant.system_prompt = DaemonConfig().assistant.system_prompt;
     }
     if (assistant.system_prompt.size() > 4096) {
