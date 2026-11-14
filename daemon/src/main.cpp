@@ -3800,13 +3800,12 @@ int main(int argc, char** argv) {
                 {
                     std::lock_guard<std::mutex> lk(cfg_mu);
                     cfg.location.auto_detect = true;
+                    cfg.location.city.clear();
                     cfg.location.resolved_city = geo.city;
                     cfg.location.resolved_country = geo.country;
                     cfg.location.resolved_epoch = static_cast<int64_t>(std::time(nullptr));
-                    if (cfg.location.city.empty()) {
-                        cfg.location.lat = geo.lat;
-                        cfg.location.lon = geo.lon;
-                    }
+                    cfg.location.lat = geo.lat;
+                    cfg.location.lon = geo.lon;
                     cfg.sanitize_and_validate();
                     c = cfg;
                 }

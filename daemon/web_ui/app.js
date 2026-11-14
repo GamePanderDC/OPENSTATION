@@ -809,7 +809,11 @@
         renderEqCurve();
       }
 
-      if ($("locCity")) $("locCity").value = cfg.location?.city || "";
+      if ($("locCity")) {
+        $("locCity").value = cfg.location?.city || "";
+        $("locCity").placeholder = cfg.location?.resolvedCity
+          ? `Автоматически: ${cfg.location.resolvedCity}` : "Автоопределение по IP...";
+      }
 
       if ($("actShort")) $("actShort").value = cfg.input?.actionShort || "assistant";
       if ($("actLong")) $("actLong").value = cfg.input?.actionLong || "led_cycle";
@@ -1183,9 +1187,11 @@
         try {
           showToast("Определение местоположения по IP...");
           const res = await api("/api/location/detect", "POST", {});
-          if (res.city && $("locCity")) {
-            $("locCity").value = res.city;
-            scheduleConfigPush();
+          if ($("locCity")) {
+            $("locCity").value = "";
+            $("locCity").placeholder = res.city ? `Автоматически: ${res.city}` : "Автоопределение по IP...";
+          }
+          if (res.city) {
             showToast(`Определено: ${res.city} (${res.country})`);
           } else {
             showToast("Город не удалось определить", true);
