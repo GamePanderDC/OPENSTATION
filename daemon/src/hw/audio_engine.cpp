@@ -797,8 +797,9 @@ void AudioEngine::run_alsa_capture_session() {
 }
 
 void AudioEngine::capture_loop() {
+    bool prefer_alsa_after_silence = false;
     while (running_.load()) {
-        reopen_capture_.store(false);
+        if (reopen_capture_.exchange(false)) prefer_alsa_after_silence = false;
         if (!capture_enabled_.load()) {
             {
                 std::lock_guard<std::mutex> lk(stat_mu_);
@@ -817,6 +818,16 @@ void AudioEngine::capture_loop() {
         if (mode == "alsa_16ch") {
             run_alsa_capture_session();
             continue;
+        }
+
+        if (prefer_alsa_after_silence) {
+            const auto started = std::chrono::steady_clock::now();
+            run_alsa_capture_session();
+            if (!running_.load() || !capture_enabled_.load() || reopen_capture_.load()) continue;
+            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(5)) continue;
+            // If direct capture is busy or repeatedly fails immediately, let
+            // Android audio try again instead of spinning on the ALSA device.
+            prefer_alsa_after_silence = false;
         }
 
         AAudioStream* stream = nullptr;
@@ -929,7 +940,7 @@ void AudioEngine::capture_loop() {
         g_aa.stream_close(stream);
         active_channels_.store(0);
         if (try_alsa_on_silence && running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
-            run_alsa_capture_session();
+            prefer_alsa_after_silence = true;
         }
     }
 }
