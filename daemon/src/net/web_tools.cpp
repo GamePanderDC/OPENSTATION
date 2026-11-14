@@ -344,6 +344,22 @@ std::string classify_weather_condition(const std::string& sym_or_code, const std
 
 } // namespace
 
+std::string detect_timezone_by_ip(const std::atomic<bool>* abort_req) {
+    HttpClientRequest req;
+    req.url = "https://ipwho.is/?lang=ru";
+    req.timeout_ms = 5500;
+    req.max_redirects = 0;
+    req.abort_req = abort_req;
+    HttpClientResponse r = http_perform(req);
+    json::Value doc;
+    if (!r.ok || r.status_code != 200 || !json::Parser::parse(r.body, doc)) return "";
+    if (!doc.get("success") || !doc.get("success")->as_bool(false)) return "";
+    const auto* tz = doc.get("timezone");
+    if (!tz || !tz->is_obj()) return "";
+    const auto* id = tz->get("id");
+    return id && id->is_str() ? trim_ws(id->as_str()) : "";
+}
+
 GeoLocationResult detect_location_by_ip(const std::atomic<bool>* abort_req) {
     GeoLocationResult out;
     // Provider 1: ip-api.com (fast JSON with Russian city names)

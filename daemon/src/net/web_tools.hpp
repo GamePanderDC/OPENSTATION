@@ -19,6 +19,7 @@ struct GeoLocationResult {
 };
 
 GeoLocationResult detect_location_by_ip(const std::atomic<bool>* abort_req = nullptr);
+std::string detect_timezone_by_ip(const std::atomic<bool>* abort_req = nullptr);
 
 json::Value tool_web_search(const std::string& query,
                             int count = 5,

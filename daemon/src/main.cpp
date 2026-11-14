@@ -11,6 +11,7 @@
 #include "net/http_client.hpp"
 #include "net/mdns_responder.hpp"
 #include "net/mqtt_client.hpp"
+#include "net/timezone_db.hpp"
 #include "net/web_tools.hpp"
 #include "ota/ota_manager.hpp"
 #include "utils/json_min.hpp"
@@ -1782,6 +1783,48 @@ int main(int argc, char** argv) {
             for (int w = 0; w < 25 && !g_stop.load(); ++w) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(160));
             }
+        }
+    });
+
+    std::thread timezone_thread([&]() {
+        using Clock = std::chrono::steady_clock;
+        auto next_check = Clock::now();
+        bool previously_auto = false;
+        while (!g_stop.load()) {
+            ShellResult setting = run_argv_with_timeout(
+                {"/system/bin/settings", "get", "global", "auto_time_zone"}, 4, 64);
+            const bool automatic = setting.exit_code == 0 && trim_ws_copy(setting.output) == "1";
+            if (automatic && !previously_auto) next_check = Clock::now();
+            previously_auto = automatic;
+            if (automatic && Clock::now() >= next_check) {
+                // Retry later after network, provider or system-service errors.
+                next_check = Clock::now() + std::chrono::minutes(15);
+                const std::string zone = detect_timezone_by_ip(&g_stop);
+                if (!g_stop.load() && timezone_available(zone)) {
+                    // Respect a manual change made while the network request was in flight.
+                    setting = run_argv_with_timeout(
+                        {"/system/bin/settings", "get", "global", "auto_time_zone"}, 4, 64);
+                    if (setting.exit_code == 0 && trim_ws_copy(setting.output) == "1") {
+                        char current[PROP_VALUE_MAX]{};
+                        __system_property_get("persist.sys.timezone", current);
+                        if (zone == current) {
+                            next_check = Clock::now() + std::chrono::hours(6);
+                        } else {
+                            ShellResult applied = run_argv_with_timeout(
+                                {"/system/bin/cmd", "alarm", "set-timezone", zone}, 5, 256);
+                            __system_property_get("persist.sys.timezone", current);
+                            if (applied.exit_code == 0 && zone == current) {
+                                LOGI("Timezone", "Automatically selected %s", zone.c_str());
+                                next_check = Clock::now() + std::chrono::hours(6);
+                            } else {
+                                LOGW("Timezone", "Could not apply detected timezone");
+                            }
+                        }
+                    }
+                }
+            }
+            for (int i = 0; i < 30 && !g_stop.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     });
 
@@ -4968,6 +5011,7 @@ int main(int argc, char** argv) {
     Logger::instance().set_sink(nullptr);
     ota.stop();
     if (geo_thread.joinable()) geo_thread.join();
+    if (timezone_thread.joinable()) timezone_thread.join();
     timers.stop();
     http.stop();
     mqtt.stop();
