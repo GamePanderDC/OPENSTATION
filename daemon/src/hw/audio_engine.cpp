@@ -354,11 +354,6 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         std::fill(f48_buf_.begin(), f48_buf_.end(), 0.0f);
     } else {
         constexpr size_t kAecMask = kAecTaps - 1;
-        // On Station Max Amlogic AXG PDM:
-        // Even channels 0, 2, 4 are high-level.
-        // Odd channels (1, 3, 5) and lane 3 (6, 7) have a ~12.8 dB lower hardware scale.
-        // We apply kOddGain ~ 4.4f to equalize all 7 physical microphones to identical acoustic sensitivity.
-        constexpr float kOddGain = 1.0f;
         int best_c = 0;
         if (tracked_ch >= 7) {
             float max_nrms = ch_rms_[0];

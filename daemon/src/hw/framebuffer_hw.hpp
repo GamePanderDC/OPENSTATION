@@ -171,7 +171,6 @@ private:
     std::vector<LedParticle> scr_particles_;
     float prev_bass_energy_ = 0.0f;
     double last_screen_render_t_ = 0.0;
-    uint32_t matrix_drops_[32]{};
     float matrix_drop_y_[32]{};
 
     FbDevice fb4_;

@@ -368,10 +368,7 @@ void WakeWordEngine::worker_loop() {
 
     bool kws_active = false;
     int hangover_wins = 0;
-    int vad_warm_wins = 0;
-    bool vad_sleeping = true;
     uint32_t vad_clr_cnt = 0;
-    float noise_rms = 0.0055f;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     while (running_.load()) {
@@ -411,8 +408,6 @@ void WakeWordEngine::worker_loop() {
             lead_count = 0;
             kws_active = false;
             hangover_wins = 0;
-            vad_warm_wins = 0;
-            vad_sleeping = true;
             create_engines(cur_cfg);
         }
 
@@ -423,8 +418,6 @@ void WakeWordEngine::worker_loop() {
             lead_count = 0;
             kws_active = false;
             hangover_wins = 0;
-            vad_warm_wins = 0;
-            vad_sleeping = true;
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
             vad_speech_active_.store(false);
@@ -438,25 +431,7 @@ void WakeWordEngine::worker_loop() {
         while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
             const float* win = acc.data() + acc_head;
 
-            // Fast acoustic energy check (avoids running Silero VAD neural net 31.25x/s in room silence)
-            float sum_sq = 0.0f;
-            float peak = 0.0f;
-            for (size_t i = 0; i < kVadWin; ++i) {
-                float v = win[i];
-                sum_sq += v * v;
-                float av = std::fabs(v);
-                if (av > peak) peak = av;
-            }
-            float win_rms = std::sqrt(sum_sq * (1.0f / static_cast<float>(kVadWin)));
-            const float sens_norm = std::clamp(cur_cfg.mic_sensitivity, 10, 100) / 100.0f;
-            const float rms_mult = 1.15f - sens_norm * 0.20f;
-            const float rms_floor = 0.0006f; // ~20 RMS in 16-bit PCM (far-field whisper receptive)
-            const float rms_thr = std::clamp(noise_rms * rms_mult, rms_floor, 0.020f);
-            const float peak_thr = std::clamp(noise_rms * (2.2f - sens_norm * 0.6f), rms_floor * 1.8f, 0.06f);
-            bool energetic = (win_rms >= rms_thr) || (peak >= peak_thr && win_rms >= rms_thr * 0.25f);
-
-            // Feed window into Silero VAD neural network (0.08 ms inference time on hexacore S905X2;
-            // running continuously ensures zero gating loss for far-field room speech and faint whispers)
+            // Feed every window to Silero VAD so quiet speech is not gated out.
             g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
             bool speech = (g_sherpa.vadDetected(vad) != 0);
             vad_speech_active_.store(speech);
@@ -503,7 +478,6 @@ void WakeWordEngine::worker_loop() {
                         g_sherpa.resetKwsStream(kws, kws_stream);
                         kws_active = false;
                         hangover_wins = 0;
-                        vad_warm_wins = 0;
                         lead_count = 0;
 
                         auto now = std::chrono::steady_clock::now();

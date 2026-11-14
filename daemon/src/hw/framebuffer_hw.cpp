@@ -1138,16 +1138,6 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         return cursor - start_x;
     };
 
-    auto draw_digit_4x10 = [&](int digit, int dx, int dy, Rgb c) {
-        if (digit < 0 || digit > 9) return;
-        for (int cx = 0; cx < 4; ++cx) {
-            uint16_t bits = kFontDigits4x10[digit][cx];
-            for (int cy = 0; cy < 10; ++cy) {
-                if (bits & (1u << cy)) pset(dx + cx, dy + cy, c);
-            }
-        }
-    };
-
     auto draw_glyph_3x7 = [&](int idx, int dx, int dy, Rgb c) {
         if (idx < 0 || idx >= 12) return;
         for (int cx = 0; cx < 3; ++cx) {

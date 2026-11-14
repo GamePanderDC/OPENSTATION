@@ -115,7 +115,6 @@ private:
     size_t aec_pos_ = 0;
     int aec_hangover_ = 0;
     bool aec_x_clean_ = true;
-    float ns_noise_floor_ = 55.0f;
     float hp1_x_ = 0.0f;
     float hp1_y_ = 0.0f;
     float hp2_x_ = 0.0f;
