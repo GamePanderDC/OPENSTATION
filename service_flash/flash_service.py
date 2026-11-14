@@ -866,11 +866,11 @@ def boot_uboot_via_yasta(revision: str = "auto") -> bool:
     return False
 
 
-PINNED_ROM_VERSION = "1.6.0"
-PINNED_ROM_TAG = "v1.6.0"
-PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.0.zip"
-PINNED_ROM_SIZE = 730845920
-PINNED_ROM_SHA256 = "b2f77c741c2bb3ec6f0de81617b59fedfbacd482905fbe3a4c680ba18d619ca9"
+PINNED_ROM_VERSION = "1.6.1"
+PINNED_ROM_TAG = "v1.6.1"
+PINNED_ROM_NAME = "OpenStationMax-ROM-v1.6.1.zip"
+PINNED_ROM_SIZE = 736501384
+PINNED_ROM_SHA256 = "c44659c15a41d5970b8c6dfe3c29fc68ecbea1dc5777a854e40f010dc1f4baf0"
 
 
 def _parse_rom_manifest_files(manifest: dict) -> dict:

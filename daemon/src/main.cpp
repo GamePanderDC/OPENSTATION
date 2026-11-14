@@ -49,7 +49,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.0";
+constexpr const char* kFirmwareVersion = "1.6.1";
 
 std::atomic<bool> g_stop{false};
 

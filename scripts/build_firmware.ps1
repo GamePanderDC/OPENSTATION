@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.0",
-    [string]$Changelog = "OpenStation Max v1.6.0: аппаратный DSP/EQ SY6045S, таймеры и будильники, интеграция Home Assistant, смена имени и ключевого слова ассистента, оптимизация CPU/температуры в простое, обновлённая LED-матрица 25x16, адаптивный веб-пульт LiquidGlass и надёжный USB-установщик.",
+    [string]$Version = "1.6.1",
+    [string]$Changelog = "OpenStation Max v1.6.1: восстановлен аппаратный VQE-захват (GENERIC вместо 33с заглушения VOICE_RECOGNITION), оптимизирован 64-мс NEON AEC без зависания DTD и переключений микрофона, улучшено распознавание «Алисы» при играющей музыке без лишней нагрузки в тишине.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

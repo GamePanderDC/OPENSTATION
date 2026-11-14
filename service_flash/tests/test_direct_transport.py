@@ -169,7 +169,7 @@ class TransportTests(unittest.TestCase):
                 }
             manifest_path = os.path.join(folder, 'rom_manifest.json')
             with open(manifest_path, 'w', encoding='utf-8') as mf:
-                json.dump({'version': '1.6.0', 'files': files_meta}, mf)
+                json.dump({'version': '1.6.1', 'files': files_meta}, mf)
 
             f.verify_rom(folder)
 

@@ -1,40 +1,40 @@
 {
-  "name": "OpenStation Max",
-  "device": "yandexstation_2",
-  "version": "1.6.0",
-  "autonomous": true,
-  "changelog": "OpenStation Max v1.6.0: аппаратный DSP/EQ SY6045S, таймеры и будильники, интеграция Home Assistant, смена имени и ключевого слова ассистента, оптимизация CPU/температуры в простое, обновлённая LED-матрица 25x16, адаптивный веб-пульт LiquidGlass и надёжный USB-установщик.",
-  "buildTimeUtc": "2026-11-14T19:24:12Z",
-  "files": {
-    "daemon": {
-      "fileName": "openstationd",
-      "size": 2950216,
-      "sha256": "165c32819df541840526f7e02a79f1dec87cb0503d5fe58a409ac6afa8fef2b0"
-    },
-    "bootlogod": {
-      "fileName": "bootlogod",
-      "size": 657888,
-      "sha256": "2c0fc741c070ae1e187522a0411a9e5f97cfd56a72e53663f3c187c66189a556"
-    },
-    "launcher": {
-      "fileName": "OpenStationLauncher.apk",
-      "size": 4680074,
-      "sha256": "709b78001948a9c3d1a9cef5c9680e5433475700b9fe51c3d3a350a770452850"
-    },
-    "ime": {
-      "fileName": "OpenStationIME.apk",
-      "size": 808866,
-      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-    },
-    "bootanimation": {
-      "fileName": "bootanimation.zip",
-      "size": 6725707,
-      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
-    },
-    "bootlogo": {
-      "fileName": "logo.img",
-      "size": 2252608,
-      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-    }
-  }
+    "name":  "OpenStation Max",
+    "device":  "yandexstation_2",
+    "version":  "1.6.1",
+    "autonomous":  true,
+    "changelog":  "OpenStation Max v1.6.1: восстановлен аппаратный VQE-захват (GENERIC вместо 33с заглушения VOICE_RECOGNITION), оптимизирован 64-мс NEON AEC без зависания DTD и переключений микрофона, улучшено распознавание «Алисы» при играющей музыке без лишней нагрузки в тишине.",
+    "buildTimeUtc":  "2026-11-14T20:36:18Z",
+    "files":  {
+                  "daemon":  {
+                                 "fileName":  "openstationd",
+                                 "size":  2951688,
+                                 "sha256":  "b8e8165d7eb169543d695939c8faf866573533675d9a64499e58f566506a8ce8"
+                             },
+                  "bootlogod":  {
+                                    "fileName":  "bootlogod",
+                                    "size":  657888,
+                                    "sha256":  "2c0fc741c070ae1e187522a0411a9e5f97cfd56a72e53663f3c187c66189a556"
+                                },
+                  "launcher":  {
+                                   "fileName":  "OpenStationLauncher.apk",
+                                   "size":  4680074,
+                                   "sha256":  "6a64cf7995d77104f4d9d71ccc972527f3d5418e59774457d1595b0672cfe8c9"
+                               },
+                  "ime":  {
+                              "fileName":  "OpenStationIME.apk",
+                              "size":  808866,
+                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
+                          },
+                  "bootanimation":  {
+                                        "fileName":  "bootanimation.zip",
+                                        "size":  6725707,
+                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+                                    },
+                  "bootlogo":  {
+                                   "fileName":  "logo.img",
+                                   "size":  2252608,
+                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+                               }
+              }
 }

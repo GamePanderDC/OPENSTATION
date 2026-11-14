@@ -420,13 +420,12 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             } else if (tracked_ch < 7) {
                 mic_f = samp[0]; // beamformer below reads channels 0..6
             } else {
-                // Adaptive Coherent Beamformer:
-                // 70% direct best-microphone (zero phase smear, preserving clear dental/fricative consonants)
-                // + 30% 360-degree omni sum (room presence & seamless walk-around continuity)
-                float best_s = samp[best_c];
+                // During active speaker playback with NLMS AEC, use stationary omni sum across
+                // the 7 symmetric mics: 20 ms best_c hopping shifts phase/delay every frame and
+                // prevents the adaptive FIR from converging. When quiet, favor nearest mic + omni.
                 float omni_s = (samp[0] + samp[1] + samp[2] + samp[3] +
                                 samp[4] + samp[5] + samp[6]) * (1.0f / 7.0f);
-                mic_f = 0.70f * best_s + 0.30f * omni_s;
+                mic_f = use_aec ? omni_s : (0.70f * samp[best_c] + 0.30f * omni_s);
             }
             f48[f] = mic_f;
 
@@ -495,8 +494,9 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             const float idle_noise_cap = is_vqe ? (60.0f + sens_norm * 40.0f) :
                                                   (120.0f + sens_norm * 100.0f);
 
-            // Track idle ambient room floor slowly (never chase active speech upward)
-            if (raw_rms < agc_noise_floor_ * 2.2f + 15.0f) {
+            // Track idle ambient room floor slowly (never chase active speech or playback residual upward)
+            if (raw_rms < agc_noise_floor_ * 2.2f + 15.0f &&
+                (!use_aec || raw_rms < agc_noise_floor_)) {
                 float nf_rate = (raw_rms < agc_noise_floor_) ? 0.08f : 0.015f;
                 agc_noise_floor_ = std::clamp(
                     agc_noise_floor_ * (1.0f - nf_rate) + raw_rms * nf_rate,
@@ -738,7 +738,7 @@ static int open_alsa_pcm_capture(const char* dev, unsigned int rate, unsigned in
     return fd;
 }
 
-void AudioEngine::run_alsa_capture_session() {
+void AudioEngine::run_alsa_capture_session(int max_duration_sec) {
     const unsigned int rate = 48000;
     const unsigned int ch = 16;
     unsigned int period = 1024; // ~21.3 ms, power-of-2 for Amlogic AXG PDM DMA
@@ -767,7 +767,7 @@ void AudioEngine::run_alsa_capture_session() {
     agc_gain_ = 1.0f;
     agc_noise_floor_ = 55.0f;
     agc_hold_frames_ = 0;
-    cap_warmup_frames_ = 24;
+    cap_warmup_frames_ = 48; // ~1.02 s for ch[0,2,4] PDM DC offset transient to settle
     aec_.reset(true);
     aec_hangover_ = 0;
     aec_x_clean_ = true;
@@ -781,8 +781,16 @@ void AudioEngine::run_alsa_capture_session() {
     active_channels_.store(ch);
     LOGI("AudioEngine", "Raw ALSA 16-ch capture started (/dev/snd/pcmC0D1c, 48000 Hz, 16 ch, period=%u)", period);
 
+    const auto session_deadline = (max_duration_sec > 0)
+        ? (std::chrono::steady_clock::now() + std::chrono::seconds(max_duration_sec))
+        : std::chrono::steady_clock::time_point::max();
+
     std::vector<int16_t> buf(static_cast<size_t>(period) * ch);
     while (running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
+        if (max_duration_sec > 0 && std::chrono::steady_clock::now() >= session_deadline) {
+            LOGI("AudioEngine", "ALSA recovery window (%ds) complete; re-trying AAudio YandexVQE", max_duration_sec);
+            break;
+        }
         struct snd_xferi xfer {};
         xfer.buf = buf.data();
         xfer.frames = period;
@@ -829,19 +837,20 @@ void AudioEngine::capture_loop() {
             mode = cfg_.capture_mode;
         }
         if (mode == "alsa_16ch") {
-            run_alsa_capture_session();
+            run_alsa_capture_session(0);
             continue;
         }
 
         if (prefer_alsa_after_silence) {
             const auto started = std::chrono::steady_clock::now();
-            run_alsa_capture_session();
+            run_alsa_capture_session(30);
             if (!running_.load() || !capture_enabled_.load() || reopen_capture_.load()) continue;
-            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(5)) {
+            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(28)) {
+                // Recovery window finished; return to AAudio GENERIC (YandexVQE).
+                prefer_alsa_after_silence = false;
                 alsa_short_retries = 0;
                 continue;
             }
-            // Retry brief ALSA EIO/EBUSY up to 3 times before falling back to AAudio.
             if (++alsa_short_retries < 3) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 continue;
@@ -851,15 +860,15 @@ void AudioEngine::capture_loop() {
         }
 
         AAudioStream* stream = nullptr;
-        // Prioritize VOICE_RECOGNITION preset (preset 6) so Android AudioPolicy/AudioFlinger
-        // never mutes or preempts background hotword/assistant capture when third-party apps
-        // (YouTube, Kinopoisk, video/audio players) are running in foreground.
+        // Prioritize GENERIC preset (stream type="mic" in /vendor/etc/audio_effects.xml) FIRST:
+        // it attaches hardware-calibrated 7-mic YandexVQE (libyandexvqe.so) in audioserver and stays
+        // active continuously, whereas VOICE_RECOGNITION skips YandexVQE and is silenced at ~33s.
         struct TryCfg { int ch; int rate; int32_t preset; const char* tag; };
         const TryCfg attempts[] = {
-            {1, 16000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_16k_voicerec"},
-            {1, 48000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_48k_voicerec"},
             {1, 16000, AAUDIO_INPUT_PRESET_GENERIC, "aaudio_1ch_16k_vqe"},
             {1, 48000, AAUDIO_INPUT_PRESET_GENERIC, "aaudio_1ch_48k_vqe"},
+            {1, 16000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_16k_voicerec"},
+            {1, 48000, AAUDIO_INPUT_PRESET_VOICE_RECOGNITION, "aaudio_1ch_48k_voicerec"},
             {1, 16000, -1, "aaudio_1ch_16k"},
         };
 
@@ -900,7 +909,7 @@ void AudioEngine::capture_loop() {
         agc_gain_ = 1.0f;
         agc_noise_floor_ = 120.0f;
         agc_hold_frames_ = 0;
-        cap_warmup_frames_ = 0;
+        cap_warmup_frames_ = 25; // ~0.50 s skip HAL initial transient spike
         aec_.reset(true);
         aec_hangover_ = 0;
         aec_x_clean_ = true;

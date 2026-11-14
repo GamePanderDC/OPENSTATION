@@ -65,7 +65,7 @@ private:
     };
 
     void capture_loop();
-    void run_alsa_capture_session();
+    void run_alsa_capture_session(int max_duration_sec = 0);
     void playback_loop();
     void process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate);
 
@@ -117,7 +117,7 @@ private:
     float agc_gain_ = 1.0f;
     float agc_noise_floor_ = 55.0f;
     int agc_hold_frames_ = 0;
-    int cap_warmup_frames_ = 24;
+    int cap_warmup_frames_ = 48;
     std::atomic<float> last_agc_gain_{1.0f};
     std::atomic<float> last_noise_floor_{55.0f};
     bool mic_spec_zero_sent_ = false;

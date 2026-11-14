@@ -114,10 +114,47 @@ int main() {
     const double tail_after = energy_sum(mic_hp, tail_s, tail_e);
     const double tail_erle_db = 10.0 * std::log10(tail_before / std::max(1e-6, tail_after));
 
-    std::cout << "ERLE=" << erle_db << " dB, DT_corr=" << corr << ", Tail_ERLE=" << tail_erle_db << " dB" << std::endl;
+    std::cout << "Case1(44-lag): ERLE=" << erle_db << " dB, DT_corr=" << corr << ", Tail_ERLE=" << tail_erle_db << " dB" << std::endl;
 
     assert(erle_db >= 14.0);
     assert(corr >= 0.90);
     assert(tail_erle_db >= 12.0);
+
+    // Case 2: Station Max measured hardware+acoustic lag (~72 samples = 4.50 ms, inverted polarity)
+    // plus longer room reverberation tail (38 ms..55 ms) requiring the 64 ms (1024-tap) window.
+    for (size_t n = 0; n < kTotal; ++n) {
+        float e = 0.0f;
+        if (n >= 72)  e -= 0.52f * ref[n - 72];
+        if (n >= 168) e += 0.22f * ref[n - 168];
+        if (n >= 620) e -= 0.16f * ref[n - 620];
+        if (n >= 840) e += 0.11f * ref[n - 840];
+        echo[n] = e;
+        mic[n] = echo[n] + near[n];
+    }
+    hp_mic.reset();
+    hp_ref.reset();
+    hp_echo.reset();
+    for (size_t n = 0; n < kTotal; ++n) {
+        mic_hp[n] = hp_mic.process(mic[n]);
+        ref_hp[n] = hp_ref.process(ref[n]);
+        echo_hp[n] = hp_echo.process(echo[n]);
+    }
+    aec.reset(true);
+    for (size_t pos = 0; pos < kTotal; pos += kBlock) {
+        const size_t n = std::min(kBlock, kTotal - pos);
+        aec.process_block(mic_hp.data() + pos, ref_hp.data() + pos, n);
+    }
+    const double e2_before = energy_sum(echo_hp, conv_s, conv_e);
+    const double e2_after = energy_sum(mic_hp, conv_s, conv_e);
+    const double erle2_db = 10.0 * std::log10(e2_before / std::max(1e-6, e2_after));
+    const double corr2 = correlation(mic_hp, near_hp, dt_s, dt_e);
+    const double tail2_before = energy_sum(echo_hp, tail_s, tail_e);
+    const double tail2_after = energy_sum(mic_hp, tail_s, tail_e);
+    const double tail2_erle_db = 10.0 * std::log10(tail2_before / std::max(1e-6, tail2_after));
+
+    std::cout << "Case2(72-lag+55ms tail): ERLE=" << erle2_db << " dB, DT_corr=" << corr2 << ", Tail_ERLE=" << tail2_erle_db << " dB" << std::endl;
+    assert(erle2_db >= 14.0);
+    assert(corr2 >= 0.90);
+    assert(tail2_erle_db >= 12.0);
     return 0;
 }
