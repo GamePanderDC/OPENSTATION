@@ -866,17 +866,9 @@ class AliceOrbView @JvmOverloads constructor(
 
     private fun drawVisualizer(canvas: Canvas, cx: Float, cy: Float, radius: Float, alpha: Int) {
         if (alpha <= 0) return
-        when (LiveOrbState.visualizerStyle) {
-            "bars" -> drawBarsVisualizer(canvas, cx, cy, radius, alpha)
-            "wave" -> drawWaveVisualizer(canvas, cx, cy, radius, alpha)
-            "fireflies" -> drawFirefliesVisualizer(canvas, cx, cy, radius, alpha)
-            "aurora" -> drawAuroraVisualizer(canvas, cx, cy, radius, alpha)
-            "matrix" -> drawMatrixVisualizer(canvas, cx, cy, radius, alpha)
-            "specterr" -> drawSpecterrCircleVisualizer(canvas, cx, cy, radius, alpha)
-            "nexus", "anomaly" -> drawNexusVisualizer(canvas, cx, cy, radius, alpha)
-            "dots", "particles" -> drawHalftoneSphereVisualizer(canvas, cx, cy, radius, alpha)
-            else -> drawHalftoneSphereVisualizer(canvas, cx, cy, radius, alpha)
-        }
+        // The TV always shows the audio-reactive sphere; the style selection
+        // controls the station's matrix independently.
+        drawHalftoneSphereVisualizer(canvas, cx, cy, radius, alpha)
     }
 
     /**

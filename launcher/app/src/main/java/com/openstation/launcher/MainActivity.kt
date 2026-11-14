@@ -2028,7 +2028,7 @@ class MainActivity : Activity() {
             "fireflies" -> "Частицы"
             else -> "3D Точки"
         }
-        tileVis = makeHwTile(R.drawable.ic_wave, "Визуал: $curVisName") { cycleVisualizerStyle() }
+        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: $curVisName") { cycleVisualizerStyle() }
         tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
 
         val hwGrid = LinearLayout(this).apply {
@@ -3432,7 +3432,7 @@ class MainActivity : Activity() {
                     "fireflies" -> "Частицы"
                     else -> "3D Точки"
                 }
-                tileVis.label.text = "Визуал: $visName"
+                tileVis.label.text = "Экран: $visName"
             }
 
             val astBusy = assistantState != "idle"
@@ -3972,8 +3972,8 @@ class MainActivity : Activity() {
         LiveOrbState.visualizerStyle = next
         LiveOrbState.previewUntilMs = System.currentTimeMillis() + 8000L
         val name = shortNames[next] ?: next
-        tileVis.label.text = "Визуал: $name"
-        Toast.makeText(this, "3D Визуализатор: $name", Toast.LENGTH_SHORT).show()
+        tileVis.label.text = "Экран: $name"
+        Toast.makeText(this, "Визуализация экранчика: $name", Toast.LENGTH_SHORT).show()
         val body = JSONObject()
             .put("ledScreen", JSONObject().put("visualizerStyle", next))
             .toString()
