@@ -89,12 +89,21 @@ class BleRemoteManager(private val context: Context) {
                 scheduleReconnect(30000L)
                 return
             }
-            val device = try { findTargetDevice() } catch (_: Throwable) { null }
-            if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
+            if (scanning.get() || bondReceiver != null) {
                 scheduleReconnect(30000L)
                 return
             }
-            if (scanning.get()) {
+            val device = try { findTargetDevice() } catch (_: Throwable) { null }
+            if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
+                // While no remote is paired, listen for a remote entering pairing mode.
+                // Do not turn Bluetooth back on if the user switched it off.
+                startLeScanInternal(adapter, 60000L, { state, _ ->
+                    when (state) {
+                        "connected" -> scheduleReconnect(30000L)
+                        "not_found" -> scheduleReconnect(5000L)
+                        "error" -> scheduleReconnect(30000L)
+                    }
+                }, ScanSettings.SCAN_MODE_LOW_POWER)
                 scheduleReconnect(30000L)
                 return
             }
@@ -140,6 +149,8 @@ class BleRemoteManager(private val context: Context) {
         handler.post {
             reconnectActive = false
             handler.removeCallbacks(reconnectTask)
+            stopScan()
+            unregisterBondReceiver()
             if (hidReceiverRegistered) {
                 try { context.unregisterReceiver(hidReceiver) } catch (_: Throwable) {}
                 hidReceiverRegistered = false
@@ -253,7 +264,8 @@ class BleRemoteManager(private val context: Context) {
     private fun startLeScanInternal(
         adapter: BluetoothAdapter,
         durationMs: Long,
-        onStatus: (state: String, detail: String) -> Unit
+        onStatus: (state: String, detail: String) -> Unit,
+        scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY
     ) {
         stopScan()
         val scanner = adapter.bluetoothLeScanner
@@ -290,7 +302,7 @@ class BleRemoteManager(private val context: Context) {
         activeScanCallback = cb
 
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(scanMode)
             .build()
         try {
             scanner.startScan(null, settings, cb)
