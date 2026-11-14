@@ -1,5 +1,6 @@
 #include "assistant/tls_ws_client.hpp"
 #include "assistant/ca_roots_fallback.hpp"
+#include "assistant/sntp_packet.hpp"
 #include "utils/base64.hpp"
 #include "utils/logger.hpp"
 
@@ -99,36 +100,28 @@ bool sntp_query_host(const char* host, int timeout_ms) {
 
         uint8_t req[48] = {};
         req[0] = 0x23; // LI=0, VN=4, Mode=3 (client)
-        if (sendto(fd, req, sizeof(req), 0, p->ai_addr, p->ai_addrlen) == sizeof(req)) {
+        struct timespec now {};
+        clock_gettime(CLOCK_REALTIME, &now);
+        uint64_t stamp = (static_cast<uint64_t>(now.tv_sec + 2208988800ULL) << 32) |
+                         ((static_cast<uint64_t>(now.tv_nsec) << 32) / 1000000000ULL);
+        for (int i = 0; i < 8; ++i) req[40 + i] = static_cast<uint8_t>(stamp >> (56 - 8 * i));
+        if (connect(fd, p->ai_addr, p->ai_addrlen) == 0 && send(fd, req, sizeof(req), 0) == sizeof(req)) {
             struct pollfd pfd {};
             pfd.fd = fd;
             pfd.events = POLLIN;
             if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
                 uint8_t resp[64];
-                ssize_t n = recvfrom(fd, resp, sizeof(resp), 0, nullptr, nullptr);
-                if (n >= 48) {
-                    uint32_t ntp_sec = (static_cast<uint32_t>(resp[40]) << 24) |
-                                       (static_cast<uint32_t>(resp[41]) << 16) |
-                                       (static_cast<uint32_t>(resp[42]) << 8) |
-                                       static_cast<uint32_t>(resp[43]);
-                    uint32_t ntp_frac = (static_cast<uint32_t>(resp[44]) << 24) |
-                                        (static_cast<uint32_t>(resp[45]) << 16) |
-                                        (static_cast<uint32_t>(resp[46]) << 8) |
-                                        static_cast<uint32_t>(resp[47]);
-                    constexpr uint64_t kNtpToUnix = 2208988800ULL;
-                    if (ntp_sec > kNtpToUnix) {
-                        uint64_t unix_sec = static_cast<uint64_t>(ntp_sec) - kNtpToUnix;
-                        if (unix_sec >= static_cast<uint64_t>(kMinValidUnixSec) &&
-                            unix_sec < 2524608000ULL) {
-                            struct timespec ts {};
-                            ts.tv_sec = static_cast<time_t>(unix_sec);
-                            ts.tv_nsec = static_cast<long>((static_cast<uint64_t>(ntp_frac) * 1000000000ULL) >> 32);
-                            if (clock_settime(CLOCK_REALTIME, &ts) == 0) {
-                                LOGI("TlsWs", "Synchronized system clock via SNTP (%s): unix=%llu",
-                                     host, static_cast<unsigned long long>(unix_sec));
-                                ok = true;
-                            }
-                        }
+                ssize_t n = recv(fd, resp, sizeof(resp), 0);
+                SntpTime time;
+                if (n >= 0 && parse_sntp_reply(resp, static_cast<size_t>(n), req + 40,
+                                               kMinValidUnixSec, 2524608000LL, time)) {
+                    struct timespec ts {};
+                    ts.tv_sec = static_cast<time_t>(time.seconds);
+                    ts.tv_nsec = time.nanoseconds;
+                    if (clock_settime(CLOCK_REALTIME, &ts) == 0) {
+                        LOGI("TlsWs", "Synchronized system clock via SNTP (%s): unix=%lld",
+                             host, static_cast<long long>(time.seconds));
+                        ok = true;
                     }
                 }
             }
