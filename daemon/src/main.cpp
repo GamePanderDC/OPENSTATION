@@ -990,6 +990,15 @@ int main(int argc, char** argv) {
             openstation::AudioEngine::run_cli_probe();
             return 0;
         }
+        if (strcmp(argv[i], "--probe-timezone") == 0) {
+            const std::string zone = openstation::detect_timezone_by_ip(&g_stop);
+            if (!openstation::timezone_available(zone)) {
+                printf("Timezone detection unavailable or unsupported by Android timezone database\n");
+                return 1;
+            }
+            printf("Detected timezone: %s\n", zone.c_str());
+            return 0;
+        }
         if (strcmp(argv[i], "--probe-gemini") == 0) {
             using namespace openstation;
             std::string key = (i + 1 < argc) ? argv[i + 1] : "";
