@@ -51,6 +51,19 @@ class YandexMusicApi(private val context: Context) {
         private const val KEY_NAME = "account_name"
         private const val KEY_PLUS = "account_plus"
         private const val KEY_QUALITY = "ym_quality"
+        internal const val QUALITY_NORMAL = "normal"
+        internal val STANDARD_CODECS = listOf("mp3", "aac", "aac-mp4", "he-aac")
+
+        internal fun normalizeAudioQuality(@Suppress("UNUSED_PARAMETER") raw: String?): String = QUALITY_NORMAL
+
+        internal fun codecsForAudioQuality(@Suppress("UNUSED_PARAMETER") quality: String? = null): List<String> = STANDARD_CODECS
+
+        internal inline fun migrateQualityPreference(stored: String?, writeNormal: (String) -> Unit): String {
+            if (stored != null && stored != QUALITY_NORMAL) {
+                writeNormal(QUALITY_NORMAL)
+            }
+            return QUALITY_NORMAL
+        }
 
         private val coverCache = object : LruCache<String, Bitmap>(32) {}
 
@@ -74,6 +87,7 @@ class YandexMusicApi(private val context: Context) {
 
     init {
         migrateLegacyTokensIfNeeded()
+        getPreferredQuality()
     }
 
     private fun migrateLegacyTokensIfNeeded() {
@@ -139,11 +153,12 @@ class YandexMusicApi(private val context: Context) {
     }
 
     fun getPreferredQuality(): String =
-        prefs.getString(KEY_QUALITY, "normal")?.let { if (it == "lossless") "lossless" else "normal" } ?: "normal"
+        migrateQualityPreference(prefs.getString(KEY_QUALITY, null)) { normalized ->
+            prefs.edit().putString(KEY_QUALITY, normalized).apply()
+        }
 
     fun setPreferredQuality(q: String) {
-        val norm = if (q == "lossless") "lossless" else "normal"
-        prefs.edit().putString(KEY_QUALITY, norm).apply()
+        prefs.edit().putString(KEY_QUALITY, normalizeAudioQuality(q)).apply()
     }
 
     fun getCachedAccount(): YmAccount {
@@ -600,24 +615,18 @@ class YandexMusicApi(private val context: Context) {
         return r.code in 200..299
     }
 
-    fun resolveStream(trackId: String, forceNormalQuality: Boolean = false): YmStreamInfo {
-        val qMode = if (forceNormalQuality) "normal" else getPreferredQuality()
-        val codecs = if (qMode == "lossless") {
-            listOf("flac", "flac-mp4", "mp3", "aac", "he-aac", "aac-mp4", "he-aac-mp4")
-        } else {
-            listOf("mp3", "aac", "aac-mp4", "he-aac")
-        }
-        val qualityParam = if (qMode == "lossless") "lossless" else "normal"
+    fun resolveStream(trackId: String, @Suppress("UNUSED_PARAMETER") forceNormalQuality: Boolean = false): YmStreamInfo {
+        val qualityParam = getPreferredQuality()
+        val codecs = codecsForAudioQuality(qualityParam)
 
         // 1) Try get-file-info RAW first (direct HTTPS stream, lowest overhead)
         if (hasToken()) {
             tryFetchFileInfo(trackId, qualityParam, codecs, "raw", maxAttempts = 2)?.let { return it }
-            // 2) Try get-file-info ENCRAW (supports Hi-Res FLAC/AAC AES-128-CTR decrypted via loopback proxy)
-            val allCodecs = listOf("flac", "aac", "he-aac", "mp3", "flac-mp4", "aac-mp4", "he-aac-mp4")
+            // 2) Fallback to get-file-info ENCRAW with Standard MP3/AAC codecs (AES-128-CTR decrypted via loopback proxy)
             tryFetchFileInfo(
                 trackId,
-                if (qMode == "lossless") "lossless" else "normal",
-                if (qMode == "lossless") allCodecs else codecs,
+                qualityParam,
+                codecs,
                 "encraw",
                 maxAttempts = 5
             )?.let { return it }

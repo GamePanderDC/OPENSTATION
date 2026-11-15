@@ -138,7 +138,7 @@
         color: $("scrColor")?.value || "#ffffff",
         brightness: parseInt($("scrBri")?.value ?? "100", 10),
         clockStyle: $("clockStyle")?.value || "classic",
-        visualizerStyle: $("visualizerStyle")?.value || "dots",
+        visualizerStyle: $("visualizerStyle")?.value || "pulse_bars",
         autoMusicVisualizer: $("autoMusicVisualizer") ? $("autoMusicVisualizer").checked : true
       };
       if ($("scrAutoBri")) ls.autoBrightness = $("scrAutoBri").checked;
@@ -183,7 +183,8 @@
       const newGeminiKey = $("astApiKey")?.value.trim() || "";
       if (newGeminiKey) ast.geminiApiKey = newGeminiKey;
       if ($("astMode")) ast.mode = $("astMode").value;
-      if ($("astModel")) ast.geminiModel = $("astModel").value.trim() || "gemini-3.8-live";
+      ast.geminiModel = "gemini-3.8-live";
+      if ($("astModel")) $("astModel").value = "gemini-3.8-live";
       if ($("astProxyHost")) ast.geminiProxyHost = $("astProxyHost").value.trim();
       if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 8;
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
@@ -789,10 +790,11 @@
     applyBootanimState(d.bootanim || {});
     applyOtaState(d.ota || {}, d.firmwareVersion);
     applyWifiAdbState(d.wifiAdb || {}, d);
+    if (typeof handleMiscRepairState === "function") handleMiscRepairState(d.miscRepair);
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
       otaPendingRestart = false;
-      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.6.2") + " активна!");
+      showToast("Прошивка OpenStation Max v" + (d.firmwareVersion || "1.6.3") + " активна!");
       if (d.postOtaWizardPending && $("wizardModal")?.style.display !== "flex") {
         openWizard(1);
       }
@@ -831,7 +833,11 @@
       if ($("scrText")) $("scrText").value = cfg.ledScreen?.text || "OPEN STATION MAX";
       if ($("scrColor")) $("scrColor").value = cfg.ledScreen?.color || "#ffffff";
       if ($("clockStyle") && cfg.ledScreen?.clockStyle) $("clockStyle").value = cfg.ledScreen.clockStyle;
-      if ($("visualizerStyle") && cfg.ledScreen?.visualizerStyle) $("visualizerStyle").value = cfg.ledScreen.visualizerStyle;
+      if ($("visualizerStyle")) {
+        const vs = cfg.ledScreen?.visualizerStyle || "pulse_bars";
+        const sel = $("visualizerStyle");
+        sel.value = Array.from(sel.options).some((o) => o.value === vs) ? vs : "pulse_bars";
+      }
       if ($("autoMusicVisualizer")) $("autoMusicVisualizer").checked = cfg.ledScreen?.autoMusicVisualizer !== false;
       if ($("scrBri")) {
         $("scrBri").value = cfg.ledScreen?.brightness ?? 100;
@@ -893,13 +899,14 @@
           $("astApiKey").value = "";
           $("astApiKey").placeholder = cfg.assistant.geminiApiKeySet ? "Ключ уже сохранён; пустое поле оставляет его без изменений" : "Вставьте Gemini API key";
         }
-        if ($("astModel")) $("astModel").value = cfg.assistant.geminiModel || "gemini-3.8-live";
+        if ($("astModel")) $("astModel").value = "gemini-3.8-live";
         if ($("astProxyHost")) {
           $("astProxyHost").value =
             cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "ai-pool.comss.one";
         }
         if ($("astVoice")) $("astVoice").value = cfg.assistant.voiceName || "Aoede";
         if ($("astPrompt")) $("astPrompt").value = cfg.assistant.systemPrompt || "";
+        syncPromptPresetButtons(cfg.assistant.systemPrompt || "");
         if ($("astWakeEn")) $("astWakeEn").checked = cfg.assistant.wakeWordEnabled !== false;
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
@@ -2060,7 +2067,7 @@
             applyOtaState(msg.data, state?.firmwareVersion);
             if (msg.data?.state === "up_to_date" && msg.data?.progressPct === 100 && !msg.data?.updateAvailable && otaPendingRestart) {
               otaPendingRestart = false;
-              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.6.2"));
+              showToast("Прошивка обновлена до v" + (msg.data.installedVersion || "1.6.3"));
               if (state?.postOtaWizardPending && $("wizardModal")?.style.display !== "flex") {
                 openWizard(1);
               }
@@ -2126,10 +2133,36 @@
   }
 
   const WIZ_PROMPTS = {
-    universal: "Ты — голосовой ассистент Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). Отвечай по-русски живо, дружелюбно, естественно и кратко (1-3 предложения, если не просят подробнее). Обязательно используй локальные инструменты: web_search, get_weather, fetch_url, set_volume, set_eq_preset, set_audio_route, set_led_ring, manage_timer, tv_hdmi_cec, remote_control, music_control и manage_apps.",
+    universal: "Ты — девушка, голосовая помощница Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). Отвечай по-русски живо, дружелюбно, естественно и кратко (1-3 предложения, если не просят подробнее). Обязательно используй локальные инструменты: web_search, get_weather, fetch_url, set_volume, set_eq_preset, set_audio_route, set_led_ring, manage_timer, tv_hdmi_cec, remote_control, music_control и manage_apps.",
     concise: "Ты — голосовой ассистент Алиса на Станции Макс. Отвечай максимально кратко и по делу на русском языке (1-2 предложения), сразу выполняй команды управления музыкой, громкостью, ТВ, подсветкой и поиском через доступные инструменты.",
     witty: "Ты — весёлая и остроумная Алиса на Станции Макс. Общайся по-русски тепло, живо и иногда с лёгкой шуткой, оставаясь полезной и используя все встроенные инструменты колонки для музыки, погоды, ТВ и умного дома."
   };
+  function matchPromptPresetKey(prompt) {
+    const p = (prompt || "").trim();
+    if (!p) return "";
+    for (const [k, v] of Object.entries(WIZ_PROMPTS)) {
+      if (p === v) return k;
+    }
+    if (
+      p.startsWith("Ты — девушка, голосовая помощница ") ||
+      p.includes("с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет)")
+    ) {
+      return "universal";
+    }
+    if (p.includes("Отвечай максимально кратко и по делу на русском языке (1-2 предложения)")) {
+      return "concise";
+    }
+    if (p.includes("иногда с лёгкой шуткой, оставаясь полезной")) {
+      return "witty";
+    }
+    return "";
+  }
+  function syncPromptPresetButtons(prompt) {
+    const key = matchPromptPresetKey(prompt);
+    document.querySelectorAll("#wizPromptPresets .seg, #astPromptPresets .seg").forEach((b) => {
+      b.classList.toggle("active", b.dataset.preset === key);
+    });
+  }
 
   const WIZ_TOTAL_STEPS = 7;
   const WIZ_PALETTES = [
@@ -2466,7 +2499,7 @@
     const ast = d.assistant || {};
     const ww = ast.wakeWord || {};
     const m = d.music || {};
-    const fw = d.firmwareVersion || "1.6.2";
+    const fw = d.firmwareVersion || "1.6.3";
 
     if ($("wizFwBadge")) {
       $("wizFwBadge").textContent = `v${fw}`;
@@ -2501,10 +2534,7 @@
     });
 
     const curPrompt = (cfg.assistant?.systemPrompt || "").trim();
-    document.querySelectorAll("#wizPromptPresets .seg").forEach((b) => {
-      const k = b.dataset.preset;
-      b.classList.toggle("active", !!WIZ_PROMPTS[k] && curPrompt === WIZ_PROMPTS[k]);
-    });
+    syncPromptPresetButtons(curPrompt);
 
     const agentOn = cfg.assistant ? (cfg.assistant.agentMode !== false) : true;
     if ($("wizAgentStep1")) $("wizAgentStep1").checked = agentOn;
@@ -2683,7 +2713,7 @@
 
   if ($("btnTestAlice")) {
     $("btnTestAlice").addEventListener("click", () => {
-      runGeminiLiveTest($("astApiKey")?.value.trim(), $("astModel")?.value.trim(), $("astProxyHost")?.value.trim(), $("aliceTestResult"));
+      runGeminiLiveTest($("astApiKey")?.value.trim(), "gemini-3.8-live", $("astProxyHost")?.value.trim(), $("aliceTestResult"));
     });
   }
   if ($("btnOpenWizard")) $("btnOpenWizard").addEventListener("click", () => openWizard(1));
@@ -2728,20 +2758,24 @@
     return astPatch;
   }
 
-  document.querySelectorAll("#wizPromptPresets .seg").forEach((b) => {
+  document.querySelectorAll("#wizPromptPresets .seg, #astPromptPresets .seg").forEach((b) => {
     b.addEventListener("click", async () => {
       const p = WIZ_PROMPTS[b.dataset.preset];
       if (!p) return;
       if ($("astPrompt")) $("astPrompt").value = p;
+      syncPromptPresetButtons(p);
       await pushPartialConfig({ assistant: { systemPrompt: p } }, `Характер «${b.textContent}» сохранён`);
     });
   });
+  if ($("astPrompt")) {
+    $("astPrompt").addEventListener("input", () => syncPromptPresetButtons($("astPrompt").value));
+  }
 
   if ($("btnWizTestGemini")) {
     $("btnWizTestGemini").addEventListener("click", async () => {
       const astPatch = buildWizAssistantPatch();
       await pushPartialConfig({ assistant: astPatch });
-      await runGeminiLiveTest(astPatch.geminiApiKey || "", $("astModel")?.value.trim() || "gemini-3.8-live", astPatch.geminiProxyHost, $("wizGeminiBanner"));
+      await runGeminiLiveTest(astPatch.geminiApiKey || "", "gemini-3.8-live", astPatch.geminiProxyHost, $("wizGeminiBanner"));
     });
   }
   if ($("btnWizTestSay")) $("btnWizTestSay").addEventListener("click", triggerAlice);
@@ -3031,7 +3065,7 @@
   function inferGender(name, hintGender) {
     if (hintGender === "male" || hintGender === "female") return hintGender;
     const l = (name || "").trim().toLowerCase();
-    if (/(джарвис|jarvis|макс|max|марк|алекс|олег|иван|арт[её]м|борис|денис|виктор|дмитрий)/.test(l)) return "male";
+    if (/(джарвис|jarvis|макс|max|марк|алекс|олег|иван|арт[её]м|борис|денис|виктор|дмитрий|орион|orion|кеша|барс|робот|greg|alex|steve|tony|ultron|david|john|peter)/.test(l)) return "male";
     return "female";
   }
   async function applyAssistantNameChoice(rawName, hintGender) {
@@ -3353,6 +3387,156 @@
     });
   }
   if ($("btnHaReconfig")) $("btnHaReconfig").addEventListener("click", () => haSetup(true));
+
+  // ===================== Wi-Fi / Bluetooth Misc Revision Repair =====================
+  let selectedMiscRevision = "";
+  let miscModalAutoShown = false;
+  let miscFlashInFlight = false;
+
+  function formatMiscRevLabel(rev) {
+    if (rev === "0008_00052") return "0008 / 00052 (Intel)";
+    if (rev === "00053") return "00053 (Realtek / Unisoc)";
+    return "не определена";
+  }
+
+  function selectMiscRevision(rev) {
+    selectedMiscRevision = (rev === "0008_00052" || rev === "00053") ? rev : "";
+    document.querySelectorAll("#miscRevCards .misc-rev-card").forEach((c) => {
+      c.classList.toggle("active", c.dataset.rev === selectedMiscRevision);
+    });
+    if ($("btnMiscFlashConfirm")) {
+      $("btnMiscFlashConfirm").disabled = !selectedMiscRevision || miscFlashInFlight;
+    }
+  }
+
+  function renderMiscDiagIntoModal(mr) {
+    if (!mr) return;
+    const rec = mr.recommendedRevision || "";
+    if ($("miscRec0008")) $("miscRec0008").style.display = rec === "0008_00052" ? "inline-flex" : "none";
+    if ($("miscRec00053")) $("miscRec00053").style.display = rec === "00053" ? "inline-flex" : "none";
+
+    const badge = $("miscModalBadge");
+    if (badge) {
+      if (mr.flashing || miscFlashInFlight) {
+        badge.textContent = "Прошивка misc...";
+        badge.className = "badge warn";
+      } else if (mr.needsRepair) {
+        badge.textContent = "Требуется проверка";
+        badge.className = "badge warn";
+      } else {
+        badge.textContent = "Wi-Fi и BT работают";
+        badge.className = "badge ok";
+      }
+    }
+
+    const diag = $("miscDiagBanner");
+    if (diag) {
+      const chipLabel = mr.chip === "intel" ? "Intel" : (mr.chip === "realtek" ? "Realtek/Unisoc" : "не определён");
+      diag.textContent =
+        `Wi-Fi: ${mr.wifiOk ? "OK" : "не работает"} · Bluetooth: ${mr.btOk ? "OK" : "не работает"} · ` +
+        `DT: ${mr.currentDtId || "?"} (${formatMiscRevLabel(mr.currentRevision)}) · Чип: ${chipLabel}` +
+        (rec ? ` · Рекомендуется: ${formatMiscRevLabel(rec)}` : "");
+      diag.className = "status-banner " + (mr.needsRepair ? "warn" : "ok");
+    }
+
+    if (!selectedMiscRevision) {
+      const fallback = rec || (mr.currentRevision !== "unknown" ? mr.currentRevision : "0008_00052");
+      selectMiscRevision(fallback);
+    }
+  }
+
+  function openMiscRepairModal(mr) {
+    const modal = $("miscRepairModal");
+    if (!modal) return;
+    if (mr) renderMiscDiagIntoModal(mr);
+    if ($("miscFlashBanner")) {
+      $("miscFlashBanner").style.display = "none";
+      $("miscFlashBanner").textContent = "";
+    }
+    modal.style.display = "flex";
+  }
+
+  async function closeMiscRepairModal(sendDismiss) {
+    const modal = $("miscRepairModal");
+    if (modal) modal.style.display = "none";
+    miscModalAutoShown = true;
+    try { sessionStorage.setItem("os_misc_dismissed", "1"); } catch {}
+    if (sendDismiss) {
+      try { await api("/api/misc/dismiss", "POST", {}); } catch {}
+    }
+  }
+
+  function handleMiscRepairState(mr) {
+    if (!mr) return;
+    if ($("miscStatusHint")) {
+      const chipLabel = mr.chip === "intel" ? "Intel" : (mr.chip === "realtek" ? "Realtek/Unisoc" : "unknown");
+      $("miscStatusHint").textContent =
+        `DT: ${mr.currentDtId || "?"} · чип: ${chipLabel} · Wi-Fi: ${mr.wifiOk ? "OK" : "Нет"} · BT: ${mr.btOk ? "OK" : "Нет"}`;
+    }
+    if ($("miscRepairModal")?.style.display === "flex") {
+      renderMiscDiagIntoModal(mr);
+    }
+    let locallyDismissed = false;
+    try { locallyDismissed = sessionStorage.getItem("os_misc_dismissed") === "1"; } catch {}
+    if (mr.showPopup && !miscModalAutoShown && !locallyDismissed && !miscFlashInFlight) {
+      miscModalAutoShown = true;
+      selectedMiscRevision = "";
+      openMiscRepairModal(mr);
+    }
+  }
+
+  document.querySelectorAll("#miscRevCards .misc-rev-card").forEach((card) => {
+    card.addEventListener("click", () => selectMiscRevision(card.dataset.rev || ""));
+  });
+  if ($("btnOpenMiscModal")) {
+    $("btnOpenMiscModal").addEventListener("click", async () => {
+      selectedMiscRevision = "";
+      openMiscRepairModal(state?.miscRepair || null);
+      try {
+        const fresh = await api("/api/misc/status");
+        if (state) state.miscRepair = fresh;
+        renderMiscDiagIntoModal(fresh);
+      } catch {}
+    });
+  }
+  if ($("btnMiscClose")) $("btnMiscClose").addEventListener("click", () => closeMiscRepairModal(true));
+  if ($("btnMiscDismiss")) $("btnMiscDismiss").addEventListener("click", () => closeMiscRepairModal(true));
+  if ($("btnMiscFlashConfirm")) {
+    $("btnMiscFlashConfirm").addEventListener("click", async () => {
+      if (!selectedMiscRevision || miscFlashInFlight) return;
+      miscFlashInFlight = true;
+      $("btnMiscFlashConfirm").disabled = true;
+      if ($("btnMiscDismiss")) $("btnMiscDismiss").disabled = true;
+      const fb = $("miscFlashBanner");
+      if (fb) {
+        fb.style.display = "block";
+        fb.className = "status-banner warn";
+        fb.textContent = `Прошивка misc для ревизии ${formatMiscRevLabel(selectedMiscRevision)}...`;
+      }
+      try {
+        const r = await api("/api/misc/flash", "POST", {
+          revision: selectedMiscRevision,
+          confirm: true
+        });
+        if (fb) {
+          fb.className = "status-banner ok";
+          fb.textContent = r.rebooting
+            ? `misc прошит (${formatMiscRevLabel(selectedMiscRevision)}), станция перезагружается (~35 сек)...`
+            : `misc прошит: ${r.detail || "OK"}`;
+        }
+        showToast("misc прошит, станция перезагружается...");
+      } catch (e) {
+        miscFlashInFlight = false;
+        $("btnMiscFlashConfirm").disabled = false;
+        if ($("btnMiscDismiss")) $("btnMiscDismiss").disabled = false;
+        if (fb) {
+          fb.className = "status-banner err";
+          fb.textContent = "Ошибка прошивки misc: " + (e?.message || e);
+        }
+        showToast("Ошибка прошивки misc: " + (e?.message || e), true);
+      }
+    });
+  }
 
   async function init() {
     let savedTab = null;

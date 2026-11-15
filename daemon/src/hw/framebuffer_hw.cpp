@@ -21,7 +21,7 @@ namespace openstation {
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+[[maybe_unused]] constexpr double kPi = 3.14159265358979323846;
 
 Rgb parse_hex_color(const std::string& hex, Rgb fallback) {
     if (hex.size() == 7 && hex[0] == '#') {
@@ -108,6 +108,18 @@ constexpr Glyph5x7 kFont5x7[] = {
     {'?', {0x02,0x01,0x51,0x09,0x06}},
     {'/', {0x20,0x10,0x08,0x04,0x02}},
     {'%', {0x23,0x13,0x08,0x64,0x62}},
+    {'(', {0x00,0x1C,0x22,0x41,0x00}},
+    {')', {0x00,0x41,0x22,0x1C,0x00}},
+    {'[', {0x00,0x7F,0x41,0x41,0x00}},
+    {']', {0x00,0x41,0x41,0x7F,0x00}},
+    {'&', {0x36,0x49,0x55,0x22,0x50}},
+    {'\'', {0x00,0x05,0x03,0x00,0x00}},
+    {'"', {0x00,0x07,0x00,0x07,0x00}},
+    {'_', {0x40,0x40,0x40,0x40,0x40}},
+    {'#', {0x14,0x7F,0x14,0x7F,0x14}},
+    {'*', {0x14,0x08,0x3E,0x08,0x14}},
+    {'=', {0x14,0x14,0x14,0x14,0x14}},
+    {'~', {0x08,0x04,0x08,0x10,0x08}},
     {'0', {0x3E,0x51,0x49,0x45,0x3E}},
     {'1', {0x00,0x42,0x7F,0x40,0x00}},
     {'2', {0x42,0x61,0x51,0x49,0x46}},
@@ -184,6 +196,9 @@ const uint8_t* lookup_glyph(uint32_t cp) {
     if (cp >= 'a' && cp <= 'z') cp -= 32;
     else if (cp >= 0x0430 && cp <= 0x044F) cp -= 0x20; // Cyrillic а-я -> А-Я
     else if (cp == 0x0451) cp = 0x0401;                // ё -> Ё
+    else if (cp == 0x2013 || cp == 0x2014 || cp == 0x2212) cp = '-';
+    else if (cp == 0x2018 || cp == 0x2019 || cp == 0x02BC) cp = '\'';
+    else if (cp == 0x201C || cp == 0x201D || cp == 0x00AB || cp == 0x00BB) cp = '"';
     for (const auto& g : kFont5x7) {
         if (g.cp == cp) return g.cols;
     }
@@ -382,6 +397,51 @@ void FramebufferHw::set_music_playing(bool playing) {
     if (notify) cv_.notify_all();
 }
 
+void FramebufferHw::set_music_track_title(const std::string& title) {
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (music_track_title_ != title) {
+            music_track_title_ = title;
+            ++wake_seq_;
+            notify = true;
+        }
+    }
+    if (notify) cv_.notify_all();
+}
+
+int FramebufferHw::measure_text_pixel_width(const std::string& text) {
+    auto cps = utf8_to_codepoints(text);
+    return cps.empty() ? 0 : static_cast<int>(cps.size()) * 6 - 1;
+}
+
+int FramebufferHw::compute_full_scroll_duration_ms(const std::string& text, double px_per_sec, int screen_w) {
+    const int txt_w = measure_text_pixel_width(text);
+    if (txt_w <= 0) return 3500;
+    if (txt_w <= screen_w) return 4500;
+    const int span = txt_w + std::max(1, screen_w);
+    const double speed = std::max(4.0, px_per_sec);
+    const int ms = static_cast<int>(std::ceil((static_cast<double>(span) / speed) * 1000.0)) + 250;
+    return std::clamp(ms, 4500, 180000);
+}
+
+void FramebufferHw::trigger_music_track_banner(const std::string& title, uint8_t r, uint8_t g, uint8_t b) {
+    if (title.empty()) return;
+    const int dur_ms = compute_full_scroll_duration_ms(title, 18.0, 25);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        music_track_title_ = title;
+        scr_override_text_ = title;
+        scr_override_color_ = Rgb{r, g, b};
+        scr_override_one_shot_ = true;
+        scr_override_speed_ = 18.0;
+        scr_override_start_ = std::chrono::steady_clock::now();
+        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(dur_ms);
+        ++wake_seq_;
+    }
+    cv_.notify_all();
+}
+
 void FramebufferHw::trigger_weather(int temp_c, const std::string& cond_code, int duration_ms) {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -432,8 +492,10 @@ void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint
         std::lock_guard<std::mutex> lk(mu_);
         scr_override_text_ = text;
         scr_override_color_ = Rgb{r, g, b};
+        scr_override_one_shot_ = false;
+        scr_override_speed_ = 22.0;
         scr_override_start_ = std::chrono::steady_clock::now();
-        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 30000));
+        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 180000));
         ++wake_seq_;
     }
     cv_.notify_all();
@@ -958,7 +1020,10 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     std::string scr_override_txt;
     Rgb scr_override_col{};
     double scr_override_elapsed = 0.0;
+    bool scr_override_one_shot = false;
+    double scr_override_speed = 22.0;
     bool music_vis_active = false;
+    std::string music_track_txt;
     bool weather_active = false;
     int weather_temp = 0;
     std::string weather_cond = "clear";
@@ -990,6 +1055,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         }
         music_vis_active = (music_playing_ || now < music_stop_grace_until_) &&
                            cfg.auto_music_visualizer && (cfg.mode != "off");
+        music_track_txt = music_track_title_;
         if (now < weather_until_) {
             weather_active = true;
             weather_temp = weather_temp_c_;
@@ -1000,6 +1066,8 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             scr_override_active = true;
             scr_override_txt = scr_override_text_;
             scr_override_col = scr_override_color_;
+            scr_override_one_shot = scr_override_one_shot_;
+            scr_override_speed = scr_override_speed_;
             scr_override_elapsed = std::chrono::duration<double>(now - scr_override_start_).count();
         }
     }
@@ -1168,125 +1236,230 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         high /= 10.0f;
         overall = std::clamp(bass * 0.45f + mid * 0.35f + high * 0.20f, 0.0f, 1.0f);
         float bass_flux = std::max(0.0f, bass - prev_bass_energy_);
-        prev_bass_energy_ = prev_bass_energy_ * 0.7f + bass * 0.3f;
+        prev_bass_energy_ = prev_bass_energy_ * 0.68f + bass * 0.32f;
 
         static uint32_t s_rng = 0x5A17C0DEu;
+        const float dt_f = static_cast<float>(dt_sec);
 
-        if (vis_style == "bars") {
-            float decay = std::exp(-static_cast<float>(dt_sec) * 6.5f);
-            for (size_t i = 0; i < npix; ++i) {
-                scr_trail_buf_[i].r *= decay;
-                scr_trail_buf_[i].g *= decay;
-                scr_trail_buf_[i].b *= decay;
+        if (vis_style == "track_title") {
+            const std::string title = music_track_txt.empty()
+                ? std::string("\xD0\x9C\xD0\xA3\xD0\x97\xD0\xAB\xD0\x9A\xD0\x90")
+                : music_track_txt;
+            const int txt_w = measure_text_pixel_width(title);
+            const int text_y = (static_cast<int>(H) >= 9) ? static_cast<int>((H - 7) / 2) : 0;
+            const float beat_glow = std::clamp(bass * 0.55f + bass_flux * 1.4f, 0.0f, 1.0f);
+            Rgb tc = lerp_rgb(Rgb{90, 224, 255}, Rgb{235, 248, 255}, beat_glow);
+            if (txt_w <= static_cast<int>(W)) {
+                draw_text_col(title, static_cast<int>((W - txt_w) / 2), text_y, tc);
+            } else {
+                const int span = txt_w + static_cast<int>(W);
+                const int px = static_cast<int>(t_sec * 16.0) % std::max(1, span);
+                draw_text_col(title, static_cast<int>(W) - px, text_y, tc);
             }
-            for (uint32_t x = 0; x < W; ++x) {
-                size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, W));
-                float lvl = std::clamp(spec[bi], 0.0f, 1.0f);
-                float bar_hf = lvl * static_cast<float>(H);
-                uint32_t bar_h = static_cast<uint32_t>(std::lround(bar_hf));
-                float hue = std::fmod(190.0f + (static_cast<float>(x) / std::max<uint32_t>(1, W)) * 135.0f + static_cast<float>(t_sec * 18.0), 360.0f);
-                for (uint32_t y = 0; y < bar_h; ++y) {
-                    float yk = static_cast<float>(y) / std::max<uint32_t>(1, H);
-                    Rgb c = hsv_to_rgb(hue - yk * 35.0f, 0.90f, std::clamp(0.45f + lvl * 0.55f, 0.2f, 1.0f));
-                    size_t idx = static_cast<size_t>(H - 1 - y) * W + x;
-                    scr_trail_buf_[idx] = {static_cast<float>(c.r), static_cast<float>(c.g), static_cast<float>(c.b)};
-                }
-                if (bar_h > 0 && bar_h < H) {
-                    size_t tip = static_cast<size_t>(H - 1 - bar_h) * W + x;
-                    scr_trail_buf_[tip].r = std::max(scr_trail_buf_[tip].r, 255.0f);
-                    scr_trail_buf_[tip].g = std::max(scr_trail_buf_[tip].g, 240.0f);
-                    scr_trail_buf_[tip].b = std::max(scr_trail_buf_[tip].b, 255.0f);
-                }
-            }
-            target = scr_trail_buf_;
-        } else if (vis_style == "wave") {
-            float decay = std::exp(-static_cast<float>(dt_sec) * 5.2f);
+            (void)base_col;
+            return;
+        }
+
+        if (vis_style == "beat_wave") {
+            float decay = std::exp(-dt_f * 6.2f);
             for (size_t i = 0; i < npix; ++i) {
                 scr_trail_buf_[i].r *= decay;
                 scr_trail_buf_[i].g *= decay;
                 scr_trail_buf_[i].b *= decay;
             }
             float cy = (static_cast<float>(H) - 1.0f) * 0.5f;
-            float amp = (static_cast<float>(H) * 0.44f) * (0.20f + overall * 0.85f);
+            float energy_env = std::clamp(overall * 1.20f + bass_flux * 0.85f, 0.0f, 1.0f);
+            float amp = (static_cast<float>(H) * 0.46f) * energy_env;
             for (int x = 0; x < static_cast<int>(W); ++x) {
                 float u = static_cast<float>(x) / std::max(1.0f, static_cast<float>(W - 1));
-                size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, W));
-                float b_amp = 0.35f + spec[bi] * 0.95f;
-                float y1 = cy + std::sin(u * 6.283f * 1.5f + static_cast<float>(t_sec * 4.2)) * amp * b_amp;
-                float y2 = cy + std::cos(u * 6.283f * 2.2f - static_cast<float>(t_sec * 3.1)) * amp * (0.4f + high * 0.8f);
-                Rgb c1 = hsv_to_rgb(185.0f + u * 80.0f + static_cast<float>(t_sec * 20.0), 0.9f, 1.0f);
-                Rgb c2 = hsv_to_rgb(285.0f - u * 70.0f + static_cast<float>(t_sec * 25.0), 0.85f, 0.92f);
-                splat_soft(scr_trail_buf_, static_cast<float>(x), y1, c1, 0.95f);
-                splat_soft(scr_trail_buf_, static_cast<float>(x), y2, c2, 0.72f);
+                size_t bi1 = std::min<size_t>(23, (static_cast<size_t>(x) * 14) / std::max<uint32_t>(1, W));
+                size_t bi2 = std::min<size_t>(23, 8 + (static_cast<size_t>(x) * 16) / std::max<uint32_t>(1, W));
+                float b1 = std::clamp(spec[bi1] * 1.30f, 0.0f, 1.25f);
+                float b2 = std::clamp(spec[bi2] * 1.30f, 0.0f, 1.25f);
+                float y1 = cy + std::sin(u * 6.283f * 1.4f + static_cast<float>(t_sec * (3.2 + bass * 5.0))) * amp * (0.25f + b1 * 0.90f);
+                float y2 = cy + std::cos(u * 6.283f * 2.1f - static_cast<float>(t_sec * (2.6 + high * 6.0))) * amp * (0.20f + b2 * 0.85f);
+                Rgb c1 = hsv_to_rgb(185.0f + u * 75.0f + bass * 40.0f, 0.92f, std::clamp(0.18f + energy_env * 0.82f, 0.0f, 1.0f));
+                Rgb c2 = hsv_to_rgb(300.0f - u * 65.0f + high * 35.0f, 0.88f, std::clamp(0.15f + b2 * 0.85f, 0.0f, 1.0f));
+                splat_soft(scr_trail_buf_, static_cast<float>(x), y1, c1, std::clamp(0.20f + b1 * 0.95f, 0.10f, 1.0f));
+                splat_soft(scr_trail_buf_, static_cast<float>(x), y2, c2, std::clamp(0.15f + b2 * 0.80f, 0.06f, 0.95f));
             }
             target = scr_trail_buf_;
-        } else if (vis_style == "fireflies") {
-            float decay = std::exp(-static_cast<float>(dt_sec) * 3.2f);
+        } else if (vis_style == "bass_nova") {
+            float decay = std::exp(-dt_f * 5.2f);
             for (size_t i = 0; i < npix; ++i) {
                 scr_trail_buf_[i].r *= decay;
                 scr_trail_buf_[i].g *= decay;
                 scr_trail_buf_[i].b *= decay;
             }
-            if (scr_particles_.size() != 16) {
-                scr_particles_.resize(16);
-                for (size_t i = 0; i < scr_particles_.size(); ++i) {
-                    auto& p = scr_particles_[i];
-                    p.x = rng_unit(s_rng) * std::max(1.0f, static_cast<float>(W - 1));
-                    p.y = rng_unit(s_rng) * std::max(1.0f, static_cast<float>(H - 1));
-                    p.vx = (rng_unit(s_rng) - 0.5f) * 8.0f;
-                    p.vy = (rng_unit(s_rng) - 0.5f) * 6.0f;
-                    p.hue = 45.0f + rng_unit(s_rng) * 165.0f;
-                    p.life = rng_unit(s_rng) * 3.0f;
+            const float cx = (static_cast<float>(W) - 1.0f) * 0.5f;
+            const float cy = (static_cast<float>(H) - 1.0f) * 0.5f;
+            if ((bass_flux > 0.060f || (bass > 0.56f && (t_sec - vis_last_beat_t_) > 0.25)) &&
+                (t_sec - vis_last_beat_t_) > 0.16) {
+                vis_last_beat_t_ = t_sec;
+                vis_beat_ring_r_ = 0.9f;
+            }
+            if (vis_beat_ring_r_ >= 0.0f) {
+                vis_beat_ring_r_ += (16.0f + bass * 16.0f) * dt_f;
+                if (vis_beat_ring_r_ > 18.0f) vis_beat_ring_r_ = -1.0f;
+            }
+
+            const float core_r = 0.7f + bass * 3.5f + bass_flux * 2.5f;
+            const Rgb core_c = lerp_rgb(Rgb{0, 210, 255}, Rgb{255, 95, 190}, std::clamp(bass * 1.15f, 0.0f, 1.0f));
+            for (int y = 0; y < static_cast<int>(H); ++y) {
+                for (int x = 0; x < static_cast<int>(W); ++x) {
+                    float dx = (x - cx) * 0.85f;
+                    float dy = y - cy;
+                    float dist = std::sqrt(dx * dx + dy * dy);
+                    size_t idx = static_cast<size_t>(y) * W + static_cast<size_t>(x);
+                    if (dist <= core_r + 1.5f) {
+                        float g = std::exp(-(dist * dist) / std::max(0.35f, core_r * core_r)) * std::clamp(0.14f + overall * 0.95f, 0.05f, 1.0f);
+                        scr_trail_buf_[idx].r = std::max(scr_trail_buf_[idx].r, core_c.r * g);
+                        scr_trail_buf_[idx].g = std::max(scr_trail_buf_[idx].g, core_c.g * g);
+                        scr_trail_buf_[idx].b = std::max(scr_trail_buf_[idx].b, core_c.b * g);
+                    }
+                    if (vis_beat_ring_r_ >= 0.0f) {
+                        float rd = std::fabs(dist - vis_beat_ring_r_);
+                        if (rd < 1.8f) {
+                            float rg = std::exp(-(rd * rd) * 1.45f) * std::clamp(1.05f - vis_beat_ring_r_ / 20.0f, 0.1f, 1.0f);
+                            Rgb rc = hsv_to_rgb(195.0f + vis_beat_ring_r_ * 8.0f, 0.9f, rg);
+                            scr_trail_buf_[idx].r = std::max(scr_trail_buf_[idx].r, static_cast<float>(rc.r));
+                            scr_trail_buf_[idx].g = std::max(scr_trail_buf_[idx].g, static_cast<float>(rc.g));
+                            scr_trail_buf_[idx].b = std::max(scr_trail_buf_[idx].b, static_cast<float>(rc.b));
+                        }
+                    }
                 }
+            }
+            for (int arm = 0; arm < 6; ++arm) {
+                float band = std::clamp(spec[static_cast<size_t>(arm * 4)], 0.0f, 1.0f);
+                if (band < 0.04f) continue;
+                float ang = static_cast<float>(arm) * 1.047197f + static_cast<float>(t_sec * (0.55 + high * 1.6));
+                float len = 1.4f + band * 6.8f;
+                float sx = cx + std::cos(ang) * len * 1.15f;
+                float sy = cy + std::sin(ang) * len * 0.85f;
+                Rgb sc = hsv_to_rgb(165.0f + arm * 32.0f, 0.92f, 1.0f);
+                splat_soft(scr_trail_buf_, sx, sy, sc, std::clamp(0.25f + band * 0.90f, 0.15f, 1.0f));
+            }
+            target = scr_trail_buf_;
+        } else if (vis_style == "mirror_meter") {
+            float decay = std::exp(-dt_f * 7.2f);
+            for (size_t i = 0; i < npix; ++i) {
+                scr_trail_buf_[i].r *= decay;
+                scr_trail_buf_[i].g *= decay;
+                scr_trail_buf_[i].b *= decay;
+            }
+            const float cy = (static_cast<float>(H) - 1.0f) * 0.5f;
+            for (uint32_t x = 0; x < W; ++x) {
+                size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, W));
+                float lvl = std::clamp(spec[bi] * 1.10f, 0.0f, 1.0f);
+                int half_h = static_cast<int>(std::lround(lvl * (static_cast<float>(H) * 0.5f)));
+                float hue = 15.0f + (static_cast<float>(x) / std::max<uint32_t>(1, W)) * 255.0f;
+                Rgb col_bar = hsv_to_rgb(hue, 0.92f, std::clamp(0.20f + lvl * 0.80f, 0.0f, 1.0f));
+                for (int d = 0; d < half_h; ++d) {
+                    int y_up = static_cast<int>(std::floor(cy)) - d;
+                    int y_dn = static_cast<int>(std::ceil(cy)) + d;
+                    Rgb dc = scale_rgb(col_bar, 1.0f - (static_cast<float>(d) / std::max(1, half_h)) * 0.25f);
+                    if (y_up >= 0) {
+                        size_t idx = static_cast<size_t>(y_up) * W + x;
+                        scr_trail_buf_[idx] = {static_cast<float>(dc.r), static_cast<float>(dc.g), static_cast<float>(dc.b)};
+                    }
+                    if (y_dn < static_cast<int>(H)) {
+                        size_t idx = static_cast<size_t>(y_dn) * W + x;
+                        scr_trail_buf_[idx] = {static_cast<float>(dc.r), static_cast<float>(dc.g), static_cast<float>(dc.b)};
+                    }
+                }
+                if (overall > 0.03f) {
+                    float seam = std::clamp(0.18f + bass * 0.7f + bass_flux * 1.1f, 0.0f, 1.0f);
+                    Rgb sc = lerp_rgb(col_bar, Rgb{255, 255, 255}, seam);
+                    int y_mid = static_cast<int>(std::floor(cy));
+                    if (y_mid >= 0 && y_mid < static_cast<int>(H)) {
+                        size_t idx = static_cast<size_t>(y_mid) * W + x;
+                        scr_trail_buf_[idx].r = std::max(scr_trail_buf_[idx].r, static_cast<float>(sc.r));
+                        scr_trail_buf_[idx].g = std::max(scr_trail_buf_[idx].g, static_cast<float>(sc.g));
+                        scr_trail_buf_[idx].b = std::max(scr_trail_buf_[idx].b, static_cast<float>(sc.b));
+                    }
+                }
+            }
+            target = scr_trail_buf_;
+        } else if (vis_style == "spark_burst") {
+            float decay = std::exp(-dt_f * 4.8f);
+            for (size_t i = 0; i < npix; ++i) {
+                scr_trail_buf_[i].r *= decay;
+                scr_trail_buf_[i].g *= decay;
+                scr_trail_buf_[i].b *= decay;
+            }
+            if (scr_particles_.size() != 28) {
+                scr_particles_.assign(28, LedParticle{});
             }
             for (size_t i = 0; i < scr_particles_.size(); ++i) {
                 auto& p = scr_particles_[i];
                 size_t bi = (i * 24) / scr_particles_.size();
-                float e = std::clamp(spec[bi], 0.05f, 1.0f);
-                p.vx += std::sin(static_cast<float>(t_sec * 1.8 + i * 1.3)) * 12.0f * static_cast<float>(dt_sec);
-                p.vy += std::cos(static_cast<float>(t_sec * 1.4 + i * 2.1)) * 9.0f * static_cast<float>(dt_sec);
-                float sp = 0.65f + e * 2.0f;
-                p.x += p.vx * sp * static_cast<float>(dt_sec);
-                p.y += p.vy * sp * static_cast<float>(dt_sec);
-                p.vx *= 0.96f;
-                p.vy *= 0.96f;
-                if (p.x < 0.0f) { p.x = 0.0f; p.vx = std::fabs(p.vx); }
-                if (p.x > W - 1.0f) { p.x = W - 1.0f; p.vx = -std::fabs(p.vx); }
-                if (p.y < 0.0f) { p.y = 0.0f; p.vy = std::fabs(p.vy); }
-                if (p.y > H - 1.0f) { p.y = H - 1.0f; p.vy = -std::fabs(p.vy); }
-                float glow = std::clamp(0.22f + e * 1.15f + bass_flux * 1.2f, 0.15f, 1.0f);
-                Rgb c = hsv_to_rgb(p.hue + static_cast<float>(t_sec * 12.0), 0.85f, 1.0f);
-                splat_soft(scr_trail_buf_, p.x, p.y, c, glow);
-            }
-            target = scr_trail_buf_;
-        } else if (vis_style == "aurora") {
-            float decay = std::exp(-static_cast<float>(dt_sec) * 4.5f);
-            for (size_t i = 0; i < npix; ++i) {
-                scr_trail_buf_[i].r *= decay;
-                scr_trail_buf_[i].g *= decay;
-                scr_trail_buf_[i].b *= decay;
-            }
-            for (int x = 0; x < static_cast<int>(W); ++x) {
-                float u = static_cast<float>(x) / std::max(1.0f, static_cast<float>(W - 1));
-                size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, W));
                 float e = std::clamp(spec[bi], 0.0f, 1.0f);
-                float curtain_y = (static_cast<float>(H) * 0.52f) +
-                                  std::sin(u * 4.2f + static_cast<float>(t_sec * 1.6)) * (static_cast<float>(H) * 0.25f) -
-                                  e * (static_cast<float>(H) * 0.35f);
-                for (int y = 0; y < static_cast<int>(H); ++y) {
-                    float dy = std::fabs(static_cast<float>(y) - curtain_y);
-                    float inten = std::exp(-(dy * dy) / (4.5f + bass * 8.0f)) * (0.28f + e * 0.85f);
-                    float hue = 140.0f + u * 110.0f + std::sin(static_cast<float>(t_sec) + u * 3.0f) * 30.0f;
-                    Rgb c = hsv_to_rgb(hue, 0.90f, inten);
-                    size_t idx = static_cast<size_t>(y) * W + static_cast<size_t>(x);
-                    scr_trail_buf_[idx].r = std::max(scr_trail_buf_[idx].r, static_cast<float>(c.r));
-                    scr_trail_buf_[idx].g = std::max(scr_trail_buf_[idx].g, static_cast<float>(c.g));
-                    scr_trail_buf_[idx].b = std::max(scr_trail_buf_[idx].b, static_cast<float>(c.b));
+                p.life -= dt_f * (0.95f + overall * 0.85f);
+                if (p.life <= 0.0f) {
+                    if (e > 0.055f || bass_flux > 0.035f) {
+                        float spawn_x = (static_cast<float>(bi) / 23.0f) * std::max(1.0f, static_cast<float>(W - 1));
+                        p.x = spawn_x + (rng_unit(s_rng) - 0.5f) * 2.0f;
+                        p.y = static_cast<float>(H - 1);
+                        float vy_mag = 9.0f + e * 20.0f + bass * 10.0f + bass_flux * 22.0f;
+                        p.vx = (rng_unit(s_rng) - 0.5f) * (8.0f + high * 10.0f);
+                        p.vy = -vy_mag;
+                        p.hue = 180.0f + (static_cast<float>(bi) / 23.0f) * 145.0f + bass * 25.0f;
+                        p.max_life = 0.45f + rng_unit(s_rng) * 0.65f;
+                        p.life = p.max_life;
+                    } else {
+                        p.life = 0.0f;
+                        continue;
+                    }
+                } else {
+                    p.vy += 13.5f * dt_f;
+                    p.x += p.vx * dt_f;
+                    p.y += p.vy * dt_f;
+                    if (p.x < 0.0f) { p.x = 0.0f; p.vx = std::fabs(p.vx) * 0.6f; }
+                    if (p.x > static_cast<float>(W - 1)) { p.x = static_cast<float>(W - 1); p.vx = -std::fabs(p.vx) * 0.6f; }
+                    if (p.y < 0.0f) { p.y = 0.0f; p.vy = std::fabs(p.vy) * 0.4f; }
+                }
+                if (p.y <= static_cast<float>(H) && p.life > 0.0f) {
+                    float fade = std::clamp(p.life / std::max(0.1f, p.max_life), 0.0f, 1.0f);
+                    Rgb sc = hsv_to_rgb(p.hue, 0.90f, 1.0f);
+                    splat_soft(scr_trail_buf_, p.x, p.y, sc, fade * std::clamp(0.35f + e * 0.85f + overall * 0.35f, 0.2f, 1.0f));
                 }
             }
             target = scr_trail_buf_;
-        } else if (vis_style == "matrix") {
-            float decay = std::exp(-static_cast<float>(dt_sec) * 6.0f);
+        } else if (vis_style == "vu_plasma") {
+            float activity = std::clamp(overall * 1.25f + bass_flux * 0.85f, 0.0f, 1.0f);
+            for (int y = 0; y < static_cast<int>(H); ++y) {
+                for (int x = 0; x < static_cast<int>(W); ++x) {
+                    float wave = 0.5f + 0.5f * std::sin(static_cast<float>(x) * 0.35f + static_cast<float>(t_sec * (2.5 + overall * 5.0)) +
+                                                        std::cos(static_cast<float>(y) * 0.45f - static_cast<float>(t_sec * 1.8)));
+                    Rgb bg = hsv_to_rgb(205.0f + wave * 60.0f + bass * 40.0f, 0.85f, activity * (0.14f + wave * 0.22f));
+                    pset(x, y, bg);
+                }
+            }
+            float lv_bass = std::clamp(bass * 1.18f, 0.0f, 1.0f);
+            float lv_mh = std::clamp((mid * 0.55f + high * 0.45f) * 1.22f, 0.0f, 1.0f);
+            float bw = lv_bass * static_cast<float>(W);
+            float hw = lv_mh * static_cast<float>(W);
+            vis_peak_y_[0] = std::max(bw, std::max(0.0f, vis_peak_y_[0] - 8.5f * dt_f));
+            vis_peak_y_[1] = std::max(hw, std::max(0.0f, vis_peak_y_[1] - 8.5f * dt_f));
+
+            auto draw_vu_row = [&](int y0, int y1, float val_w, float peak_w, float hue_start) {
+                int lit = static_cast<int>(std::lround(val_w));
+                for (int x = 0; x < lit && x < static_cast<int>(W); ++x) {
+                    float u = static_cast<float>(x) / std::max(1.0f, static_cast<float>(W - 1));
+                    Rgb c = (u > 0.78f) ? Rgb{255, 65, 110}
+                          : hsv_to_rgb(hue_start + u * 80.0f, 0.92f, 1.0f);
+                    for (int y = y0; y <= y1 && y < static_cast<int>(H); ++y) pset(x, y, c);
+                }
+                int pk = std::clamp(static_cast<int>(std::lround(peak_w)) - 1, -1, static_cast<int>(W) - 1);
+                if (pk >= 0) {
+                    for (int y = y0; y <= y1 && y < static_cast<int>(H); ++y) pset(pk, y, Rgb{255, 245, 230});
+                }
+            };
+            draw_vu_row(2, 5, bw, vis_peak_y_[0], 135.0f);
+            draw_vu_row(10, 13, hw, vis_peak_y_[1], 190.0f);
+        } else {
+            // Default: "pulse_bars" — 25-column live 24-band spectrum bars with falling white peak caps
+            float decay = std::exp(-dt_f * 7.2f);
             for (size_t i = 0; i < npix; ++i) {
                 scr_trail_buf_[i].r *= decay;
                 scr_trail_buf_[i].g *= decay;
@@ -1295,98 +1468,28 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             uint32_t cols = std::min<uint32_t>(32, W);
             for (uint32_t x = 0; x < cols; ++x) {
                 size_t bi = std::min<size_t>(23, (x * 24) / std::max<uint32_t>(1, cols));
-                float e = std::clamp(spec[bi], 0.0f, 1.0f);
-                float spd = 5.0f + e * 22.0f + bass * 10.0f;
-                matrix_drop_y_[x] += spd * static_cast<float>(dt_sec);
-                if (matrix_drop_y_[x] >= static_cast<float>(H + 2)) {
-                    matrix_drop_y_[x] = -rng_unit(s_rng) * 4.0f;
-                }
-                int hy = static_cast<int>(std::floor(matrix_drop_y_[x]));
-                if (hy >= 0 && hy < static_cast<int>(H)) {
-                    size_t idx = static_cast<size_t>(hy) * W + x;
-                    Rgb head_c = lerp_rgb(Rgb{0, 235, 110}, Rgb{185, 255, 220}, std::clamp(e * 1.4f, 0.2f, 1.0f));
-                    scr_trail_buf_[idx] = {static_cast<float>(head_c.r), static_cast<float>(head_c.g), static_cast<float>(head_c.b)};
-                    if (hy - 1 >= 0) {
-                        size_t idx2 = static_cast<size_t>(hy - 1) * W + x;
-                        scr_trail_buf_[idx2].g = std::max(scr_trail_buf_[idx2].g, 190.0f);
-                        scr_trail_buf_[idx2].b = std::max(scr_trail_buf_[idx2].b, 70.0f);
-                    }
-                }
-            }
-            target = scr_trail_buf_;
-        } else {
-            // Default: "particles" — luminescent audio-reactive particle cloud bursting on beats
-            float decay = std::exp(-static_cast<float>(dt_sec) * 4.4f);
-            for (size_t i = 0; i < npix; ++i) {
-                scr_trail_buf_[i].r *= decay;
-                scr_trail_buf_[i].g *= decay;
-                scr_trail_buf_[i].b *= decay;
-            }
-            float cx = (static_cast<float>(W) - 1.0f) * 0.5f;
-            float cy = (static_cast<float>(H) - 1.0f) * 0.5f;
-            if (scr_particles_.size() != 26) {
-                scr_particles_.resize(26);
-                for (size_t i = 0; i < scr_particles_.size(); ++i) {
-                    auto& p = scr_particles_[i];
-                    float ang = (static_cast<float>(i) / 26.0f) * 6.28318f;
-                    p.x = cx + std::cos(ang) * 2.0f;
-                    p.y = cy + std::sin(ang) * 2.0f;
-                    p.vx = std::cos(ang) * (4.0f + rng_unit(s_rng) * 8.0f);
-                    p.vy = std::sin(ang) * (3.0f + rng_unit(s_rng) * 6.0f);
-                    p.hue = 185.0f + static_cast<float>(i) * 6.5f;
-                    p.max_life = 0.65f + rng_unit(s_rng) * 0.9f;
-                    p.life = rng_unit(s_rng) * p.max_life;
-                }
-            }
-            // Subtle breathing glowing nucleus in the center
-            float core_r = 1.4f + bass * 2.4f;
-            Rgb core_c = lerp_rgb(Rgb{0, 212, 255}, Rgb{170, 90, 255}, mid);
-            for (int y = static_cast<int>(cy) - 3; y <= static_cast<int>(cy) + 3; ++y) {
-                for (int x = static_cast<int>(cx) - 3; x <= static_cast<int>(cx) + 3; ++x) {
-                    if (x < 0 || y < 0 || x >= static_cast<int>(W) || y >= static_cast<int>(H)) continue;
-                    float dx = x - cx, dy = y - cy;
-                    float d2 = dx * dx + dy * dy;
-                    float g = std::exp(-d2 / (core_r * core_r)) * (0.28f + overall * 0.72f);
-                    size_t idx = static_cast<size_t>(y) * W + static_cast<size_t>(x);
-                    scr_trail_buf_[idx].r = std::max(scr_trail_buf_[idx].r, core_c.r * g);
-                    scr_trail_buf_[idx].g = std::max(scr_trail_buf_[idx].g, core_c.g * g);
-                    scr_trail_buf_[idx].b = std::max(scr_trail_buf_[idx].b, core_c.b * g);
-                }
-            }
-            for (size_t i = 0; i < scr_particles_.size(); ++i) {
-                auto& p = scr_particles_[i];
-                size_t bi = (i * 24) / scr_particles_.size();
-                float e = std::clamp(spec[bi], 0.04f, 1.0f);
-                p.life -= static_cast<float>(dt_sec) * (0.65f + overall * 0.9f);
-                if (p.life <= 0.0f) {
-                    float ang = rng_unit(s_rng) * 6.28318f;
-                    float spd = 5.5f + bass * 16.0f + e * 10.0f + bass_flux * 20.0f;
-                    p.x = cx + std::cos(ang) * (0.5f + rng_unit(s_rng) * 1.8f);
-                    p.y = cy + std::sin(ang) * (0.4f + rng_unit(s_rng) * 1.4f);
-                    p.vx = std::cos(ang) * spd;
-                    p.vy = std::sin(ang) * (spd * 0.75f);
-                    p.hue = 180.0f + rng_unit(s_rng) * 130.0f + static_cast<float>(t_sec * 16.0);
-                    p.max_life = 0.55f + rng_unit(s_rng) * 0.85f;
-                    p.life = p.max_life;
+                float lvl = std::clamp(spec[bi] * 1.06f, 0.0f, 1.0f);
+                float bar_hf = lvl * static_cast<float>(H);
+                uint32_t bar_h = static_cast<uint32_t>(std::lround(bar_hf));
+                if (bar_hf >= vis_peak_y_[x]) {
+                    vis_peak_y_[x] = bar_hf;
                 } else {
-                    float swirl = 1.6f + high * 3.0f;
-                    float dx = p.x - cx, dy = p.y - cy;
-                    p.vx += (-dy * swirl * 0.5f) * static_cast<float>(dt_sec);
-                    p.vy += (dx * swirl * 0.5f) * static_cast<float>(dt_sec);
-                    float boost = 1.0f + bass * 1.15f + bass_flux * 2.2f;
-                    p.x += p.vx * boost * static_cast<float>(dt_sec);
-                    p.y += p.vy * boost * static_cast<float>(dt_sec);
-                    p.vx *= 0.97f;
-                    p.vy *= 0.97f;
-                    if (p.x < 0.0f) { p.x = 0.0f; p.vx = std::fabs(p.vx) * 0.7f; }
-                    if (p.x > W - 1.0f) { p.x = W - 1.0f; p.vx = -std::fabs(p.vx) * 0.7f; }
-                    if (p.y < 0.0f) { p.y = 0.0f; p.vy = std::fabs(p.vy) * 0.7f; }
-                    if (p.y > H - 1.0f) { p.y = H - 1.0f; p.vy = -std::fabs(p.vy) * 0.7f; }
+                    vis_peak_y_[x] = std::max(0.0f, vis_peak_y_[x] - (5.2f + bass * 3.5f) * dt_f);
                 }
-                float fade = std::clamp(p.life / std::max(0.1f, p.max_life), 0.0f, 1.0f);
-                float inten = fade * (0.42f + e * 0.75f + overall * 0.35f);
-                Rgb c = hsv_to_rgb(p.hue, 0.92f - e * 0.2f, 1.0f);
-                splat_soft(scr_trail_buf_, p.x, p.y, c, inten);
+                float hue = std::fmod(185.0f + (static_cast<float>(x) / std::max<uint32_t>(1, cols)) * 140.0f + bass * 22.0f, 360.0f);
+                for (uint32_t y = 0; y < bar_h; ++y) {
+                    float yk = static_cast<float>(y) / std::max<uint32_t>(1, H);
+                    Rgb c = hsv_to_rgb(hue - yk * 36.0f, 0.92f, std::clamp(0.42f + lvl * 0.58f, 0.15f, 1.0f));
+                    size_t idx = static_cast<size_t>(H - 1 - y) * W + x;
+                    scr_trail_buf_[idx] = {static_cast<float>(c.r), static_cast<float>(c.g), static_cast<float>(c.b)};
+                }
+                int peak_row = static_cast<int>(H) - 1 - static_cast<int>(std::floor(vis_peak_y_[x]));
+                if (vis_peak_y_[x] >= 0.6f && peak_row >= 0 && peak_row < static_cast<int>(H)) {
+                    size_t tip = static_cast<size_t>(peak_row) * W + x;
+                    scr_trail_buf_[tip].r = std::max(scr_trail_buf_[tip].r, 255.0f);
+                    scr_trail_buf_[tip].g = std::max(scr_trail_buf_[tip].g, 240.0f);
+                    scr_trail_buf_[tip].b = std::max(scr_trail_buf_[tip].b, 255.0f);
+                }
             }
             target = scr_trail_buf_;
         }
@@ -1928,13 +2031,13 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     } else if (weather_active) {
         render_weather_scene();
     } else if (scr_override_active) {
-        auto cps = utf8_to_codepoints(scr_override_txt);
-        int txt_w = cps.empty() ? 0 : static_cast<int>(cps.size()) * 6 - 1;
+        int txt_w = measure_text_pixel_width(scr_override_txt);
         if (txt_w <= static_cast<int>(W)) {
             draw_text_col(scr_override_txt, static_cast<int>((W - txt_w) / 2), top_y, scr_override_col);
         } else {
             int span = txt_w + static_cast<int>(W);
-            int px = static_cast<int>(scr_override_elapsed * 22.0) % std::max(1, span);
+            int raw_px = static_cast<int>(scr_override_elapsed * scr_override_speed);
+            int px = scr_override_one_shot ? std::min(span, raw_px) : (raw_px % std::max(1, span));
             draw_text_col(scr_override_txt, static_cast<int>(W) - px, top_y, scr_override_col);
         }
     } else if (vstate != VoiceVisualState::Idle) {

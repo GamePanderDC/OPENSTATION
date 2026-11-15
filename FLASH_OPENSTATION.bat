@@ -2,11 +2,11 @@
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
-title OpenStation Max v1.2.1 — Прошивка Станции Макс (без зависимости от ПК)
+title OpenStation Max v1.6.3 — Прошивка Станции Макс (без зависимости от ПК)
 
 echo.
 echo ========================================================================
-echo   OpenStation Max v1.2.1 — Установщик прошивки для Станции Макс
+echo   OpenStation Max v1.6.3 — Установщик прошивки для Станции Макс
 echo   Автономная прошивка: весь сервер, Алиса и веб-пульт работают НА СТАНЦИИ
 echo ========================================================================
 echo.
@@ -15,16 +15,18 @@ echo.
 echo     [1] Авто-поиск по USB и прошивка из пакета firmware\  (Рекомендуется)
 echo     [2] Подключиться по Wi-Fi (ввести IP станции) и прошить firmware\
 echo     [3] Пересобрать прошивку из исходников (для разработчиков) и прошить
-echo     [4] Выход
+echo     [4] Авторемонт Wi-Fi / Bluetooth (подбор и прошивка правильного misc)
+echo     [5] Выход
 echo.
 set "CHOICE="
-set /p "CHOICE=Введите номер [1-4] (Enter = 1): "
+set /p "CHOICE=Введите номер [1-5] (Enter = 1): "
 if "%CHOICE%"=="" set "CHOICE=1"
 
 if "%CHOICE%"=="1" goto MODE_USB
 if "%CHOICE%"=="2" goto MODE_WIFI
 if "%CHOICE%"=="3" goto MODE_BUILD
-if "%CHOICE%"=="4" exit /b 0
+if "%CHOICE%"=="4" goto MODE_MISC_FIX
+if "%CHOICE%"=="5" exit /b 0
 goto MODE_USB
 
 :MODE_USB
@@ -52,6 +54,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\build_firm
 if errorlevel 1 goto CHECK_RC
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\deploy.ps1" -UseFirmware -Interactive
 goto CHECK_RC
+
+:MODE_MISC_FIX
+echo.
+call "%~dp0POST_FIX_MISC.bat"
+exit /b %ERRORLEVEL%
 
 :CHECK_RC
 set "RC=%ERRORLEVEL%"

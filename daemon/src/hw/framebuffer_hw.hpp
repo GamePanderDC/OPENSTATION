@@ -41,10 +41,14 @@ public:
     void set_voice_state(VoiceVisualState st);
     void set_mic_muted(bool muted);
     void set_music_playing(bool playing);
+    void set_music_track_title(const std::string& title);
     void trigger_volume_osd(int percent);
     void update_volume_osd_if_active(int percent);
     void trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_ms = 600);
     void trigger_screen_text(const std::string& text, uint8_t r = 0, uint8_t g = 212, uint8_t b = 255, int duration_ms = 3500);
+    void trigger_music_track_banner(const std::string& title, uint8_t r = 110, uint8_t g = 231, uint8_t b = 255);
+    static int measure_text_pixel_width(const std::string& text);
+    static int compute_full_scroll_duration_ms(const std::string& text, double px_per_sec = 18.0, int screen_w = 25);
     void trigger_weather(int temp_c, const std::string& cond_code, int duration_ms = 12000);
     void trigger_bluetooth_visual(const std::string& bt_state, int duration_ms = 6500);
     void trigger_startup_show(int duration_ms = 5500);
@@ -123,8 +127,11 @@ private:
     std::string scr_override_text_;
     Rgb scr_override_color_{0, 212, 255};
     std::chrono::steady_clock::time_point scr_override_start_{};
+    bool scr_override_one_shot_ = false;
+    double scr_override_speed_ = 22.0;
 
     bool music_playing_ = false;
+    std::string music_track_title_;
     std::chrono::steady_clock::time_point music_stop_grace_until_{};
     std::chrono::steady_clock::time_point weather_until_{};
     std::chrono::steady_clock::time_point weather_start_{};
@@ -171,7 +178,9 @@ private:
     std::vector<LedParticle> scr_particles_;
     float prev_bass_energy_ = 0.0f;
     double last_screen_render_t_ = 0.0;
-    float matrix_drop_y_[32]{};
+    std::array<float, 32> vis_peak_y_{};
+    double vis_last_beat_t_ = -10.0;
+    float vis_beat_ring_r_ = -1.0f;
 
     FbDevice fb4_;
     FbDevice fb5_;

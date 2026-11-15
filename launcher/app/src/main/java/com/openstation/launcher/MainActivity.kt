@@ -128,6 +128,7 @@ class MainActivity : Activity() {
     )
 
     private val handler = Handler(Looper.getMainLooper())
+    private val miscRepairHelper by lazy { MiscRepairDialogHelper(this, handler) }
     private val easeOutCubic = PathInterpolator(0.22f, 1f, 0.36f, 1f)
 
     // Root stage & multi-screen morph architecture
@@ -516,6 +517,7 @@ class MainActivity : Activity() {
         handler.removeCallbacks(otaDialogPollRunnable)
         try { otaDialog?.dismiss() } catch (_: Throwable) {}
         otaDialog = null
+        miscRepairHelper.dismissIfShowing()
         try { unregisterReceiver(pkgReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(musicStateReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(clockReceiver) } catch (_: Throwable) {}
@@ -2034,18 +2036,7 @@ class MainActivity : Activity() {
         tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
         tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        val curVisName = when (LiveOrbState.visualizerStyle) {
-            "dots", "particles" -> "3D Точки"
-            "nexus", "anomaly" -> "Nexus 3D"
-            "specterr" -> "Корона"
-            "aurora" -> "Аврора"
-            "bars" -> "Спектр"
-            "wave" -> "Волна"
-            "matrix" -> "Матрица"
-            "fireflies" -> "Частицы"
-            else -> "3D Точки"
-        }
-        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: $curVisName") { cycleVisualizerStyle() }
+        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
         tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
 
         val hwGrid = LinearLayout(this).apply {
@@ -3359,6 +3350,11 @@ class MainActivity : Activity() {
                     }
                     val daemonMusic = root.optJSONObject("music")
                     val daemonOta = root.optJSONObject("ota")
+                    val miscRepairObj = root.optJSONObject("miscRepair")
+                    val screenVisStyle = cfg?.optJSONObject("ledScreen")?.optString("visualizerStyle", "") ?: ""
+                    if (screenVisStyle.isNotEmpty() && visualizerStyles.any { it.first == screenVisStyle }) {
+                        LiveOrbState.updateStyles(null, screenVisStyle, null)
+                    }
                     val btObj = root.optJSONObject("bluetooth")
                     if (btObj != null) {
                         btEnabledState = btObj.optBoolean("enabled", false)
@@ -3430,6 +3426,7 @@ class MainActivity : Activity() {
                             renderMusicSnapshot(YmPlayerSnapshot.fromJson(daemonMusic))
                         }
                         applyOtaUi(daemonOta)
+                        miscRepairHelper.handleDaemonState(miscRepairObj)
                         syncPills()
                         if (::eqWidgetController.isInitialized) {
                             eqWidgetController.syncFromDaemon(eqPreset, eqBandsJson, eqBassBoost)
@@ -3489,7 +3486,8 @@ class MainActivity : Activity() {
 
     private fun syncPills(forceViews: Boolean = false) {
         if (currentPage == 2 || forceViews) {
-            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset"
+            val curVis = LiveOrbState.visualizerStyle
+            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset|$curVis"
             if (forceViews || pillsKey != lastPillsKey) {
                 lastPillsKey = pillsKey
                 val ringLabel = when (ringMode) {
@@ -3526,18 +3524,7 @@ class MainActivity : Activity() {
                     "custom" -> "Кастом"
                     else -> "Баланс"
                 }
-                val visName = when (LiveOrbState.visualizerStyle) {
-                    "dots", "particles" -> "3D Точки"
-                    "nexus", "anomaly" -> "Nexus 3D"
-                    "specterr" -> "Корона"
-                    "aurora" -> "Аврора"
-                    "bars" -> "Спектр"
-                    "wave" -> "Волна"
-                    "matrix" -> "Матрица"
-                    "fireflies" -> "Частицы"
-                    else -> "3D Точки"
-                }
-                tileVis.label.text = "Экран: $visName"
+                tileVis.label.text = "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}"
             }
 
             val astBusy = assistantState != "idle"
@@ -4062,24 +4049,25 @@ class MainActivity : Activity() {
         tileCec.label.text = if (cecState) "ТВ: Выключен" else "ТВ: Включён"
     }
 
+    private val visualizerStyles = listOf(
+        "pulse_bars" to "Эквалайзер",
+        "beat_wave" to "Аудио-волна",
+        "bass_nova" to "Бас-нова",
+        "mirror_meter" to "Зеркало",
+        "spark_burst" to "Искры",
+        "vu_plasma" to "VU-плазма",
+        "track_title" to "Трек"
+    )
+
+    private fun visualizerLabel(style: String): String =
+        visualizerStyles.firstOrNull { it.first == style }?.second ?: "Эквалайзер"
+
     private fun cycleVisualizerStyle() {
-        val styles = listOf("dots", "nexus", "specterr", "aurora", "bars", "wave", "matrix", "fireflies")
-        val shortNames = mapOf(
-            "dots" to "3D Точки",
-            "nexus" to "Nexus 3D",
-            "specterr" to "Корона",
-            "aurora" to "Аврора",
-            "bars" to "Спектр",
-            "wave" to "Волна",
-            "matrix" to "Матрица",
-            "fireflies" to "Частицы"
-        )
         val cur = LiveOrbState.visualizerStyle
-        val curIdx = styles.indexOf(cur).takeIf { it >= 0 } ?: 0
-        val next = styles[(curIdx + 1) % styles.size]
+        val curIdx = visualizerStyles.indexOfFirst { it.first == cur }.takeIf { it >= 0 } ?: 0
+        val (next, name) = visualizerStyles[(curIdx + 1) % visualizerStyles.size]
         LiveOrbState.visualizerStyle = next
         LiveOrbState.previewUntilMs = System.currentTimeMillis() + 8000L
-        val name = shortNames[next] ?: next
         tileVis.label.text = "Экран: $name"
         Toast.makeText(this, "Визуализация экранчика: $name", Toast.LENGTH_SHORT).show()
         val body = JSONObject()
@@ -5143,14 +5131,10 @@ class MainActivity : Activity() {
             val clean = newName.trim().ifEmpty { "Алиса" }
             assistantNameState = clean
             val patch = JSONObject().put("name", clean)
-            val wantMale = clean.lowercase() in setOf("джарвис", "макс", "jarvis", "max")
-            val wantFem = clean.lowercase() in setOf("алиса", "пятница", "alice", "friday")
-            val curIsMale = assistantVoiceState in setOf("Puck", "Charon", "Fenrir", "Orus")
-            if (wantMale && !curIsMale) {
-                assistantVoiceState = "Puck"
-                patch.put("voiceName", assistantVoiceState)
-            } else if (wantFem && curIsMale) {
-                assistantVoiceState = "Aoede"
+            val wantMale = AssistantPersonalities.isLikelyMaleName(clean)
+            val curIsMale = AssistantPersonalities.isMaleVoice(assistantVoiceState)
+            if (wantMale != curIsMale) {
+                assistantVoiceState = AssistantPersonalities.defaultVoiceForName(clean)
                 patch.put("voiceName", assistantVoiceState)
             }
             LiveOrbState.updateAssistantPersona(assistantNameState, assistantVoiceState)

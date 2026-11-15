@@ -48,6 +48,7 @@ class SetupWizardActivity : Activity() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private val miscRepairHelper by lazy { MiscRepairDialogHelper(this, handler) }
     private var currentStep = 1
     private var prevStep = 1
     private var manualLaunch = false
@@ -133,7 +134,7 @@ class SetupWizardActivity : Activity() {
     // Cached state from daemon
     private var curIp = ""
     private var curWifiSsid = ""
-    private var curFwVersion = "1.6.2"
+    private var curFwVersion = "1.6.3"
     private var curAgentMode = true
     private var curDnsMode = ""
     private var curDnsHost = ""
@@ -253,6 +254,7 @@ class SetupWizardActivity : Activity() {
         waveView.stopAnimations()
         ledRingPreview.stopAnimations()
         spriteAnimators.forEach { it.cancel() }
+        miscRepairHelper.dismissIfShowing()
         super.onPause()
     }
 
@@ -1411,14 +1413,10 @@ class SetupWizardActivity : Activity() {
         val clean = newName.trim().ifEmpty { "Алиса" }
         curAssistantName = clean
         val patch = JSONObject().put("name", clean)
-        val wantMale = clean.lowercase() in setOf("джарвис", "макс", "jarvis", "max")
-        val wantFem = clean.lowercase() in setOf("алиса", "пятница", "alice", "friday")
-        val curIsMale = curVoice in setOf("Puck", "Charon", "Fenrir", "Orus")
-        if (wantMale && !curIsMale) {
-            curVoice = "Puck"
-            patch.put("voiceName", curVoice)
-        } else if (wantFem && curIsMale) {
-            curVoice = "Aoede"
+        val wantMale = AssistantPersonalities.isLikelyMaleName(clean)
+        val curIsMale = AssistantPersonalities.isMaleVoice(curVoice)
+        if (wantMale != curIsMale) {
+            curVoice = AssistantPersonalities.defaultVoiceForName(clean)
             patch.put("voiceName", curVoice)
         }
         LiveOrbState.updateAssistantPersona(curAssistantName, curVoice)
@@ -1571,7 +1569,8 @@ class SetupWizardActivity : Activity() {
                     val txt = conn.inputStream.bufferedReader().use { it.readText() }
                     conn.disconnect()
                     val root = JSONObject(txt)
-                    val fw = root.optString("firmwareVersion", "1.6.2")
+                    val fw = root.optString("firmwareVersion", "1.6.3")
+                    val miscRepairObj = root.optJSONObject("miscRepair")
                     val postOtaPending = root.optBoolean("postOtaWizardPending", false)
                     val postOtaVer = root.optString("postOtaWizardVersion", "").trim()
                     val dnsMode = root.optString("privateDnsMode", "")
@@ -1651,6 +1650,7 @@ class SetupWizardActivity : Activity() {
                         activePromptPreset = AssistantPersonalities.keyForPrompt(astCfg?.optString("systemPrompt", "") ?: "")
 
                         renderPolledStatus(postOtaPending)
+                        miscRepairHelper.handleDaemonState(miscRepairObj)
                     }
                 } else {
                     conn.disconnect()

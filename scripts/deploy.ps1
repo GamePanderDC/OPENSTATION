@@ -1504,6 +1504,18 @@ if ($usbFinalCheck -ne "OK") {
     throw "USB/ADB проверка после Фазы 5c не пройдена: $usbFinalCheck"
 }
 
+$postMiscSh = Join-Path $RootDir "scripts\post_fix_misc.sh"
+if (Test-Path $postMiscSh) {
+    $postMiscRaw = ([System.IO.File]::ReadAllText($postMiscSh, [System.Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+    $b64PostMisc = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($postMiscRaw))
+    Invoke-AdbSh "mkdir -p /data/local/openstation && echo $b64PostMisc | base64 -d > /data/local/openstation/post_fix_misc.sh && chmod 755 /data/local/openstation/post_fix_misc.sh"
+    $miscFixOut = (Invoke-AdbSh "sh /data/local/openstation/post_fix_misc.sh --check" | Out-String).Trim()
+    Write-Host "[Wi-Fi/BT misc] $miscFixOut" -ForegroundColor Gray
+    if ($miscFixOut -match "RESULT=NEEDS_REPAIR") {
+        Write-Host "[!] Обнаружено несовпадение Wi-Fi/BT DTB (misc). На станции/в веб-интерфейсе появится окно выбора ревизии, либо запустите POST_FIX_MISC.bat." -ForegroundColor Yellow
+    }
+}
+
 if (-not $NoReboot) {
     Write-Host "[6/7] Перезагрузка для чистой проверки автозапуска openstationd и стойкости ADB..." -ForegroundColor Yellow
     Invoke-Adb @("reboot")
@@ -1571,7 +1583,7 @@ if (-not $manifestPushed) {
     $genMf = [ordered]@{
         name         = "OpenStation Max"
         device       = "yandexstation_2"
-        version      = "1.5.1"
+        version      = "1.6.3"
         autonomous   = $true
         buildTimeUtc = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
         files        = $genFiles
@@ -1664,7 +1676,7 @@ if ($checkText -match 'inet\s+(\d+\.\d+\.\d+\.\d+)/') {
 
 Write-Host ""
 Write-Host "========================================================================" -ForegroundColor Green
-Write-Host "  OpenStation Max v1.3.6 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
+Write-Host "  OpenStation Max v1.6.3 УСПЕШНО ПРОШИТА!" -ForegroundColor Green
 Write-Host "  Веб-пульт и Мастер: http://${stationIp}:8080/#wizard" -ForegroundColor Cyan
 Write-Host "  mDNS в локальной сети: http://station-max.local:8080" -ForegroundColor Cyan
 Write-Host "  Wi-Fi ADB: adb connect ${stationIp}:5555" -ForegroundColor Cyan

@@ -69,7 +69,7 @@ object LiveOrbState {
     @Volatile var musicOverall: Float = 0f
 
     @Volatile var clockStyle: String = "classic"
-    @Volatile var visualizerStyle: String = "dots"
+    @Volatile var visualizerStyle: String = "pulse_bars"
     @Volatile var autoMusicVisualizer: Boolean = true
     @Volatile var previewUntilMs: Long = 0L
     @Volatile private var styleSyncedOnce: Boolean = false
@@ -82,10 +82,10 @@ object LiveOrbState {
         assistantName.trim().ifEmpty { "Алиса" }
 
     fun assistantIsMale(): Boolean =
-        assistantVoice in setOf("Puck", "Charon", "Fenrir", "Orus")
+        AssistantPersonalities.isMaleVoice(assistantVoice)
 
     fun isGrammaticallyMale(): Boolean =
-        assistantIsMale() || effectiveName().lowercase() in setOf("джарвис", "макс", "jarvis", "max")
+        assistantIsMale() || AssistantPersonalities.isLikelyMaleName(effectiveName())
 
     fun readyWord(caps: Boolean = false): String =
         if (isGrammaticallyMale()) (if (caps) "ГОТОВ" else "готов") else (if (caps) "ГОТОВА" else "готова")

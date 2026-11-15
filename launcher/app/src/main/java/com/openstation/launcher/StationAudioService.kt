@@ -116,6 +116,10 @@ class StationAudioService : Service() {
     @Volatile
     private var lastBtEventKind = ""
     @Volatile
+    private var pendingBtDiscoverableSec = 0
+    @Volatile
+    private var pendingBtDiscoverableUntilMs = 0L
+    @Volatile
     private var zeroSpectrumSent = false
     private val volPushLock = Any()
     private var volPushThread: HandlerThread? = null
@@ -130,6 +134,17 @@ class StationAudioService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
             if (action == BluetoothAdapter.ACTION_STATE_CHANGED || action == BluetoothAdapter.ACTION_SCAN_MODE_CHANGED) {
+                if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    if (state == BluetoothAdapter.STATE_ON &&
+                        pendingBtDiscoverableSec > 0 &&
+                        SystemClock.elapsedRealtime() < pendingBtDiscoverableUntilMs
+                    ) {
+                        val dur = pendingBtDiscoverableSec
+                        pendingBtDiscoverableSec = 0
+                        BluetoothAdapter.getDefaultAdapter()?.let { applyDiscoverableNow(it, dur) }
+                    }
+                }
                 thread(isDaemon = true) { syncBluetoothAdapterState() }
                 return
             }
@@ -609,6 +624,27 @@ class StationAudioService : Service() {
         }
     }
 
+    private fun applyDiscoverableNow(adapter: BluetoothAdapter, durationSec: Int) {
+        try {
+            if (adapter.name != "OpenStation Max") {
+                adapter.name = "OpenStation Max"
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to set BT adapter name: ${e.message}")
+        }
+        try {
+            val setScanMode = adapter.javaClass.getMethod(
+                "setScanMode",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType
+            )
+            val ok = setScanMode.invoke(adapter, BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE, durationSec)
+            Log.i(TAG, "Bluetooth set to DISCOVERABLE for $durationSec sec (res=$ok)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "Reflection setScanMode failed: ${e.message}")
+        }
+    }
+
     private fun handleBluetoothCommand(action: String, durationSec: Int) {
         try {
             val adapter = BluetoothAdapter.getDefaultAdapter()
@@ -619,41 +655,28 @@ class StationAudioService : Service() {
 
             when (action.lowercase()) {
                 "enable", "discoverable", "on" -> {
+                    val dur = durationSec.coerceIn(30, 3600)
                     if (!adapter.isEnabled) {
+                        pendingBtDiscoverableSec = dur
+                        pendingBtDiscoverableUntilMs = SystemClock.elapsedRealtime() + 25000L
                         adapter.enable()
-                        Log.i(TAG, "Bluetooth adapter enabling...")
-                    }
-                    try {
-                        if (adapter.name != "OpenStation Max") {
-                            adapter.name = "OpenStation Max"
-                        }
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Failed to set BT adapter name: ${e.message}")
-                    }
-
-                    // Set SCAN_MODE_CONNECTABLE_DISCOVERABLE via reflection
-                    try {
-                        val setScanMode = adapter.javaClass.getMethod(
-                            "setScanMode",
-                            Int::class.javaPrimitiveType,
-                            Int::class.javaPrimitiveType
-                        )
-                        setScanMode.invoke(adapter, BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE, durationSec)
-                        Log.i(TAG, "Bluetooth set to DISCOVERABLE for $durationSec sec")
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Reflection setScanMode failed: ${e.message}")
+                        Log.i(TAG, "Bluetooth adapter enabling (queued DISCOVERABLE $dur sec)...")
+                    } else {
+                        pendingBtDiscoverableSec = 0
+                        applyDiscoverableNow(adapter, dur)
                     }
 
                     handler.post {
                         volumeOverlayManager?.showToastPill(
                             "BLUETOOTH КОЛОНКА",
-                            "Видима как OpenStation Max ($durationSec сек)",
+                            "Видима как OpenStation Max ($dur сек)",
                             "#00D4FF",
                             3500L
                         )
                     }
                 }
                 "disable", "off" -> {
+                    pendingBtDiscoverableSec = 0
                     try {
                         val setScanMode = adapter.javaClass.getMethod(
                             "setScanMode",

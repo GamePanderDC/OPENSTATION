@@ -121,7 +121,6 @@ class YandexMusicActivity : Activity() {
     private lateinit var tvAuthSummary: TextView
     private lateinit var btnAuthLogout: LinearLayout
     private lateinit var btnQualityNormal: TextView
-    private lateinit var btnQualityLossless: TextView
     private lateinit var ivWebQr: ImageView
     private lateinit var tvWebHint: TextView
 
@@ -889,15 +888,7 @@ class YandexMusicActivity : Activity() {
             }
             Toast.makeText(this, "Качество: Стандарт (MP3/AAC)", Toast.LENGTH_SHORT).show()
         }
-        btnQualityLossless = makeTextPill("Hi-Res (FLAC без потерь)") {
-            player()?.let {
-                it.api.setPreferredQuality("lossless")
-                it.emitSnapshot(forceDaemon = false)
-            }
-            Toast.makeText(this, "Качество: FLAC / Hi-Res", Toast.LENGTH_SHORT).show()
-        }
         qualRow.addView(btnQualityNormal)
-        qualRow.addView(btnQualityLossless)
 
         val qrBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1227,13 +1218,12 @@ class YandexMusicActivity : Activity() {
         // Auth tab summary & quality buttons
         tvAuthSummary.text = if (s.account.loggedIn) {
             "Вход выполнен: ${s.account.fullName.ifBlank { s.account.login }} (@${s.account.login}, uid=${s.account.uid})" +
-                if (s.account.hasPlus) "\nСтатус: Яндекс Плюс активен (доступно Hi-Res и Моя волна)" else "\nСтатус: Базовый аккаунт"
+                if (s.account.hasPlus) "\nСтатус: Яндекс Плюс активен (доступна Моя волна и полные треки)" else "\nСтатус: Базовый аккаунт"
         } else {
             "Аккаунт не подключён.\nЧтобы работала персональная «Моя волна» и «Мне нравится», войдите через Яндекс (QR/пароль) или вставьте OAuth-токен."
         }
         btnAuthLogout.visibility = if (s.account.loggedIn) View.VISIBLE else View.GONE
-        btnQualityNormal.isSelected = (s.quality != "lossless")
-        btnQualityLossless.isSelected = (s.quality == "lossless")
+        btnQualityNormal.isSelected = true
         updateVinylAnimation()
     }
 

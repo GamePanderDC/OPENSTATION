@@ -71,6 +71,10 @@ public:
     AssistantState state() const { return state_.load(); }
     float last_mic_rms() const { return last_mic_rms_.load(); }
     static const char* state_str(AssistantState st);
+    static bool is_male_voice_name(const std::string& voice_name);
+    static std::string personalize_system_prompt(std::string custom_sp,
+                                                 const std::string& raw_name,
+                                                 bool is_male_voice);
 
     json::Value get_status_json();
 

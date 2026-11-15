@@ -585,7 +585,7 @@ try {
       esac
     done
     [ "$intel_pci" -eq 1 ] || return 0
-    bt_svc=$(getprop init.svc.btlinux-1-0 | tr -d '\r\n')
+    bt_svc=$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')
     if [ -d /sys/class/net/wlan0 ] && [ -e /sys/class/bluetooth/hci0 ] && [ "$bt_svc" = "running" ]; then
       return 0
     fi
@@ -614,8 +614,8 @@ try {
     if [ "$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\r\n')" = "running" ]; then
       stop vendor.bluetooth-1-0 2>/dev/null || true
     fi
-    if [ "$(getprop init.svc.btlinux-1-0 | tr -d '\r\n')" != "running" ]; then
-      start btlinux-1-0 2>/dev/null || true
+    if [ "$(getprop init.svc.btlinux-1.0 | tr -d '\r\n')" != "running" ]; then
+      start btlinux-1.0 2>/dev/null || true
     fi
   }
 
@@ -697,9 +697,16 @@ try {
 '@ -replace "`r`n", "`n"
     [System.IO.File]::WriteAllText((Join-Path $StageDir "rc_block.sh"), ($rcBlock.TrimEnd() + "`n"), [System.Text.UTF8Encoding]::new($false))
 
+    $postMiscSrc = Join-Path $RootDir "scripts\post_fix_misc.sh"
+    if (-not (Test-Path $postMiscSrc)) { throw "Отсутствует обязательный post-script: $postMiscSrc" }
+    $postMiscLf = ([System.IO.File]::ReadAllText($postMiscSrc, [System.Text.UTF8Encoding]::new($false))) -replace "`r`n", "`n"
+    $postMiscStaged = Join-Path $StageDir "post_fix_misc.sh"
+    [System.IO.File]::WriteAllText($postMiscStaged, $postMiscLf, [System.Text.UTF8Encoding]::new($false))
+
     # Собираем payload.tar через Python tarfile с чёткими POSIX правами (0:0, LF)
     $tarFilesList = @(
         @{ src = (Join-Path $StageDir "rc_block.sh"); arc = "meta/rc_block.sh"; mode = 420 },
+        @{ src = $postMiscStaged; arc = "meta/post_fix_misc.sh"; mode = 493 },
         @{ src = (Join-Path $StageDir "default-permissions-openstation.xml"); arc = "meta/default-permissions-openstation.xml"; mode = 420 },
         @{ src = $LauncherApk; arc = "app/OpenStationLauncher/OpenStationLauncher.apk"; mode = 420 },
         @{ src = $ImeApk; arc = "app/OpenStationIME/OpenStationIME.apk"; mode = 420 },
@@ -889,6 +896,16 @@ EOF
     chcon u:object_r:vendor_configs_file:s0 "$MNT/etc/hardvol_sy.xml" 2>/dev/null || true
 fi
 
+# Установка автономного post-script проверки и авто-ремонта misc (/vendor/bin/post_fix_misc.sh)
+if [ -f "$BUILD/payload/meta/post_fix_misc.sh" ]; then
+    tr -d '\r' < "$BUILD/payload/meta/post_fix_misc.sh" > "$BUILD/post_fix_misc.sh.tmp"
+    sh -n "$BUILD/post_fix_misc.sh.tmp" || { echo "post_fix_misc.sh syntax check failed" >&2; exit 1; }
+    chown 0:2000 "$BUILD/post_fix_misc.sh.tmp"
+    chmod 755 "$BUILD/post_fix_misc.sh.tmp"
+    mv -f "$BUILD/post_fix_misc.sh.tmp" "$MNT/bin/post_fix_misc.sh"
+    chcon u:object_r:vendor_file:s0 "$MNT/bin/post_fix_misc.sh" 2>/dev/null || true
+fi
+
 # Патч /vendor/bin/multiwifi.sh: заполняем пустую ветку Intel (актуально при загрузке с dt_id=rev375f на платах 0008/00052 с Intel 7265)
 MW_TGT="$MNT/bin/multiwifi.sh"
 if [ -f "$MW_TGT" ]; then
@@ -973,7 +990,7 @@ case "$CHIP_TYPE" in
       sleep 0.1
     done
     stop vendor.bluetooth-1-0 2>/dev/null || true
-    start btlinux-1-0 2>/dev/null || true
+    start btlinux-1.0 2>/dev/null || true
     ;;
 esac
 EOF

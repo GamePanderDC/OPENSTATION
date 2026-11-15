@@ -1,5 +1,6 @@
 #include "assistant/listening_deadline.hpp"
 #include "assistant/assistant_manager.hpp"
+#include "assistant/assistant_personalization.hpp"
 #include "assistant/assistant_intents.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "utils/base64.hpp"
@@ -604,10 +605,20 @@ void AssistantManager::set_error(const std::string& msg, bool play_chime) {
     set_state(AssistantState::Idle);
 }
 
+bool AssistantManager::is_male_voice_name(const std::string& voice_name) {
+    return openstation::is_male_voice_name(voice_name);
+}
+
+std::string AssistantManager::personalize_system_prompt(std::string custom_sp,
+                                                        const std::string& raw_name,
+                                                        bool is_male_voice) {
+    return personalize_assistant_system_prompt(std::move(custom_sp), raw_name, is_male_voice);
+}
+
 json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     using json::Value;
-    bool ext_thinking = contains_ci(c.gemini_model, "extended-thinking");
-    bool nb = ext_thinking; // Standard gemini-3.8-live runs BLOCKING for crisp synchronous hardware feedback
+    const bool ext_thinking = false; // gemini-3.8-live is locked for deterministic Live audio stability
+    const bool nb = ext_thinking;
 
     Value gen_cfg = Value::make_obj();
     Value mods = Value::make_arr();
@@ -634,9 +645,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     Value sys_txt = Value::make_obj();
     {
         const std::string asst_name = trim_str(c.name).empty() ? "Алиса" : trim_str(c.name);
-        const bool is_male_voice =
-            (c.voice_name == "Puck" || c.voice_name == "Charon" ||
-             c.voice_name == "Fenrir" || c.voice_name == "Orus");
+        const bool is_male_voice = is_male_voice_name(c.voice_name);
         std::string sp =
             std::string("ВАЖНЕЙШЕЕ ПРАВИЛО ЛИЧНОСТИ И ПОЛА: ТВОЁ ИМЯ — ") + asst_name + ". " +
             (is_male_voice
@@ -650,22 +659,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
             "Если звуки микрофона, помехи или тихий голос напоминают иностранные слова (например, французские «oui», «ça», «d'accord», «le», «un»), это исключительно акустический шум микрофона или неразборчивый русский — интерпретируй их ВСЕГДА ТОЛЬКО как русскую речь (или английскую, если фраза полностью на понятном английском). "
             "Отвечай ВСЕГДА только на грамотном русском языке (на английском отвечай только если пользователь сам явно обратился по-английски). Никогда не отвечай на французском языке!\n\n";
 
-        std::string custom_sp = c.system_prompt;
-        const std::string legacy_gs = "Для погоды, новостей и актуальных фактов используй Google Search.";
-        size_t gpos = custom_sp.find(legacy_gs);
-        if (gpos != std::string::npos) {
-            custom_sp.erase(gpos, legacy_gs.size());
-        }
-        const std::string masc_phrase = "Ты — голосовой ассистент Алиса";
-        const std::string fem_phrase = "Ты — девушка, голосовая помощница Алиса";
-        const std::string replacement_phrase =
-            (is_male_voice ? std::string("Ты — голосовой ассистент ") : std::string("Ты — девушка, голосовая помощница ")) + asst_name;
-        if (size_t mpos = custom_sp.find(masc_phrase); mpos != std::string::npos) {
-            custom_sp.replace(mpos, masc_phrase.size(), replacement_phrase);
-        } else if (size_t fpos = custom_sp.find(fem_phrase); fpos != std::string::npos && (is_male_voice || asst_name != "Алиса")) {
-            custom_sp.replace(fpos, fem_phrase.size(), replacement_phrase);
-        }
-        sp += trim_str(custom_sp);
+        sp += personalize_system_prompt(c.system_prompt, asst_name, is_male_voice);
 
         std::time_t now_t = std::time(nullptr);
         struct tm tm_now {};
@@ -696,14 +690,15 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "- Музыка (music_control): на команды «включи музыку», «поставь музыку», «давай музыку», «включи мою волну» (без конкретного названия) "
               "ВСЕГДА сразу вызывай music_control(action=\"play_my_wave\"). Если назван исполнитель/песня/жанр — вызывай music_control(action=\"play_query\", query=\"...\"); "
               "если попросили настроение волны («бодрую/весёлую/спокойную/грустную волну») — action=\"play_my_wave\" с mood. "
-              "Для «дальше/следующий» -> next, «назад/предыдущий» -> prev, «лайк/нравится» -> like, «дизлайк/не нравится» -> dislike, "
+              "Для «дальше/следующий» -> next, «назад/предыдущий» -> prev: СТРОГО вызывай music_control МОЛЧА и НИЧЕГО НЕ ПРОИЗНОСИ В ГОЛОС (не говори «включаю следующий трек», «переключаю» или любые другие фразы подтверждения — сразу молча переключай трек!). "
+              "Для «лайк/нравится» -> like, «дизлайк/не нравится» -> dislike, "
               "«мои лайки/избранное» -> play_liked, «пауза/стоп» -> pause/stop, «открой яндекс музыку» -> open.\n"
               "- Блютуз (bluetooth_control): на команды «включи блютуз», «включить блютуз», «подключи телефон по блютуз», «режим блютуз», «вруби блютуз» "
               "ВСЕГДА сразу вызывай bluetooth_control(action=\"discoverable\"). Колонка станет видимой на телефоне как OpenStation Max, и пользователь сможет "
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
               "- Настройка пульта (setup_remote): при просьбе «настрой пульт», «подключи пульт» или «сопряги пульт» сразу вызывай setup_remote(), это открывает интерактивную пошаговую инструкцию и поиск BLE-пульта на телевизоре.\n"
-              "- Перезагрузка демона и службы (device_power): если пользователь просит перезагрузить или перезапустить демон, Алису, службу или оболочку OpenStation («перезагрузи демон», «перезапусти демон», «рестарт демона/сервиса»), ВСЕГДА вызывай device_power(action=\"restart_daemon\") и кратко подтверди 1 фразой («Перезагружаю демон, вернусь через пару секунд»). НИКОГДА не перезапускай openstationd через shell_exec или adb_exec (убийство процесса через дочерний shell прервёт перезапуск).\n"
+              "- Перезагрузка демона и службы (device_power): если пользователь просит перезагрузить или перезапустить демон, ассистента, службу или оболочку OpenStation («перезагрузи демон», «перезапусти демон», «рестарт демона/сервиса»), ВСЕГДА вызывай device_power(action=\"restart_daemon\") и кратко подтверди 1 фразой («Перезагружаю демон, вернусь через пару секунд»). НИКОГДА не перезапускай openstationd через shell_exec или adb_exec (убийство процесса через дочерний shell прервёт перезапуск).\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
               "Если пользователь спрашивает погоду без указания города — вызывай get_weather с пустым city, чтобы автоматически определить местоположение колонки.\n"
@@ -711,11 +706,12 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "менять своё имя и слово активации (set_assistant_name — при просьбах вроде «тебя теперь зовут Джарвис», «поменяй имя на Пятница»), "
               "менять стили часов и визуализатора (set_styles), настраивать программный 10-полосный эквалайзер (set_eq_preset) и аппаратный DSP усилителя SY6045S на Станции Макс "
               "(set_hardware_eq — профили: original, hifi, night, bass, club, например «включи Hi-Fi / ночной режим звука»), запоминать факты и предпочтения пользователя навсегда (manage_memory) и задавать город (set_location). "
-              "- Адаптивный режим диалога: если пользователь дал конкретную команду (включить/переключить музыку, изменить громкость, включить/выключить блютуз, установить таймер или будильник, выключить ТВ, открыть приложение): "
-              "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Включаю», «Сделано», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
+              "- Адаптивный режим диалога: если пользователь дал конкретную команду (громкость, блютуз, таймер, будильник, выключение ТВ, запуск приложения): "
+              "сначала обязательно вызови инструмент, затем кратко и естественно подтверди голосом (например: «Сделано», «Таймер на 5 минут запущен») и НЕ задавай лишних вопросов — сессия микрофона автоматически завершится сама. "
+              "Исключение: при переключении трека (music_control next/prev) НЕ произноси вообще ничего и завершай ход молча. "
               "Если же пользователь просто разговаривает, задаёт вопросы, рассуждает или просит что-то рассказать — отвечай развёрнуто, поддерживай беседу и продолжай живой диалог.\n"
-              "- Визуализация задач на экранчике (draw_led_icon): при выполнении команды автоматически или через draw_led_icon выводи на передний LED-экранчик станции подходящую иконку "
-              "(например: youtube при запуске YouTube/SmartTube, music при музыке, telegram при Telegram, timer при таймере, search/browser при поиске, eq при эквалайзере, terminal при системных командах), после чего экран плавно вернётся к обычному виду.\n";
+              "- Визуализация задач на экранчике (draw_led_icon): при выполнении не-музыкальной команды через draw_led_icon выводи на передний LED-экранчик станции подходящую иконку "
+              "(например: youtube при запуске YouTube/SmartTube, telegram при Telegram, timer при таймере, search/browser при поиске, eq при эквалайзере, terminal при системных командах), после чего экран плавно вернётся к обычному виду. НЕ вызывай draw_led_icon(music) для музыки — название трека само прокручивается на экране.\n";
         if (c.agent_mode) {
             sp += "- РЕЖИМ АГЕНТА АКТИВЕН (ПОЛНЫЙ ADB И ROOT-ДОСТУП): ты — автономный системный агент OpenStation Max с полным доступом к ОС Linux/Android и ADB через инструменты adb_exec и shell_exec! "
                   "Ты можешь выполнять любые ADB/shell команды на станции (settings, pm, am, dumpsys, input, wm, service call, просмотр логов, настройка сервисов, файлов и автоматизации) для решения любых задач пользователя. "
@@ -915,7 +911,9 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     {
         Value p = Value::make_obj();
         p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"});
-        p["visualizer_style"] = make_enum_prop("Music visualizer style (TV orb morph + front LED matrix)", {"dots", "nexus", "specterr", "aurora", "bars", "wave", "fireflies", "matrix", "particles", "anomaly"});
+        p["visualizer_style"] = make_enum_prop(
+            "Music visualizer style (TV orb morph + front LED matrix)",
+            {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title"});
         p["auto_music_visualizer"] = make_prop("BOOLEAN", "Auto morph TV orb & LED display into visualizer when music plays");
         p["screen_color"] = make_prop("STRING", "Optional LED screen clock hex color like #00d4ff or #ffffff");
         decls.push(make_func_decl(
@@ -1222,7 +1220,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     ric["activityHandling"] = Value::make_str("START_OF_ACTIVITY_INTERRUPTS");
 
     Value setup_obj = Value::make_obj();
-    setup_obj["model"] = Value::make_str("models/" + c.gemini_model);
+    setup_obj["model"] = Value::make_str("models/gemini-3.8-live");
     setup_obj["generationConfig"] = std::move(gen_cfg);
     setup_obj["systemInstruction"] = std::move(sys_inst);
     setup_obj["tools"] = std::move(tools);
@@ -1235,14 +1233,18 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     iat["mode"] = Value::make_str("SMART");
     Value voc = Value::make_arr();
     static const char* const kVocab[] = {
-        "Алиса", "Яндекс Музыка", "Моя волна", "включи", "погромче", "потише",
+        "Алиса", "Джарвис", "Пятница", "Макс", "Яндекс Музыка", "Моя волна", "включи", "погромче", "потише",
         "стоп", "пауза", "дальше", "назад", "следующий", "предыдущий", "трек",
         "погода", "новости", "громкость", "таймер", "будильник", "OpenStation",
         "привет", "как дела", "сколько время", "который час", "расскажи",
         "SmartTube", "YouTube", "Кинопоиск", "плейлист", "песня", "музыка"
     };
+    const std::string custom_nm = trim_str(c.name);
+    if (!custom_nm.empty()) {
+        voc.push(Value::make_str(custom_nm));
+    }
     for (const auto* w : kVocab) {
-        voc.push(Value::make_str(w));
+        if (custom_nm != w) voc.push(Value::make_str(w));
     }
     iat["customVocabulary"] = voc;
     iat["adaptationPhrases"] = std::move(voc);
@@ -1287,7 +1289,7 @@ void AssistantManager::session_worker(uint64_t sid,
         if (abort_watcher.joinable()) abort_watcher.join();
     };
 
-    const bool ext_thinking = contains_ci(cfg_snap.gemini_model, "extended-thinking");
+    const bool ext_thinking = false;
     const bool has_proxy_cfg = !cfg_snap.gemini_proxy_host.empty();
     bool cur_use_proxy = use_proxy_host_.load() && has_proxy_cfg;
     bool cur_google_search = cfg_snap.google_search && !search_quota_unsupported_.load();
@@ -1443,6 +1445,7 @@ void AssistantManager::session_worker(uint64_t sid,
         bool retry_without_search = false;
         bool switch_voice_now = false;
         bool switch_persona_now = false;
+        bool silent_turn = false;
         bool session_done = false;
         model_turn_done = false;
         awaiting_playback_drain = false;
@@ -1560,6 +1563,11 @@ void AssistantManager::session_worker(uint64_t sid,
                                 mic_muted_.store(true);
                             }
                         }
+                        if (const auto* sl = res.get("silent"); sl && sl->as_bool(false)) {
+                            silent_turn = true;
+                            stop_after_turn = true;
+                            if (cb_.clear_playback) cb_.clear_playback();
+                        }
                         if (const auto* rv = res.get("reloadVoice"); rv && rv->as_bool(false)) {
                             switch_voice_now = true;
                         }
@@ -1587,6 +1595,11 @@ void AssistantManager::session_worker(uint64_t sid,
                         if (cb_.clear_playback) cb_.clear_playback();
                         return false;
                     }
+                    if (silent_turn && stop_after_turn) {
+                        if (cb_.clear_playback) cb_.clear_playback();
+                        session_done = true;
+                        return false;
+                    }
                 }
             }
 
@@ -1606,6 +1619,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     if (const auto* txt = it->get("text"); txt && txt->is_str()) {
                         const std::string& delta = txt->as_str();
                         if (!delta.empty()) {
+                            silent_turn = false;
                             had_interaction = true;
                             listen_idle_since = std::chrono::steady_clock::now();
                             listen_unconfirmed_since = listen_idle_since;
@@ -1629,7 +1643,7 @@ void AssistantManager::session_worker(uint64_t sid,
                                 std::string mime = idata->get("mimeType") ? idata->get("mimeType")->as_str() : "audio/pcm";
                                 std::string b64d = idata->get("data") ? idata->get("data")->as_str() : "";
                                 int rate = parse_pcm_sample_rate(mime);
-                                if (rate > 0 && !b64d.empty() && cb_.play_pcm) {
+                                if (!silent_turn && rate > 0 && !b64d.empty() && cb_.play_pcm) {
                                     std::vector<uint8_t> pcm_bytes = b64::decode(b64d);
                                     size_t frames = pcm_bytes.size() / 2;
                                     if (frames > 0) {
@@ -1685,7 +1699,8 @@ void AssistantManager::session_worker(uint64_t sid,
                     flush_live_user();
                     flush_live_model();
                     model_turn_done = true;
-                    awaiting_playback_drain = true;
+                    awaiting_playback_drain = !silent_turn;
+                    silent_turn = false;
                     listen_idle_since = std::chrono::steady_clock::now();
                 }
             }
@@ -1701,7 +1716,8 @@ void AssistantManager::session_worker(uint64_t sid,
                 if (rst == WsRecvStatus::Frame) {
                     if (frame.opcode == 0x01 || frame.opcode == 0x02) {
                         if (!handle_server_json(frame.payload)) {
-                            if (!retry_alternate && !retry_without_search && !switch_voice_now) {
+                            if (!retry_alternate && !retry_without_search &&
+                                !switch_voice_now && !switch_persona_now && !session_done && !silent_turn) {
                                 fatal_error = true;
                             }
                             break;
@@ -1953,7 +1969,7 @@ json::Value AssistantManager::get_status_json() {
     }
     obj["enabled"] = Value::make_bool(c.enabled);
     obj["mode"] = Value::make_str(c.mode);
-    obj["model"] = Value::make_str(c.gemini_model);
+    obj["model"] = Value::make_str("gemini-3.8-live");
     obj["voiceName"] = Value::make_str(c.voice_name);
     obj["proxyHost"] = Value::make_str(c.gemini_proxy_host);
     obj["proxyActive"] = Value::make_bool(use_proxy_host_.load() && !c.gemini_proxy_host.empty());

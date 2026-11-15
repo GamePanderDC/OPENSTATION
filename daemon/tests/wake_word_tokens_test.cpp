@@ -60,7 +60,11 @@ int main() {
     if (std::ifstream f("ru_vosk_tokens.txt"); f.good()) {
         SentencePieceTokenizer real_tok;
         assert(real_tok.load_tokens_file("ru_vosk_tokens.txt"));
-        for (const std::string& w : {"Алиса", "Джарвис", "Пятница", "Макс", "Вега", "Станция", "Jarvis"}) {
+        for (const std::string& w : {
+                 "Алиса", "Джарвис", "Пятница", "Макс",
+                 "Вега", "Алёна", "Артём", "Станция",
+                 "Окей Алиса", "Окей Макс", "Jarvis", "Friday", "Max", "Alice"
+             }) {
             const std::string enc = real_tok.encode_phrase_line(w);
             assert(!enc.empty());
             assert(enc.find(" @") != std::string::npos);

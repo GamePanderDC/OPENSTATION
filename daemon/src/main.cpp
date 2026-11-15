@@ -8,6 +8,7 @@
 #include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
+#include "hw/misc_repair.hpp"
 #include "hw/uinput_keys.hpp"
 #include "net/adb_manager.hpp"
 #include "net/http_client.hpp"
@@ -51,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.2";
+constexpr const char* kFirmwareVersion = "1.6.3";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -360,7 +361,7 @@ void repair_wireless_hardware_if_needed() {
     };
     const bool had_wlan0 = path_exists("/sys/class/net/wlan0");
     const bool had_hci0 = path_exists("/sys/class/bluetooth/hci0");
-    const bool had_btlinux = (svc_state("init.svc.btlinux-1-0") == "running");
+    const bool had_btlinux = (svc_state("init.svc.btlinux-1.0") == "running");
     if (had_wlan0 && had_hci0 && had_btlinux) return;
 
     LOGW("Hardware", "Detected Intel PCIe card without active Wi-Fi/BT (wlan0=%d hci0=%d btlinux=%d); repairing",
@@ -380,7 +381,7 @@ void repair_wireless_hardware_if_needed() {
         "done; "
         "i=0; while [ $i -lt 15 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do i=$((i+1)); sleep 0.1; done; "
         "if [ \"$(getprop init.svc.vendor.bluetooth-1-0 | tr -d '\\r\\n')\" = \"running\" ]; then stop vendor.bluetooth-1-0 2>/dev/null || true; fi; "
-        "if [ \"$(getprop init.svc.btlinux-1-0 | tr -d '\\r\\n')\" != \"running\" ]; then start btlinux-1-0 2>/dev/null || true; fi";
+        "if [ \"$(getprop init.svc.btlinux-1.0 | tr -d '\\r\\n')\" != \"running\" ]; then start btlinux-1.0 2>/dev/null || true; fi";
 
     int status = std::system(repair_sh);
     (void)status;
@@ -391,7 +392,80 @@ void repair_wireless_hardware_if_needed() {
     }
     if (!had_btlinux && path_exists("/sys/class/bluetooth/hci0")) {
         std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
-        LOGI("Hardware", "Intel BT HAL (btlinux-1-0) restored and Bluetooth service refreshed");
+        LOGI("Hardware", "Intel BT HAL (btlinux-1.0) restored and Bluetooth service refreshed");
+    }
+}
+
+struct MiscRepairUiState {
+    std::mutex mu;
+    openstation::hw::MiscRepairReport report;
+    bool initialized = false;
+    bool dismissed = false;
+    bool flashing = false;
+    std::string flash_status;
+    std::string flash_error;
+};
+
+MiscRepairUiState g_misc_repair_state;
+
+openstation::hw::MiscRepairReport refresh_misc_repair_status(bool allow_power_up) {
+    auto rep = openstation::hw::diagnose_misc_status(openstation::hw::MiscPaths{}, allow_power_up);
+    std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+    if (!g_misc_repair_state.flashing) {
+        g_misc_repair_state.report = rep;
+        g_misc_repair_state.initialized = true;
+    }
+    return g_misc_repair_state.report;
+}
+
+openstation::json::Value build_misc_repair_json(int64_t uptime_sec) {
+    using openstation::json::Value;
+    openstation::hw::MiscRepairReport rep;
+    bool init = false;
+    bool dismissed = false;
+    bool flashing = false;
+    std::string flash_status;
+    std::string flash_error;
+    {
+        std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+        rep = g_misc_repair_state.report;
+        init = g_misc_repair_state.initialized;
+        dismissed = g_misc_repair_state.dismissed;
+        flashing = g_misc_repair_state.flashing;
+        flash_status = g_misc_repair_state.flash_status;
+        flash_error = g_misc_repair_state.flash_error;
+    }
+    Value mr = Value::make_obj();
+    mr["initialized"] = Value::make_bool(init);
+    mr["wifiOk"] = Value::make_bool(rep.wifi_ok);
+    mr["btOk"] = Value::make_bool(rep.bt_ok);
+    mr["dtMatches"] = Value::make_bool(rep.dt_matches);
+    mr["needsRepair"] = Value::make_bool(rep.needs_repair);
+    mr["showPopup"] = Value::make_bool(init && rep.needs_repair && !dismissed && !flashing && uptime_sec >= 12);
+    mr["dismissed"] = Value::make_bool(dismissed);
+    mr["flashing"] = Value::make_bool(flashing);
+    mr["chip"] = Value::make_str(openstation::hw::chip_name(rep.chip));
+    mr["currentDtId"] = Value::make_str(rep.current_dt_id);
+    mr["targetDtId"] = Value::make_str(rep.target_dt_id);
+    mr["currentRevision"] = Value::make_str(rep.current_revision);
+    mr["recommendedRevision"] = Value::make_str(rep.recommended_revision);
+    mr["currentMiscRevision"] = Value::make_str(rep.current_misc_revision);
+    mr["blockDevice"] = Value::make_str(rep.block_device);
+    mr["flashStatus"] = Value::make_str(flash_status);
+    mr["flashError"] = Value::make_str(flash_error);
+    mr["detail"] = Value::make_str(rep.detail);
+    return mr;
+}
+
+void startup_misc_and_wireless_hardware() {
+    refresh_misc_repair_status(/*allow_power_up=*/true);
+    repair_wireless_hardware_if_needed();
+    auto rep = refresh_misc_repair_status(/*allow_power_up=*/false);
+    if (rep.needs_repair) {
+        LOGW("Hardware",
+             "Wireless hardware requires misc check (wifi=%d bt=%d chip=%s cur_dt=%s rec_rev=%s) — waiting for user confirmation",
+             rep.wifi_ok ? 1 : 0, rep.bt_ok ? 1 : 0,
+             openstation::hw::chip_name(rep.chip), rep.current_dt_id.c_str(), rep.recommended_revision.c_str());
     }
 }
 
@@ -474,9 +548,9 @@ bool is_valid_clock_style(const std::string& s) {
 }
 
 bool is_valid_visualizer_style(const std::string& s) {
-    return s == "dots" || s == "nexus" || s == "specterr" || s == "anomaly" ||
-           s == "aurora" || s == "bars" || s == "wave" ||
-           s == "fireflies" || s == "matrix" || s == "particles";
+    return s == "pulse_bars" || s == "beat_wave" || s == "bass_nova" ||
+           s == "mirror_meter" || s == "spark_burst" || s == "vu_plasma" ||
+           s == "track_title";
 }
 
 std::string url_decode_str(const std::string& s) {
@@ -1211,7 +1285,7 @@ int main(int argc, char** argv) {
     using namespace openstation;
     Logger::instance().init("/data/local/openstation/openstationd.log");
     LOGI("Main", "=== OpenStation Max Daemon v%s starting ===", kFirmwareVersion);
-    std::thread(repair_wireless_hardware_if_needed).detach();
+    std::thread(startup_misc_and_wireless_hardware).detach();
 
     DaemonConfig cfg;
     cfg.load();
@@ -1248,6 +1322,7 @@ int main(int argc, char** argv) {
     // Live native Yandex Music state pushed by StationAudioService (/api/music/state)
     std::mutex music_mu;
     MusicPlaybackState music_state;
+    std::string last_announced_music_banner;
     std::atomic<bool> music_duck_active{false};
     auto set_music_duck = [&](bool duck) {
         if (music_duck_active.exchange(duck) != duck) {
@@ -2220,12 +2295,6 @@ int main(int argc, char** argv) {
             leds.trigger_task_icon("youtube", 255, 42, 42, 6000);
         } else if (contains_case_insensitive(combined, "telegram")) {
             leds.trigger_task_icon("telegram", 38, 178, 255, 6000);
-        } else if (contains_case_insensitive(combined, "music") ||
-                   contains_case_insensitive(combined, "музык") ||
-                   contains_case_insensitive(combined, "spotify") ||
-                   contains_case_insensitive(combined, "zvuk") ||
-                   contains_case_insensitive(combined, "звук")) {
-            leds.trigger_task_icon("music", 255, 200, 48, 5600);
         } else if (contains_case_insensitive(combined, "browser") ||
                    contains_case_insensitive(combined, "chrome") ||
                    contains_case_insensitive(combined, "tvbro") ||
@@ -2668,12 +2737,17 @@ int main(int argc, char** argv) {
 
         if (name == "draw_led_icon") {
             std::string icon = args.get("icon") ? args.get("icon")->as_str("star") : "star";
+            if (icon == "music") {
+                res["ok"] = Value::make_bool(true);
+                res["icon"] = Value::make_str(icon);
+                res["skipped"] = Value::make_bool(true);
+                return res;
+            }
             std::string col = args.get("color") ? args.get("color")->as_str() : "";
             std::string pixels = args.get("pixels") ? args.get("pixels")->as_str() : "";
             int duration_ms = args.get("duration_ms") ? std::clamp(args.get("duration_ms")->as_int(5500), 1200, 15000) : 5500;
             uint8_t r = 0, g = 220, b = 255;
             if (icon == "youtube") { r = 255; g = 42; b = 42; }
-            else if (icon == "music") { r = 255; g = 200; b = 48; }
             else if (icon == "telegram") { r = 38; g = 178; b = 255; }
             else if (icon == "browser" || icon == "search") { r = 56; g = 208; b = 255; }
             else if (icon == "tv") { r = 170; g = 130; b = 255; }
@@ -3416,9 +3490,6 @@ int main(int argc, char** argv) {
             }
             if (ok) {
                 if (act == "home") leds.trigger_task_icon("apps", 232, 198, 134, 3600);
-                else if (act == "play_pause" || act == "next" || act == "prev" || act == "previous") {
-                    leds.trigger_task_icon("music", 255, 200, 56, 3600);
-                }
             }
             res["ok"] = Value::make_bool(ok);
             res["action"] = Value::make_str(act);
@@ -3488,10 +3559,6 @@ int main(int argc, char** argv) {
 
             if (act == "like") {
                 leds.trigger_task_icon("heart", 255, 72, 110, 4800);
-            } else if (act == "open" || act == "play_my_wave" || act == "play_query" ||
-                       act == "play_liked" || act == "play" || act == "play_pause" ||
-                       act == "next" || act == "prev" || act == "previous") {
-                leds.trigger_task_icon("music", 255, 200, 48, 5500);
             }
 
             if (act == "open") {
@@ -3683,6 +3750,9 @@ int main(int argc, char** argv) {
                     res["authRequired"] = Value::make_bool(true);
                     res["error"] = Value::make_str(snap.error);
                 } else {
+                    if (act == "next" || act == "prev" || act == "previous") {
+                        res["silent"] = Value::make_bool(true);
+                    }
                     res["stopSession"] = Value::make_bool(true);
                 }
                 return res;
@@ -3691,6 +3761,9 @@ int main(int argc, char** argv) {
                 res["ok"] = Value::make_bool(ok);
                 res["backend"] = Value::make_str("uinput");
                 res["action"] = Value::make_str(act);
+                if (act == "next" || act == "prev" || act == "previous") {
+                    res["silent"] = Value::make_bool(true);
+                }
                 res["stopSession"] = Value::make_bool(true);
                 return res;
             }
@@ -3742,7 +3815,6 @@ int main(int argc, char** argv) {
                     if (!is_udp_port_bound(8086)) {
                         spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
                     }
-                    leds.trigger_task_icon("music", 255, 200, 48, 5600);
                     res["ok"] = Value::make_bool(true);
                     res["label"] = Value::make_str("Яндекс Музыка · Моя волна");
                     res["stopSession"] = Value::make_bool(true);
@@ -3825,7 +3897,6 @@ int main(int argc, char** argv) {
                 if (!is_udp_port_bound(8086)) {
                     spawn_detached({"/system/bin/am", "start", "-n", "com.openstation.launcher/.YandexMusicActivity"});
                 }
-                leds.trigger_task_icon("music", 255, 200, 48, 5600);
                 res["ok"] = Value::make_bool(true);
                 res["label"] = Value::make_str("Яндекс Музыка · Моя волна");
                 return res;
@@ -4060,6 +4131,7 @@ int main(int argc, char** argv) {
         );
         bt["deviceName"] = Value::make_str("OpenStation Max");
         root["bluetooth"] = std::move(bt);
+        root["miscRepair"] = build_misc_repair_json(up);
 
         {
             std::lock_guard<std::mutex> lk(last_weather_mu);
@@ -4229,6 +4301,85 @@ int main(int argc, char** argv) {
                 );
                 bt["deviceName"] = json::Value::make_str("OpenStation Max");
                 return HttpResponse::json(bt.dump(-1));
+            }
+            if (req.method == "GET" && req.path == "/api/misc/status") {
+                refresh_misc_repair_status(/*allow_power_up=*/false);
+                auto up_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - start_tp)
+                                .count();
+                return HttpResponse::json(build_misc_repair_json(up_s).dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/misc/dismiss") {
+                {
+                    std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+                    g_misc_repair_state.dismissed = true;
+                }
+                return HttpResponse::json("{\"ok\":true}");
+            }
+            if (req.method == "POST" && req.path == "/api/misc/flash") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"invalid json\"}", 400);
+                }
+                const bool confirmed = v.get("confirm") && v.get("confirm")->as_bool(false);
+                if (!confirmed) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"explicit user confirmation required\"}", 400);
+                }
+                std::string rev = v.get("revision") && v.get("revision")->is_str()
+                    ? v.get("revision")->as_str() : "";
+                auto target = openstation::hw::parse_misc_revision(rev);
+                if (target == openstation::hw::MiscTarget::None) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"unknown hardware revision (use 0008_00052 or 00053)\"}", 400);
+                }
+                {
+                    std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+                    if (g_misc_repair_state.flashing) {
+                        return HttpResponse::json("{\"ok\":false,\"error\":\"misc flash already in progress\"}", 409);
+                    }
+                    g_misc_repair_state.flashing = true;
+                    g_misc_repair_state.flash_status = "flashing";
+                    g_misc_repair_state.flash_error.clear();
+                }
+                auto rep = openstation::hw::flash_verified_misc_target(
+                    target,
+                    openstation::hw::MiscPaths{},
+                    /*allow_reboot=*/false);
+                if (rep.action == openstation::hw::MiscRepairAction::Failed || !rep.wrote_flash) {
+                    {
+                        std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+                        g_misc_repair_state.flashing = false;
+                        g_misc_repair_state.flash_status = "failed";
+                        g_misc_repair_state.flash_error = rep.detail;
+                    }
+                    json::Value er = json::Value::make_obj();
+                    er["ok"] = json::Value::make_bool(false);
+                    er["error"] = json::Value::make_str(rep.detail.empty() ? "misc flash failed" : rep.detail);
+                    return HttpResponse::json(er.dump(-1), 500);
+                }
+                {
+                    std::lock_guard<std::mutex> lk(g_misc_repair_state.mu);
+                    g_misc_repair_state.report = rep;
+                    g_misc_repair_state.initialized = true;
+                    g_misc_repair_state.dismissed = true;
+                    g_misc_repair_state.flash_status = "flashed_rebooting";
+                    g_misc_repair_state.flash_error.clear();
+                }
+                LOGW("Hardware", "User-confirmed misc flash complete (%s -> %s); rebooting...",
+                     openstation::hw::revision_id_for_target(target).c_str(), rep.target_dt_id.c_str());
+                std::thread([]() {
+                    ::sync();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                    ::sync();
+                    const int rc = std::system("/system/bin/reboot >/dev/null 2>&1");
+                    (void)rc;
+                }).detach();
+                json::Value okr = json::Value::make_obj();
+                okr["ok"] = json::Value::make_bool(true);
+                okr["rebooting"] = json::Value::make_bool(true);
+                okr["revision"] = json::Value::make_str(openstation::hw::revision_id_for_target(target));
+                okr["targetDtId"] = json::Value::make_str(rep.target_dt_id);
+                okr["detail"] = json::Value::make_str(rep.detail);
+                return HttpResponse::json(okr.dump(-1));
             }
             if (req.method == "GET" && req.path == "/api/weather") {
                 std::string city = url_decode_str(get_query_param(req.query, "city"));
@@ -4620,14 +4771,11 @@ int main(int argc, char** argv) {
                     c = cfg;
                 }
                 std::string key = c.assistant.gemini_api_key;
-                std::string model = c.assistant.gemini_model;
+                const std::string model = "gemini-3.8-live";
                 std::string proxy = c.assistant.gemini_proxy_host;
                 if (v.is_obj()) {
                     if (const auto* k = v.get("geminiApiKey"); k && k->is_str() && !trim_ws_copy(k->as_str()).empty()) {
                         key = k->as_str();
-                    }
-                    if (const auto* m = v.get("geminiModel"); m && m->is_str() && !trim_ws_copy(m->as_str()).empty()) {
-                        model = m->as_str();
                     }
                     if (const auto* p = v.get("geminiProxyHost"); p && p->is_str()) {
                         proxy = p->as_str();
@@ -5061,11 +5209,44 @@ int main(int argc, char** argv) {
                 int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
                                      .count();
+                bool should_banner = false;
+                bool keep_track_title = false;
+                bool clear_track_title = false;
+                std::string full_track_title;
                 {
                     std::lock_guard<std::mutex> lk(music_mu);
                     music_state.update_from_json(v, now_ms);
+                    const bool active = music_state.playing && !music_state.paused;
+                    if (!music_state.title.empty()) {
+                        full_track_title = music_state.artist.empty()
+                            ? music_state.title
+                            : (music_state.artist + " - " + music_state.title);
+                    }
+                    if (active && !full_track_title.empty()) {
+                        keep_track_title = true;
+                        const std::string key =
+                            (!music_state.track_id.empty() ? music_state.track_id : "") + "|" + full_track_title;
+                        if (key != last_announced_music_banner) {
+                            last_announced_music_banner = key;
+                            should_banner = true;
+                        }
+                    } else if (!music_state.playing && !music_state.paused) {
+                        last_announced_music_banner.clear();
+                        clear_track_title = full_track_title.empty();
+                        keep_track_title = !full_track_title.empty();
+                    } else if (!full_track_title.empty()) {
+                        keep_track_title = true;
+                    }
                 }
                 update_led_music_playing();
+                if (keep_track_title) {
+                    leds.set_music_track_title(full_track_title);
+                } else if (clear_track_title) {
+                    leds.set_music_track_title("");
+                }
+                if (should_banner) {
+                    leds.trigger_music_track_banner(full_track_title);
+                }
                 return HttpResponse::json("{\"ok\":true}");
             }
             if (req.method == "POST" && req.path == "/api/music/command") {
@@ -5790,6 +5971,7 @@ int main(int argc, char** argv) {
                 }
                 if (empty_dns) refresh_private_dns_cache();
                 dns_late_probed = true;
+                std::thread([]() { refresh_misc_repair_status(/*allow_power_up=*/true); }).detach();
             }
             if (mqtt.is_connected()) {
                 DaemonConfig c;

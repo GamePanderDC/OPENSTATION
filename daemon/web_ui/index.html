@@ -495,12 +495,17 @@
 
                 <div class="form-row">
                   <label>Характер и инструкции (системный промпт)</label>
+                  <div class="seg-group" id="astPromptPresets" style="margin-bottom:8px;">
+                    <button class="seg" type="button" data-preset="universal">Универсальная</button>
+                    <button class="seg" type="button" data-preset="concise">Краткая и чёткая</button>
+                    <button class="seg" type="button" data-preset="witty">Дружелюбная с юмором</button>
+                  </div>
                   <textarea id="astPrompt" rows="3"></textarea>
                 </div>
 
                 <div class="grid-2-tight">
                   <div class="form-row toggle-row">
-                    <label>Откликаться на «Алиса»</label>
+                    <label>Откликаться на «<span class="js-ast-name">Алиса</span>»</label>
                     <input type="checkbox" id="astWakeEn" checked />
                   </div>
                   <div class="form-row toggle-row">
@@ -519,11 +524,9 @@
                     </select>
                   </div>
                   <div class="form-row">
-                    <label>Модель Gemini Live</label>
-                    <input type="text" id="astModel" list="astModelList" value="gemini-3.8-live" />
-                    <datalist id="astModelList">
-                      <option value="gemini-3.8-live"></option>
-                    </datalist>
+                    <label>Модель Gemini Live (фиксирована)</label>
+                    <input type="text" id="astModel" value="gemini-3.8-live" readonly disabled />
+                    <div class="hint">Зафиксирована для стабильной работы голосовой сессии.</div>
                   </div>
                 </div>
 
@@ -797,15 +800,13 @@
                 <div class="form-row">
                   <label>Визуализатор музыки</label>
                   <select id="visualizerStyle">
-                    <option value="dots">3D Сфера-точки (Halftone)</option>
-                    <option value="nexus">Nexus 3D Аномалия</option>
-                    <option value="specterr">Specterr Неоновый круг</option>
-                    <option value="particles">Частицы / Шар</option>
-                    <option value="bars">Столбики (Bars)</option>
-                    <option value="wave">Синус-волна</option>
-                    <option value="fireflies">Светлячки</option>
-                    <option value="aurora">Северное сияние</option>
-                    <option value="matrix">Матрица (Дождь)</option>
+                    <option value="pulse_bars">Эквалайзер (Пики)</option>
+                    <option value="beat_wave">Аудио-волна (Спектр)</option>
+                    <option value="bass_nova">Бас-нова (Ударные)</option>
+                    <option value="mirror_meter">Зеркальный ритм</option>
+                    <option value="spark_burst">Спектр-искры (Бит)</option>
+                    <option value="vu_plasma">VU-плазма (Частоты)</option>
+                    <option value="track_title">Название трека (Бегущая строка)</option>
                   </select>
                 </div>
               </div>
@@ -891,7 +892,7 @@
             <div class="card" id="otaCard">
               <div class="row-between">
                 <h2>Обновления прошивки</h2>
-                <span class="badge ok" id="otaVersionBadge">v1.6.2</span>
+                <span class="badge ok" id="otaVersionBadge">v1.6.3</span>
               </div>
               <div class="status-banner" id="otaStatusBanner">Проверка версии прошивки...</div>
               <div class="ota-progress-wrap" id="otaProgressWrap" style="display:none;">
@@ -1025,7 +1026,9 @@
                   <div class="btn-row">
                     <button class="btn btn-sm" id="btnRestartWifiAdb" type="button">↻ Перезапустить ADB</button>
                     <button class="btn btn-sm" id="btnRestartDaemon" type="button">↻ Перезапустить сервис</button>
+                    <button class="btn btn-sm" id="btnOpenMiscModal" type="button">🛠 Wi-Fi / BT (misc)</button>
                   </div>
+                  <div class="hint" id="miscStatusHint" style="margin-top:6px;">Ревизия беспроводного модуля: проверка...</div>
                 </div>
               </details>
             </div>
@@ -1137,7 +1140,7 @@
             </div>
           </div>
           <div class="wizard-header-actions">
-            <span class="badge ok" id="wizFwBadge">v1.6.2</span>
+            <span class="badge ok" id="wizFwBadge">v1.6.3</span>
             <button class="btn btn-sm" id="btnWizClose" type="button" title="Свернуть мастер">✕</button>
           </div>
         </div>
@@ -1431,7 +1434,7 @@
             <div class="wiz-sprite-trio">
               <img src="/sprites/station.png" alt="Станция Макс" class="wiz-sprite-img wiz-anim-float" />
               <img src="/sprites/alice.png" alt="Алиса" class="wiz-sprite-img wiz-anim-spin-slow" />
-              <img src="/sprites/ota.png" alt="v1.6.2" class="wiz-sprite-img wiz-anim-float" />
+              <img src="/sprites/ota.png" alt="v1.6.3" class="wiz-sprite-img wiz-anim-float" />
             </div>
             <div class="status-banner ok" id="wizStep5Banner">✨ Станция настроена и готова к работе.</div>
             <h3>Готовность OpenStation Max</h3>
@@ -1463,6 +1466,63 @@
             <button class="btn btn-accent" id="btnWizNext" type="button">Далее →</button>
             <button class="btn btn-accent" id="btnWizFinish" type="button" style="display:none;">✨ Начать работу</button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WI-FI / BLUETOOTH MISC REVISION REPAIR MODAL -->
+  <div class="wizard-backdrop misc-backdrop" id="miscRepairModal" style="display:none;">
+    <div class="wizard-modal misc-modal" role="dialog" aria-modal="true" aria-labelledby="miscModalTitle">
+      <div class="wizard-layer">
+        <div class="wizard-header">
+          <div class="wiz-title-group">
+            <div>
+              <div class="wiz-title-row">
+                <h2 id="miscModalTitle">Не работает Wi-Fi и Bluetooth?</h2>
+                <span class="badge warn" id="miscModalBadge">Проверка misc</span>
+              </div>
+              <div class="sub">Выберите ревизию вашей Яндекс Станции Макс для прошивки раздела <code>misc</code></div>
+            </div>
+          </div>
+          <div class="wizard-header-actions">
+            <button class="btn btn-sm" id="btnMiscClose" type="button" title="Закрыть">✕</button>
+          </div>
+        </div>
+
+        <div class="misc-modal-body">
+          <div class="status-banner" id="miscDiagBanner">Диагностика беспроводных интерфейсов...</div>
+
+          <div class="misc-rev-grid" id="miscRevCards">
+            <button class="misc-rev-card" type="button" data-rev="0008_00052" id="miscRevCard0008">
+              <div class="row-between">
+                <span class="misc-rev-title">Ревизия 0008 / 00052</span>
+                <span class="badge ok" id="miscRec0008" style="display:none;">Рекомендуется</span>
+              </div>
+              <div class="misc-rev-sub">Intel Wi-Fi/BT · DT <code>g12a_s905x2_rev35f</code></div>
+              <div class="hint">Ранние и основные ревизии платы (0008, 00052).</div>
+            </button>
+
+            <button class="misc-rev-card" type="button" data-rev="00053" id="miscRevCard00053">
+              <div class="row-between">
+                <span class="misc-rev-title">Ревизия 00053</span>
+                <span class="badge ok" id="miscRec00053" style="display:none;">Рекомендуется</span>
+              </div>
+              <div class="misc-rev-sub">Realtek / Unisoc · DT <code>g12a_s905x2_rev053</code></div>
+              <div class="hint">Поздние платы ревизии 00053.</div>
+            </button>
+          </div>
+
+          <div class="misc-modal-warn">
+            После нажатия кнопки будет прошит раздел <code>misc</code> для выбранной ревизии и станция <b>немедленно перезагрузится</b> для применения Device Tree. Не выключайте питание во время перезагрузки.
+          </div>
+
+          <div class="status-banner" id="miscFlashBanner" style="display:none;"></div>
+        </div>
+
+        <div class="wizard-footer">
+          <button class="btn btn-sm" id="btnMiscDismiss" type="button">Позже</button>
+          <button class="btn btn-accent" id="btnMiscFlashConfirm" type="button" disabled>⚡ Прошить misc и перезагрузить</button>
         </div>
       </div>
     </div>

@@ -1,25 +1,25 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.2",
+    "version":  "1.6.3",
     "autonomous":  true,
-    "changelog":  "OpenStation Max v1.6.2: переработанный анимированный 7-экранный мастер настройки со спрайтами и автопоиском пульта без кнопок, автозапуск мастера после OTA, голосовой рестарт демона Алисой, активный по стоку ADB-агент и авторемонт Wi-Fi/BT для плат 0008/00052.",
-    "buildTimeUtc":  "2026-11-14T21:52:08Z",
+    "changelog":  "OpenStation Max v1.6.3: 6 новых музыкальных визуализаторов + бегущая строка полного названия трека без стартовой иконки, тихое переключение треков Алисой, фиксация gemini-3.8-live, отключение FLAC в Яндекс Музыке, интерактивное восстановление Wi-Fi/BT (misc + btlinux-1.0), выверенные имена и характеры ассистента.",
+    "buildTimeUtc":  "2026-11-14T23:56:13Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  3070352,
-                                 "sha256":  "3c44f63809211c3c2e174428823720b046b5cfe3526caccd23366e512f7617a0"
+                                 "size":  3140688,
+                                 "sha256":  "f6cabf35f6501515d19584b142d9be055e451cefbb56e81dcd79a193aefe4a3f"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
-                                    "size":  657888,
-                                    "sha256":  "2c0fc741c070ae1e187522a0411a9e5f97cfd56a72e53663f3c187c66189a556"
+                                    "size":  657728,
+                                    "sha256":  "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  5135776,
-                                   "sha256":  "1df8be1e606517d498b81cf81612d693a1c29844d5d51d0d6088a7dcdd5ed170"
+                                   "size":  5146276,
+                                   "sha256":  "7ccc13e202c77bd32238682031384fec50c2377ecd6980ffa6b19f33aa3b0c85"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

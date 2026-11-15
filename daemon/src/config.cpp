@@ -169,8 +169,8 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"})) {
         led_screen.clock_style = "classic";
     }
-    if (!is_one_of(led_screen.visualizer_style, {"dots", "nexus", "specterr", "particles", "bars", "wave", "fireflies", "aurora", "matrix", "anomaly"})) {
-        led_screen.visualizer_style = "dots";
+    if (!is_one_of(led_screen.visualizer_style, {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title"})) {
+        led_screen.visualizer_style = "pulse_bars";
     }
     if (led_screen.text.size() > 256) led_screen.text.resize(256);
     if (led_screen.color.empty()) led_screen.color = "#ffffff";
@@ -242,9 +242,8 @@ void DaemonConfig::sanitize_and_validate() {
            (assistant.gemini_api_key.back() == '\n' || assistant.gemini_api_key.back() == '\r' || assistant.gemini_api_key.back() == ' ')) {
         assistant.gemini_api_key.pop_back();
     }
-    if (assistant.gemini_model.empty() || assistant.gemini_model.size() > 96) {
-        assistant.gemini_model = "gemini-3.8-live";
-    }
+    // gemini-3.8-live is the only supported Live model for station audio pipeline stability.
+    assistant.gemini_model = "gemini-3.8-live";
     {
         std::string clean_proxy;
         clean_proxy.reserve(assistant.gemini_proxy_host.size());
@@ -665,7 +664,8 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("name"); x && x->is_str()) assistant.name = x->as_str();
         // Empty = preserve stored secret because status JSON masks secrets.
         if (auto* x = ast->get("geminiApiKey"); x && x->is_str() && !x->as_str().empty()) assistant.gemini_api_key = x->as_str();
-        if (auto* x = ast->get("geminiModel"); x && x->is_str()) assistant.gemini_model = x->as_str();
+        // Locked to gemini-3.8-live regardless of stale client configs.
+        assistant.gemini_model = "gemini-3.8-live";
         if (auto* x = ast->get("geminiProxyHost"); x && x->is_str()) assistant.gemini_proxy_host = x->as_str();
         if (auto* x = ast->get("voiceName"); x && x->is_str()) assistant.voice_name = x->as_str();
         if (auto* x = ast->get("systemPrompt"); x && x->is_str()) assistant.system_prompt = x->as_str();
