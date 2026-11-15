@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.3",
-    [string]$Changelog = "OpenStation Max v1.6.3: 6 новых музыкальных визуализаторов + бегущая строка полного названия трека без стартовой иконки, тихое переключение треков Алисой, фиксация gemini-3.8-live, отключение FLAC в Яндекс Музыке, интерактивное восстановление Wi-Fi/BT (misc + btlinux-1.0), выверенные имена и характеры ассистента.",
+    [string]$Version = "1.6.4",
+    [string]$Changelog = "OpenStation Max v1.6.4: глубокая оптимизация нагрева и энергопотребления (адаптивный порог тишины Silero VAD, дедупликация SPI-кадров LED-матрицы, пауза невидимого 3D-шара и снижение GPU-нагрузки в лаунчере/скринсейвере/мастере, CPU governor schedutil и ускоренный GPU DVFS), монолитный Spatial Liquid Glass интерфейс (новый плеер, живой фото-скринсейвер, подвкладки панели управления, выбор скорости анимаций, сброс оболочки, обновлённый мастер настройки).",
     [switch]$Clean,
     [switch]$RebuildIme
 )
@@ -149,12 +149,20 @@ if ($RebuildIme -or -not (Test-Path $fwImePrebuilt)) {
 Push-Location "$RootDir\launcher"
 try {
     if ($Clean) {
-        & $gradle clean assembleDebug --no-daemon --console=plain
+        & $gradle clean assembleRelease --no-daemon --console=plain
     } else {
-        & $gradle assembleDebug --no-daemon --console=plain
+        & $gradle assembleRelease --no-daemon --console=plain
     }
     if ($LASTEXITCODE -ne 0) { throw "OpenStationLauncher Gradle build failed" }
 } finally { Pop-Location }
+
+# Compile OpenStationWebViewOverlay.apk (static RRO for Chromium SystemWebView on AOSP 9)
+$fwDir = "$RootDir\firmware"
+New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
+$rroOutApk = "$fwDir\OpenStationWebViewOverlay.apk"
+if (Test-Path "$RootDir\scripts\build_webview_rro.ps1") {
+    & "$RootDir\scripts\build_webview_rro.ps1" -RootDir $RootDir -SdkRoot $sdkRoot -JavaHome $javaHome -OutApk $rroOutApk
+}
 
 Write-Host "[4/4] Упаковка firmware/ и генерация manifest.json (SHA-256)..." -ForegroundColor Yellow
 $fwDir = "$RootDir\firmware"
@@ -163,7 +171,7 @@ New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
 $sources = @(
     @{ Key = "daemon";        FileName = "openstationd";            Src = "$buildDir\openstationd" },
     @{ Key = "bootlogod";     FileName = "bootlogod";               Src = "$buildDir\bootlogod" },
-    @{ Key = "launcher";      FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\debug\app-debug.apk" },
+    @{ Key = "launcher";      FileName = "OpenStationLauncher.apk"; Src = "$RootDir\launcher\app\build\outputs\apk\release\app-release.apk" },
     @{ Key = "ime";           FileName = "OpenStationIME.apk";      Src = $imeSrcPath },
     @{ Key = "bootanimation"; FileName = "bootanimation.zip";       Src = "$RootDir\firmware\bootanimation.zip" },
     @{ Key = "bootlogo";      FileName = "logo.img";                Src = "$RootDir\firmware\logo.img" }

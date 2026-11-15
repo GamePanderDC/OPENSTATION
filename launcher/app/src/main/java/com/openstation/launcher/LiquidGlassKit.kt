@@ -1,5 +1,6 @@
 package com.openstation.launcher
 
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -7,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.LinearGradient
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -16,6 +18,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.view.View
+import android.view.ViewGroup
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -41,7 +44,8 @@ object LiquidGlassKit {
         val primaryHex: String,
         val secondaryHex: String,
         val highlightHex: String,
-        val useStagePhotoTint: Boolean = false
+        val useStagePhotoTint: Boolean = false,
+        val drawableRes: Int = 0
     )
 
     val THEMES: List<WallpaperTheme> = listOf(
@@ -99,6 +103,56 @@ object LiquidGlassKit {
             primaryHex = "#10B981",
             secondaryHex = "#0284C7",
             highlightHex = "#D1FAE5"
+        ),
+        WallpaperTheme(
+            id = "nebula_space",
+            title = "Космическая туманность",
+            subtitle = "Nebula Space",
+            baseDarkHex = "#04060E",
+            primaryHex = "#818CF8",
+            secondaryHex = "#38BDF8",
+            highlightHex = "#E0E7FF",
+            drawableRes = R.drawable.wall_nebula_space
+        ),
+        WallpaperTheme(
+            id = "nebula_forest",
+            title = "Туманный лес",
+            subtitle = "Nebula Forest",
+            baseDarkHex = "#030908",
+            primaryHex = "#34D399",
+            secondaryHex = "#0EA5E9",
+            highlightHex = "#D1FAE5",
+            drawableRes = R.drawable.wall_nebula_forest
+        ),
+        WallpaperTheme(
+            id = "nebula_desert",
+            title = "Ночная пустыня",
+            subtitle = "Nebula Desert",
+            baseDarkHex = "#0C0704",
+            primaryHex = "#E8C686",
+            secondaryHex = "#C2410C",
+            highlightHex = "#FEF3C7",
+            drawableRes = R.drawable.wall_nebula_desert
+        ),
+        WallpaperTheme(
+            id = "nebula_field",
+            title = "Сумеречное поле",
+            subtitle = "Nebula Field",
+            baseDarkHex = "#05070B",
+            primaryHex = "#38BDF8",
+            secondaryHex = "#6366F1",
+            highlightHex = "#E2E8F0",
+            drawableRes = R.drawable.wall_nebula_field
+        ),
+        WallpaperTheme(
+            id = "nebula_stage",
+            title = "Сцена Nebula Glow",
+            subtitle = "Nebula Stage",
+            baseDarkHex = "#04050C",
+            primaryHex = "#A78BFA",
+            secondaryHex = "#2563EB",
+            highlightHex = "#EDE9FE",
+            drawableRes = R.drawable.wall_nebula_stage
         )
     )
 
@@ -122,6 +176,50 @@ object LiquidGlassKit {
         private set
 
     private var stagePhotoCache: Bitmap? = null
+
+    fun clearStagePhotoCache() {
+        stagePhotoCache = null
+    }
+
+    internal data class MemoryTrimDecision(
+        val clearStagePhoto: Boolean,
+        val cacheCapKb: Int?,
+        val releaseOrbSheets: Boolean
+    )
+
+    internal fun computeMemoryTrimDecision(
+        level: Int,
+        allowReleaseOrb: Boolean,
+        assistantState: String
+    ): MemoryTrimDecision {
+        val critical = level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        val clearCaches = level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        val capKb = if (!clearCaches) null else if (critical) 0 else 1024
+        val releaseOrb = allowReleaseOrb && critical && assistantState.equals("idle", ignoreCase = true)
+        return MemoryTrimDecision(
+            clearStagePhoto = clearCaches,
+            cacheCapKb = capKb,
+            releaseOrbSheets = releaseOrb
+        )
+    }
+
+    /** Shared memory-trim handler invoked by both MainActivity and StationAudioService under RAM pressure. */
+    fun trimCachesForPressure(level: Int, allowReleaseOrb: Boolean) {
+        val d = computeMemoryTrimDecision(level, allowReleaseOrb, LiveOrbState.assistantState)
+        if (d.clearStagePhoto) {
+            clearStagePhotoCache()
+        }
+        d.cacheCapKb?.let { cap ->
+            com.openstation.launcher.market.MarketImageLoader.trimMemory(cap)
+            YandexMusicApi.trimCoverCache(cap)
+        }
+        if (d.releaseOrbSheets) {
+            AliceOrbFrames.release()
+        }
+    }
 
     fun currentTheme(): WallpaperTheme =
         THEMES.firstOrNull { it.id == currentThemeId } ?: THEMES.first()
@@ -174,61 +272,166 @@ object LiquidGlassKit {
         }
     }
 
+    internal const val SHARP_WIDTH = 1920
+    internal const val SHARP_HEIGHT = 1080
+
+    private val BAYER_4X4 = intArrayOf(
+        0, 8, 2, 10,
+        12, 4, 14, 6,
+        3, 11, 1, 9,
+        15, 7, 13, 5
+    )
+
+    internal fun computeSampleSizeForTarget(srcWidth: Int, srcHeight: Int, targetPx: Int): Int {
+        if (srcWidth <= 0 || srcHeight <= 0 || targetPx <= 0) return 1
+        var sample = 1
+        while ((srcWidth / (sample * 2)) >= targetPx && (srcHeight / (sample * 2)) >= targetPx) {
+            sample *= 2
+        }
+        return sample
+    }
+
+    fun decodeSwatchBitmap(ctx: Context, resId: Int, targetPx: Int): Bitmap? {
+        if (resId == 0) return null
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeResource(ctx.resources, resId, bounds)
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = computeSampleSizeForTarget(bounds.outWidth, bounds.outHeight, targetPx.coerceAtLeast(48))
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            BitmapFactory.decodeResource(ctx.resources, resId, opts)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun applyOrderedDither4x4(bmp: Bitmap) {
+        val w = bmp.width
+        val h = bmp.height
+        val row = IntArray(w)
+        for (y in 0 until h) {
+            bmp.getPixels(row, 0, w, 0, y, w, 1)
+            val rowOff = (y and 3) shl 2
+            for (x in 0 until w) {
+                val delta = (BAYER_4X4[rowOff or (x and 3)] - 7) / 4
+                val c = row[x]
+                val a = c ushr 24
+                val r = (((c ushr 16) and 0xFF) + delta).coerceIn(0, 255)
+                val g = (((c ushr 8) and 0xFF) + delta).coerceIn(0, 255)
+                val b = ((c and 0xFF) + delta).coerceIn(0, 255)
+                row[x] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            bmp.setPixels(row, 0, w, 0, y, w, 1)
+        }
+    }
+
     private fun renderThemePair(ctx: Context, theme: WallpaperTheme): Pair<Bitmap, Bitmap> {
-        val w = 960
-        val h = 540
-        val sharp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(sharp)
+        val w = SHARP_WIDTH
+        val h = SHARP_HEIGHT
 
-        val base = Color.parseColor(theme.baseDarkHex)
-        val c1 = Color.parseColor(theme.primaryHex)
-        val c2 = Color.parseColor(theme.secondaryHex)
-        val c3 = Color.parseColor(theme.highlightHex)
+        var sharp: Bitmap? = null
+        var drewPhoto = false
+        if (theme.drawableRes != 0) {
+            val photo = try {
+                val opts = BitmapFactory.Options().apply {
+                    inScaled = false
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inMutable = true
+                }
+                BitmapFactory.decodeResource(ctx.resources, theme.drawableRes, opts)
+            } catch (_: Throwable) {
+                null
+            }
+            if (photo != null && !photo.isRecycled && photo.width > 0 && photo.height > 0) {
+                drewPhoto = true
+                if (photo.width == w && photo.height == h && photo.isMutable && photo.config == Bitmap.Config.ARGB_8888) {
+                    sharp = photo
+                } else {
+                    val dst = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    val c = Canvas(dst)
+                    val targetAspect = w.toFloat() / h.toFloat()
+                    val srcAspect = photo.width.toFloat() / photo.height.toFloat()
+                    val srcRect = if (srcAspect > targetAspect) {
+                        val cropW = (photo.height * targetAspect).toInt().coerceIn(1, photo.width)
+                        val left = (photo.width - cropW) / 2
+                        Rect(left, 0, left + cropW, photo.height)
+                    } else {
+                        val cropH = (photo.width / targetAspect).toInt().coerceIn(1, photo.height)
+                        val top = (photo.height - cropH) / 2
+                        Rect(0, top, photo.width, top + cropH)
+                    }
+                    val dstRect = Rect(0, 0, w, h)
+                    val imgPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+                    c.drawBitmap(photo, srcRect, dstRect, imgPaint)
+                    photo.recycle()
+                    sharp = dst
+                }
+            }
+        }
 
-        c.drawColor(base)
+        val outSharp = sharp ?: Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
+            val c = Canvas(bmp)
+            val base = Color.parseColor(theme.baseDarkHex)
+            val c1 = Color.parseColor(theme.primaryHex)
+            val c2 = Color.parseColor(theme.secondaryHex)
+            val c3 = Color.parseColor(theme.highlightHex)
+            c.drawColor(base)
 
-        // Silky OLED spatial studio ambient blooms (zero wireframe lines, zero brown photo wash)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+            p.shader = RadialGradient(
+                w * 0.22f, h * 0.20f, w * 0.62f,
+                intArrayOf(withAlpha(c2, 68), withAlpha(c2, 20), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            c.drawCircle(w * 0.22f, h * 0.20f, w * 0.62f, p)
+
+            p.shader = RadialGradient(
+                w * 0.80f, h * 0.78f, w * 0.60f,
+                intArrayOf(withAlpha(c1, 62), withAlpha(c1, 18), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            c.drawCircle(w * 0.80f, h * 0.78f, w * 0.60f, p)
+
+            p.shader = RadialGradient(
+                w * 0.50f, h * 0.40f, w * 0.44f,
+                intArrayOf(withAlpha(c3, 30), withAlpha(c2, 10), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.46f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            c.drawCircle(w * 0.50f, h * 0.40f, w * 0.44f, p)
+        }
+
+        val c = Canvas(outSharp)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
-
-        p.shader = RadialGradient(
-            w * 0.22f, h * 0.20f, w * 0.62f,
-            intArrayOf(withAlpha(c2, 68), withAlpha(c2, 20), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.48f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        c.drawCircle(w * 0.22f, h * 0.20f, w * 0.62f, p)
-
-        p.shader = RadialGradient(
-            w * 0.80f, h * 0.78f, w * 0.60f,
-            intArrayOf(withAlpha(c1, 62), withAlpha(c1, 18), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.48f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        c.drawCircle(w * 0.80f, h * 0.78f, w * 0.60f, p)
-
-        p.shader = RadialGradient(
-            w * 0.50f, h * 0.40f, w * 0.44f,
-            intArrayOf(withAlpha(c3, 30), withAlpha(c2, 10), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.46f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        c.drawCircle(w * 0.50f, h * 0.40f, w * 0.44f, p)
-
-        // Feather vignette for deep cinema OLED contrast
-        p.shader = RadialGradient(
-            w * 0.5f, h * 0.46f, w * 0.74f,
-            intArrayOf(Color.TRANSPARENT, Color.parseColor("#44020408"), Color.parseColor("#AA020408")),
-            floatArrayOf(0.42f, 0.80f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+        if (drewPhoto) {
+            // Ultra-subtle outer vignette only — preserve full 1080p photo clarity and shadows
+            p.shader = RadialGradient(
+                w * 0.5f, h * 0.48f, w * 0.76f,
+                intArrayOf(Color.TRANSPARENT, Color.parseColor("#38020408")),
+                floatArrayOf(0.58f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+        } else {
+            p.shader = RadialGradient(
+                w * 0.5f, h * 0.46f, w * 0.74f,
+                intArrayOf(Color.TRANSPARENT, Color.parseColor("#30020408"), Color.parseColor("#88020408")),
+                floatArrayOf(0.46f, 0.82f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+            applyOrderedDither4x4(outSharp)
+        }
 
         // Downscaled pre-blurred version for ultra-smooth GPU glass refraction & modal scrims
         val bw = 240
         val bh = 135
-        val small = Bitmap.createScaledBitmap(sharp, bw, bh, true)
+        val small = Bitmap.createScaledBitmap(outSharp, bw, bh, true)
         fastBoxBlurInPlace(small, radius = 10, passes = 2)
-        return sharp to small
+        return outSharp to small
     }
 
     private fun fastBoxBlurInPlace(bmp: Bitmap, radius: Int, passes: Int) {
@@ -425,15 +628,38 @@ object LiquidGlassKit {
                 Shader.TileMode.CLAMP
             )
 
-            innerRimPaint.strokeWidth = max(1.0f, strokeWidthPx * 0.85f)
+            innerRimPaint.strokeWidth = max(1.0f, strokeWidthPx * 0.9f)
             innerRimPaint.shader = LinearGradient(
                 0f, 0f, w, h,
                 intArrayOf(
-                    Color.argb(if (isFocusedState) 170 else 64, 255, 255, 255),
-                    Color.argb(14, 255, 255, 255),
-                    Color.argb(if (isFocusedState) 84 else 26, 255, 255, 255)
+                    Color.argb(if (isFocusedState) 165 else 72, 255, 255, 255),
+                    Color.argb(if (isFocusedState) 36 else 12, 255, 255, 255),
+                    Color.argb(if (isFocusedState) 68 else 22, 255, 255, 255)
                 ),
-                floatArrayOf(0f, 0.45f, 1f),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+
+            val focusCol = if (isPressedState) blendColors(focusStroke, Color.WHITE, 0.25f) else focusStroke
+            val normA = Color.alpha(normalStroke).coerceAtLeast(16)
+            val focA = Color.alpha(focusCol).coerceAtLeast(96)
+            borderPaint.strokeWidth = if (isFocusedState || isPressedState) focusStrokeWidthPx else strokeWidthPx
+            borderPaint.shader = LinearGradient(
+                0f, 0f, w * 0.85f, h * 0.85f,
+                if (isFocusedState || isPressedState) {
+                    intArrayOf(
+                        withAlpha(focusCol, min(200, (focA * 1.15f).toInt())),
+                        withAlpha(focusCol, (focA * 0.22f).toInt()),
+                        withAlpha(Color.WHITE, 28)
+                    )
+                } else {
+                    intArrayOf(
+                        withAlpha(Color.WHITE, min(92, normA + 28)),
+                        withAlpha(normalStroke, max(4, (normA * 0.15f).toInt())),
+                        withAlpha(Color.WHITE, max(10, (normA * 0.35f).toInt()))
+                    )
+                },
+                floatArrayOf(0f, 0.46f, 1f),
                 Shader.TileMode.CLAMP
             )
         }
@@ -505,23 +731,25 @@ object LiquidGlassKit {
 
             canvas.restoreToCount(saved)
 
-            // 5. Delicate hairline crystal edge (pearl white glow on focus, zero heavy yellow wireframe)
-            borderPaint.color = when {
-                isPressedState -> Color.parseColor("#E6FFFFFF")
-                isFocusedState -> focusStroke
-                else -> normalStroke
-            }
-            borderPaint.strokeWidth = if (isFocusedState || isPressedState) focusStrokeWidthPx else strokeWidthPx
+            // 5. Directional Fresnel optical hairline (never flat uniform wireframe stroke)
             val inset = borderPaint.strokeWidth * 0.5f
             rectF.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset)
             val rad = min(radiusPx, min(w, h) * 0.5f)
             canvas.drawRoundRect(rectF, rad, rad, borderPaint)
         }
 
+        override fun getOutline(outline: Outline) {
+            val b = bounds
+            if (b.isEmpty) return
+            val rad = min(radiusPx, min(b.width().toFloat(), b.height().toFloat()) * 0.5f)
+            outline.setRoundRect(b, rad)
+        }
+
         fun setStrokeColors(normal: Int, focus: Int = focusStroke) {
             if (normalStroke != normal || focusStroke != focus) {
                 normalStroke = normal
                 focusStroke = focus
+                cachedStateKey = -1
                 invalidateSelf()
             }
         }
@@ -538,13 +766,25 @@ object LiquidGlassKit {
         override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
 
+    private fun unclipParents(view: View) {
+        var p = view.parent
+        var depth = 0
+        while (p is ViewGroup && depth < 2) {
+            if (p is android.widget.ScrollView || p is android.widget.HorizontalScrollView) break
+            p.clipChildren = false
+            p.clipToPadding = false
+            p = p.parent
+            depth++
+        }
+    }
+
     fun applyGlass(
         view: View,
         radiusDp: Float = 18f,
         baseTint: Int = Color.parseColor("#44090E18"),
-        focusTint: Int = Color.parseColor("#72172338"),
+        focusTint: Int = Color.parseColor("#6A17253B"),
         normalStroke: Int = Color.parseColor("#18FFFFFF"),
-        focusStroke: Int = Color.parseColor("#A8FFFFFF"),
+        focusStroke: Int = Color.parseColor("#68BAE6FD"),
         refractStrength: Float = 1.0f,
         glassAlpha: Int = 225
     ): RefractiveGlassDrawable {
@@ -556,12 +796,24 @@ object LiquidGlassKit {
             focusTint = focusTint,
             normalStroke = normalStroke,
             focusStroke = focusStroke,
-            strokeWidthPx = max(1.0f, 0.8f * d),
-            focusStrokeWidthPx = max(1.6f, 1.3f * d),
+            strokeWidthPx = max(0.85f, 0.7f * d),
+            focusStrokeWidthPx = max(1.15f, 1.0f * d),
             refractStrength = refractStrength,
             glassAlpha = glassAlpha
         )
         view.background = dr
+        view.clipToOutline = true
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            view.defaultFocusHighlightEnabled = false
+        }
+        unclipParents(view)
+        view.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                unclipParents(v)
+            }
+
+            override fun onViewDetachedFromWindow(v: View) = Unit
+        })
         return dr
     }
 

@@ -14,6 +14,8 @@ enum class HwEventType {
     MuteToggle,
     ActionShort,
     ActionLong,
+    ActionHoldStart,
+    ActionHoldEnd,
     JackPlugged,
     JackUnplugged,
     BluetoothToggle,
@@ -31,6 +33,7 @@ public:
     bool start(Callback cb);
     void stop();
 
+    void set_hold_scrub_enabled(bool enabled) { hold_scrub_enabled_.store(enabled); }
     bool headphone_plugged() const { return hp_plugged_.load(); }
 
 private:
@@ -40,6 +43,8 @@ private:
         DevRole role;
         std::string name;
         std::string path;
+        bool exclusive_grab = false;
+        bool grabbed = false;
     };
 
     void scan_devices();
@@ -49,6 +54,7 @@ private:
     std::vector<WatchedFd> fds_;
     std::atomic<bool> running_{false};
     std::atomic<bool> hp_plugged_{false};
+    std::atomic<bool> hold_scrub_enabled_{true};
     std::thread worker_;
 };
 

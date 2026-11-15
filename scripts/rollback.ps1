@@ -276,6 +276,17 @@ if [ -f /data/local/openstation/backup/bootanimation.zip.stock ]; then
     restorecon /system/media/bootanimation.zip 2>/dev/null || true
 fi
 
+rm -f /vendor/overlay/OpenStationWebViewOverlay.apk
+if [ -f /data/local/openstation/backup/added_cacerts.list ]; then
+    while IFS= read -r cert_name; do
+        [ -z "$cert_name" ] && continue
+        case "$cert_name" in
+            */*) continue ;;
+        esac
+        rm -f "/system/etc/security/cacerts/$cert_name"
+    done < /data/local/openstation/backup/added_cacerts.list
+fi
+
 sync
 mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
 mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
@@ -372,6 +383,7 @@ else
 fi
 
 cmd package set-home-activity com.yandex.tv.home/.MainActivity 2>/dev/null || pm set-home-activity com.yandex.tv.home/.MainActivity 2>/dev/null || true
+cmd webviewupdate set-webview-implementation com.android.webview >/dev/null 2>&1 || true
 
 if [ -f /data/local/openstation/backup/orig_setup.txt ]; then
     dp=$(grep '^device_provisioned=' /data/local/openstation/backup/orig_setup.txt | cut -d= -f2 | tr -d '\r\n')
@@ -382,9 +394,10 @@ fi
 '@
 
 if ($UninstallApps) {
-    Write-Host "[3/4] Удаление OpenStationLauncher, OpenStationIME и /data/local/openstation..." -ForegroundColor Yellow
+    Write-Host "[3/4] Удаление OpenStationLauncher, OpenStationIME, Yandex WebView и /data/local/openstation..." -ForegroundColor Yellow
     try { Invoke-Adb @("uninstall", "com.openstation.launcher") } catch {}
     try { Invoke-Adb @("uninstall", "com.openstation.ime") } catch {}
+    try { Invoke-Adb @("uninstall", "com.yandex.webview") } catch {}
     Invoke-AdbSh "rm -rf /data/local/openstation"
 } else {
     Write-Host "[3/4] Пропуск удаления APK (-UninstallApps не указан; бэкап сохранён)." -ForegroundColor Gray

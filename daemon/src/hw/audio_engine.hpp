@@ -9,21 +9,30 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace openstation {
 
 class AudioEngine {
 public:
+    struct CachedSound {
+        int sample_rate = 0;
+        int channels = 0;
+        std::vector<int16_t> samples;
+    };
+
     using Pcm16kCallback = std::function<void(const int16_t* samples, size_t count, float rms)>;
     using WsAudioCallback = std::function<void(const int16_t* samples, size_t count)>;
     using SpectrumCallback = std::function<void(const std::array<float, 24>& bands)>;
     using SpectrumNeededCallback = std::function<bool()>;
+    using RealtimeFxCallback = std::function<bool(int16_t* stereo_48k, size_t frames)>;
 
     AudioEngine() = default;
     ~AudioEngine();
@@ -38,14 +47,25 @@ public:
 
     void set_ws_audio_sink(WsAudioCallback cb);
     void set_spectrum_needed_cb(SpectrumNeededCallback cb);
+    void set_realtime_fx_callback(RealtimeFxCallback cb);
+    void set_keep_stream_warm(bool warm);
+    void wake_playback();
     void push_external_spectrum(const std::array<float, 24>& bands);
+    void push_remote_audio_16k(const int16_t* samples, size_t count);
+    bool is_remote_mic_streaming() const;
+
+    static bool parse_wav_pcm16(const uint8_t* data, size_t size, CachedSound& out);
+    size_t load_sound_pack(const std::string& dir);
+    bool play_sound_name(const std::string& name, float gain = 1.0f);
 
     void play_pcm(const int16_t* samples, size_t frame_count, int sample_rate, int channels);
     void clear_playback_queue();
     void play_test_tone(int freq_hz = 440, int duration_ms = 700, bool sweep = false);
     void play_wake_chime();
+    void play_cancel_chime();
+    void play_mute_chime(bool muted);
     void play_error_chime();
-    void play_timer_alarm();
+    void play_timer_alarm(bool is_alarm = false);
     void play_startup_chime();
     void play_bt_chime(const std::string& kind);
     bool is_playing() const { return playing_active_.load(); }
@@ -76,6 +96,8 @@ private:
     SpectrumCallback spec_cb_;
     SpectrumNeededCallback spec_needed_cb_;
     std::mutex spec_needed_mu_;
+    RealtimeFxCallback realtime_fx_cb_;
+    std::mutex fx_cb_mu_;
     WsAudioCallback ws_audio_cb_;
     std::mutex ws_cb_mu_;
 
@@ -84,6 +106,8 @@ private:
     std::atomic<bool> mic_muted_{false};
     std::atomic<bool> reopen_capture_{false};
     std::atomic<bool> playing_active_{false};
+    std::atomic<bool> keep_stream_warm_{false};
+    std::atomic<bool> fx_wake_{false};
     std::atomic<uint64_t> playback_epoch_{0};
     std::atomic<int64_t> last_playback_end_ms_{0};
     std::atomic<float> playback_rms_{0.0f};
@@ -144,6 +168,14 @@ private:
     std::mutex play_mu_;
     std::condition_variable play_cv_;
     std::queue<PlayChunk> play_q_;
+
+    std::mutex remote_pcm_mu_;
+    std::deque<int16_t> remote_pcm_q_;
+    std::atomic<int64_t> last_remote_pcm_ms_{0};
+    std::atomic<uint64_t> remote_pcm_samples_{0};
+
+    std::mutex sounds_mu_;
+    std::unordered_map<std::string, CachedSound> sounds_;
 };
 
 } // namespace openstation

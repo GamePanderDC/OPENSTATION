@@ -27,6 +27,9 @@ import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -63,6 +66,13 @@ class VolumeOverlayManager(private val context: Context) {
     private var targetPct = 0f
     private var currentMuted = false
     private var barAnimator: ValueAnimator? = null
+    private var lastVolUpdateUptimeMs = 0L
+    private val pendingVolPct = AtomicInteger(-1)
+    private val pendingVolMuted = AtomicBoolean(false)
+
+    private val applyVolRunnable = Runnable {
+        applyLatestVolumeOnMain()
+    }
 
     private val hideRunnable = Runnable {
         hideOverlay(immediate = false)
@@ -74,6 +84,7 @@ class VolumeOverlayManager(private val context: Context) {
 
     fun stop() {
         mainHandler.post {
+            mainHandler.removeCallbacks(applyVolRunnable)
             mainHandler.removeCallbacks(hideRunnable)
             barAnimator?.cancel()
             barAnimator = null
@@ -83,31 +94,50 @@ class VolumeOverlayManager(private val context: Context) {
 
     fun showVolume(percent: Int, muted: Boolean) {
         val clamped = percent.coerceIn(0, 100)
-        mainHandler.post {
-            ensureViews()
-            currentMuted = muted || clamped <= 0
-            targetPct = if (muted) 0f else clamped.toFloat()
+        pendingVolPct.set(clamped)
+        pendingVolMuted.set(muted || clamped <= 0)
+        mainHandler.removeCallbacks(applyVolRunnable)
+        mainHandler.post(applyVolRunnable)
+    }
 
-            tvTitle?.text = if (currentMuted) "ЗВУК ВЫКЛЮЧЕН" else "ГРОМКОСТЬ СТАНЦИИ"
-            tvTitle?.setTextColor(Color.parseColor(if (currentMuted) "#FCA5A5" else "#94A3B8"))
-            tvSubtitle?.visibility = View.GONE
-            progressBarView?.visibility = View.VISIBLE
-            tvPercent?.visibility = View.VISIBLE
-            tvPercent?.text = if (currentMuted) "MUTE" else "$clamped%"
-            tvPercent?.setTextColor(Color.parseColor(if (currentMuted) "#F87171" else "#F8FAFC"))
+    private fun applyLatestVolumeOnMain() {
+        val rawPct = pendingVolPct.get()
+        if (rawPct < 0) return
+        val clamped = rawPct.coerceIn(0, 100)
+        val isMuted = pendingVolMuted.get() || clamped <= 0
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        val rapidBurst = attached && (nowMs - lastVolUpdateUptimeMs) < 220L
+        lastVolUpdateUptimeMs = nowMs
 
-            iconView?.setLevel(clamped, currentMuted)
-            progressBarView?.setMuted(currentMuted)
+        ensureViews()
+        currentMuted = isMuted
+        targetPct = if (isMuted) 0f else clamped.toFloat()
 
-            val accent = if (currentMuted) Color.parseColor("#88F87171") else Color.parseColor("#7800D4FF")
-            cardBg?.setStroke(dp(1), accent)
+        tvTitle?.text = if (currentMuted) "ЗВУК ВЫКЛЮЧЕН" else "ГРОМКОСТЬ СТАНЦИИ"
+        tvTitle?.setTextColor(Color.parseColor(if (currentMuted) "#FCA5A5" else "#94A3B8"))
+        tvSubtitle?.visibility = View.GONE
+        progressBarView?.visibility = View.VISIBLE
+        tvPercent?.visibility = View.VISIBLE
+        tvPercent?.text = if (currentMuted) "MUTE" else "$clamped%"
+        tvPercent?.setTextColor(Color.parseColor(if (currentMuted) "#F87171" else "#F8FAFC"))
 
+        iconView?.setLevel(clamped, currentMuted)
+        progressBarView?.setMuted(currentMuted)
+
+        val accent = if (currentMuted) Color.parseColor("#88F87171") else Color.parseColor("#7800D4FF")
+        cardBg?.setStroke(dp(1), accent)
+
+        if (rapidBurst || !attached || abs(targetPct - currentAnimPct) <= 4f) {
+            barAnimator?.cancel()
+            currentAnimPct = targetPct
+            progressBarView?.setProgress(currentAnimPct)
+        } else {
             animateProgressTo(targetPct)
-            showWindowIfNeeded()
-
-            mainHandler.removeCallbacks(hideRunnable)
-            mainHandler.postDelayed(hideRunnable, AUTO_HIDE_VOL_MS)
         }
+        showWindowIfNeeded()
+
+        mainHandler.removeCallbacks(hideRunnable)
+        mainHandler.postDelayed(hideRunnable, AUTO_HIDE_VOL_MS)
     }
 
     fun showToastPill(title: String, subtitle: String, accentHex: String = "#00D4FF", durationMs: Long = 2800L) {
@@ -139,7 +169,7 @@ class VolumeOverlayManager(private val context: Context) {
         barAnimator?.cancel()
         val start = currentAnimPct
         barAnimator = ValueAnimator.ofFloat(start, target).apply {
-            duration = 160L
+            duration = 65L
             interpolator = easeOut
             addUpdateListener { va ->
                 currentAnimPct = va.animatedValue as Float
@@ -198,7 +228,7 @@ class VolumeOverlayManager(private val context: Context) {
             text = "ГРОМКОСТЬ СТАНЦИИ"
             setTextColor(Color.parseColor("#94A3B8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            typeface = YandexFonts.textMedium(context)
             letterSpacing = 0.08f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
@@ -209,7 +239,7 @@ class VolumeOverlayManager(private val context: Context) {
             text = "0%"
             setTextColor(Color.parseColor("#F8FAFC"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            typeface = YandexFonts.displayBold(context)
             gravity = Gravity.END
             setPadding(dp(10), 0, 0, 0)
         }
@@ -224,6 +254,7 @@ class VolumeOverlayManager(private val context: Context) {
             text = ""
             setTextColor(Color.parseColor("#E2E8F0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = YandexFonts.textMedium(context)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE

@@ -23,8 +23,6 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.DecelerateInterpolator
-import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -62,6 +60,8 @@ class SetupWizardActivity : Activity() {
 
     // Stage chrome & navigation
     private lateinit var rootFrame: FrameLayout
+    private lateinit var spatialBackdrop: SpatialGlassBackdropView
+    private val lensCleanups = ArrayList<() -> Unit>()
     private lateinit var shellContainer: LinearLayout
     private lateinit var auroraView: WizardAuroraCanvasView
     private lateinit var headerOtaBadge: TextView
@@ -225,6 +225,10 @@ class SetupWizardActivity : Activity() {
     override fun onResume() {
         super.onResume()
         StationAudioService.ensureStarted(this)
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this)
+            spatialBackdrop.onHostResume()
+        }
         auroraView.startAnimations()
         remoteHeroView.startAnimations()
         wifiHeroView.startAnimations()
@@ -255,7 +259,19 @@ class SetupWizardActivity : Activity() {
         ledRingPreview.stopAnimations()
         spriteAnimators.forEach { it.cancel() }
         miscRepairHelper.dismissIfShowing()
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.onHostPause()
+        }
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        lensCleanups.forEach { it() }
+        lensCleanups.clear()
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.releaseGl()
+        }
+        super.onDestroy()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -287,11 +303,14 @@ class SetupWizardActivity : Activity() {
     }
 
     private fun finishWithFade() {
+        shellContainer.animate().cancel()
         shellContainer.animate()
             .alpha(0f)
             .scaleX(0.96f)
             .scaleY(0.96f)
-            .setDuration(220L)
+            .setDuration(MotionPrefs.dur(this, 360L))
+            .setInterpolator(MotionPrefs.easeOutCurve)
+            .withLayer()
             .withEndAction { finish() }
             .start()
     }
@@ -306,33 +325,43 @@ class SetupWizardActivity : Activity() {
         stepRail.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(380L)
-            .setInterpolator(DecelerateInterpolator(2f))
+            .setDuration(MotionPrefs.dur(this, 480L))
+            .setInterpolator(MotionPrefs.easeOutCurve)
+            .withLayer()
             .start()
         stepStage.animate()
             .alpha(1f)
             .scaleX(1f)
             .scaleY(1f)
-            .setStartDelay(60L)
-            .setDuration(420L)
-            .setInterpolator(DecelerateInterpolator(2.1f))
+            .setStartDelay(MotionPrefs.dur(this, 70L))
+            .setDuration(MotionPrefs.dur(this, 560L))
+            .setInterpolator(MotionPrefs.easeOutCurve)
+            .withLayer()
             .start()
     }
 
     private fun buildUi() {
         rootFrame = FrameLayout(this)
+        LiquidGlassKit.ensureInitialized(this)
 
-        val ivBg = ImageView(this).apply {
-            setImageResource(R.drawable.bg_tv_stage)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            alpha = 0.14f
+        spatialBackdrop = SpatialGlassBackdropView(this).apply {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            motionRateScale = MotionPrefs.glSmoothFactor(this@SetupWizardActivity)
+            LiquidGlassKit.sharpWallpaper?.let { setWallpaperBitmap(it) }
+            setSceneState(backdropBlur = 0.42f, backdropDim = 0.34f, orbEnergy = 0.40f)
         }
         auroraView = WizardAuroraCanvasView(this).apply {
+            alpha = 0.28f
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        rootFrame.addView(ivBg)
+        rootFrame.addView(spatialBackdrop)
         rootFrame.addView(auroraView)
+        rootFrame.viewTreeObserver.addOnPreDrawListener {
+            if (::spatialBackdrop.isInitialized) {
+                spatialBackdrop.syncLensesBeforeDraw(waitForFrame = true)
+            }
+            true
+        }
 
         shellContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -363,24 +392,18 @@ class SetupWizardActivity : Activity() {
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         })
         headerOtaBadge = TextView(this).apply {
-            text = if (postOtaVersion.isNotEmpty()) "🚀 OTA v$postOtaVersion" else "v$curFwVersion"
-            setTextColor(Color.parseColor(if (postOtaVersion.isNotEmpty()) "#0B0F17" else "#6EE7B7"))
             textSize = 10f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(8), dp(2), dp(8), dp(2))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(999).toFloat()
-                if (postOtaVersion.isNotEmpty()) {
-                    setColor(Color.parseColor("#E8C686"))
-                } else {
-                    setColor(Color.parseColor("#2410B981"))
-                    setStroke(dp(1), Color.parseColor("#5510B981"))
-                }
-            }
+            typeface = YandexFonts.displayBold(this@SetupWizardActivity)
+            setPadding(dp(10), dp(3), dp(10), dp(3))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(8)
             }
         }
+        applyHeaderOtaBadgeStyle(
+            badge = headerOtaBadge,
+            text = if (postOtaVersion.isNotEmpty()) "🚀 OTA v$postOtaVersion" else "v$curFwVersion",
+            isBanner = postOtaVersion.isNotEmpty()
+        )
         brandRow.addView(headerOtaBadge)
 
         val railWrap = FrameLayout(this).apply {
@@ -413,12 +436,29 @@ class SetupWizardActivity : Activity() {
         header.addView(btnSkip)
         shellContainer.addView(header)
 
-        // ===== DEDICATED SCREEN STAGE (No persistent sidebar, full-width slide) =====
+        // ===== DEDICATED SPATIAL LIQUID GLASS STAGE (Single GPU-refracting slab) =====
         stepStage = FrameLayout(this).apply {
-            clipChildren = false
+            clipChildren = true
             clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
+        lensCleanups.add(
+            spatialBackdrop.registerLens(
+                stepStage,
+                SpatialLensSpec(
+                    radiusDp = 30f,
+                    baseTint = Color.parseColor("#32081022"),
+                    focusTint = Color.parseColor("#32081022"),
+                    bevelDp = 20f,
+                    refractDp = 15f,
+                    chromaDp = 2.6f,
+                    shadowDp = 26f,
+                    rimAlpha = 0.38f,
+                    focusRimAlpha = 0.38f,
+                    blurMix = 0.94f
+                )
+            )
+        )
 
         screenViews = arrayOf(
             buildScreen1Remote(),
@@ -486,16 +526,19 @@ class SetupWizardActivity : Activity() {
 
         btnNext = TextView(this).apply {
             text = "Далее →"
-            setTextColor(Color.parseColor("#0B0F17"))
+            setTextColor(Color.parseColor("#FEF3C7"))
             textSize = 13.5f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@SetupWizardActivity)
             gravity = Gravity.CENTER
             setPadding(dp(26), dp(9), dp(26), dp(9))
-            setBackgroundResource(R.drawable.bg_pill_gold)
+            background = SpatialUiKit.makeGlassAccentSurface(this@SetupWizardActivity, radiusDp = 999f)
+            SpatialUiKit.disableSystemHighlight(this)
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(120L).start()
+                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f)
+                    .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 220L))
+                    .setInterpolator(MotionPrefs.focusCurve).start()
             }
             setOnClickListener {
                 if (currentStep < TOTAL_STEPS) {
@@ -510,19 +553,22 @@ class SetupWizardActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(28), dp(10), dp(28), dp(10))
-            setBackgroundResource(R.drawable.bg_pill_gold)
+            background = SpatialUiKit.makeGlassAccentSurface(this@SetupWizardActivity, radiusDp = 999f)
+            SpatialUiKit.disableSystemHighlight(this)
             visibility = View.GONE
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(120L).start()
+                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f)
+                    .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 220L))
+                    .setInterpolator(MotionPrefs.focusCurve).start()
             }
             setOnClickListener { completeSetupAndClose() }
             addView(TextView(this@SetupWizardActivity).apply {
                 text = "✨ Начать работу"
-                setTextColor(Color.parseColor("#0B0F17"))
+                setTextColor(Color.parseColor("#FEF3C7"))
                 textSize = 14f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = YandexFonts.displayBold(this@SetupWizardActivity)
             })
         }
 
@@ -541,12 +587,7 @@ class SetupWizardActivity : Activity() {
         clipChildren = false
         clipToPadding = false
         setPadding(dp(34), dp(24), dp(34), dp(24))
-        LiquidGlassKit.applyGlass(
-            this,
-            radiusDp = 28f,
-            baseTint = Color.parseColor("#AE080F1D"),
-            normalStroke = Color.parseColor("#34FFFFFF")
-        )
+        background = null
         layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     }
 
@@ -588,15 +629,17 @@ class SetupWizardActivity : Activity() {
         }
         tvRemoteAutoPill = TextView(this).apply {
             text = "📡 Идёт автопоиск BLE-пульта..."
-            setTextColor(Color.parseColor("#7DD3FC"))
+            setTextColor(Color.parseColor("#BAE6FD"))
             textSize = 12.5f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@SetupWizardActivity)
             setPadding(dp(14), dp(9), dp(14), dp(9))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#240EA5E9"))
-                setStroke(dp(1), Color.parseColor("#6638BDF8"))
-                cornerRadius = dp(999).toFloat()
-            }
+            background = SpatialUiKit.makeGlassSurface(
+                context = this@SetupWizardActivity,
+                radiusDp = 999f,
+                normalTop = Color.parseColor("#2A0C2438"),
+                normalBottom = Color.parseColor("#18071624"),
+                normalStroke = Color.parseColor("#587DD3FC")
+            )
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginEnd = dp(10)
             }
@@ -707,16 +750,18 @@ class SetupWizardActivity : Activity() {
 
         tvOtaStatus = TextView(this).apply {
             text = "Текущая версия: v$curFwVersion"
-            setTextColor(Color.parseColor("#E2E8F0"))
+            setTextColor(Color.parseColor("#F1F5F9"))
             textSize = 12.5f
             maxLines = 4
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(14), dp(11), dp(14), dp(11))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#240F1C33"))
-                setStroke(dp(1), Color.parseColor("#4438BDF8"))
-                cornerRadius = dp(14).toFloat()
-            }
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = SpatialUiKit.makeGlassSurface(
+                context = this@SetupWizardActivity,
+                radiusDp = 16f,
+                normalTop = Color.parseColor("#2A0F1C33"),
+                normalBottom = Color.parseColor("#18081122"),
+                normalStroke = Color.parseColor("#407DD3FC")
+            )
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(12)
                 bottomMargin = dp(14)
@@ -773,11 +818,13 @@ class SetupWizardActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#32081224"))
-                setStroke(dp(1), Color.parseColor("#3038BDF8"))
-                cornerRadius = dp(14).toFloat()
-            }
+            background = SpatialUiKit.makeGlassSurface(
+                context = this@SetupWizardActivity,
+                radiusDp = 16f,
+                normalTop = Color.parseColor("#2A0C182D"),
+                normalBottom = Color.parseColor("#18071020"),
+                normalStroke = Color.parseColor("#387DD3FC")
+            )
             layoutParams = LinearLayout.LayoutParams(dp(265), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             }
@@ -901,14 +948,16 @@ class SetupWizardActivity : Activity() {
 
         tvMusicStatus = TextView(this).apply {
             text = "Проверка аккаунта..."
-            setTextColor(Color.parseColor("#E2E8F0"))
+            setTextColor(Color.parseColor("#F1F5F9"))
             textSize = 12.5f
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#2A0C192E"))
-                setStroke(dp(1), Color.parseColor("#55A855F7"))
-                cornerRadius = dp(12).toFloat()
-            }
+            setPadding(dp(16), dp(11), dp(16), dp(11))
+            background = SpatialUiKit.makeGlassSurface(
+                context = this@SetupWizardActivity,
+                radiusDp = 16f,
+                normalTop = Color.parseColor("#2E191330"),
+                normalBottom = Color.parseColor("#1A0D0A1D"),
+                normalStroke = Color.parseColor("#4AC084FC")
+            )
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(12)
                 bottomMargin = dp(14)
@@ -1068,7 +1117,9 @@ class SetupWizardActivity : Activity() {
                 isFocusable = true
                 isClickable = true
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.25f else 1f).scaleY(if (hasFocus) 1.25f else 1f).setDuration(110L).start()
+                    v.animate().scaleX(if (hasFocus) 1.25f else 1f).scaleY(if (hasFocus) 1.25f else 1f)
+                        .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 210L))
+                        .setInterpolator(MotionPrefs.focusCurve).start()
                 }
                 setOnClickListener {
                     curRingColorHex = hex
@@ -1226,11 +1277,7 @@ class SetupWizardActivity : Activity() {
                 textSize = 11.5f
                 gravity = Gravity.CENTER
                 setPadding(dp(14), dp(8), dp(14), dp(8))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#1AFFFFFF"))
-                    setStroke(dp(1), Color.parseColor("#2AFFFFFF"))
-                    cornerRadius = dp(999).toFloat()
-                }
+                background = SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 999f)
                 layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     if (idx < 2) marginEnd = dp(10)
                 }
@@ -1255,8 +1302,8 @@ class SetupWizardActivity : Activity() {
         val startW = footerProgressFill.layoutParams.width
         if (animateTransition && startW != targetWidth) {
             progressAnim = ValueAnimator.ofInt(startW, targetWidth).apply {
-                duration = 280L
-                interpolator = DecelerateInterpolator(2f)
+                duration = MotionPrefs.dur(this@SetupWizardActivity, 480L)
+                interpolator = MotionPrefs.easeOutCurve
                 addUpdateListener { va ->
                     footerProgressFill.layoutParams = footerProgressFill.layoutParams.apply {
                         width = va.animatedValue as Int
@@ -1271,7 +1318,7 @@ class SetupWizardActivity : Activity() {
         }
 
         val forward = currentStep >= prevStep
-        val slideOffset = dp(48).toFloat() * (if (forward) 1f else -1f)
+        val slideOffset = dp(64).toFloat() * (if (forward) 1f else -1f)
 
         screenViews.forEachIndexed { idx, view ->
             view.animate().cancel()
@@ -1288,8 +1335,9 @@ class SetupWizardActivity : Activity() {
                         .translationX(0f)
                         .scaleX(1f)
                         .scaleY(1f)
-                        .setDuration(260L)
-                        .setInterpolator(DecelerateInterpolator(2.1f))
+                        .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 480L))
+                        .setInterpolator(MotionPrefs.easeOutCurve)
+                        .withLayer()
                         .start()
                 } else {
                     view.alpha = 1f
@@ -1301,8 +1349,10 @@ class SetupWizardActivity : Activity() {
                 if (animateTransition && view.visibility == View.VISIBLE) {
                     view.animate()
                         .alpha(0f)
-                        .translationX(-slideOffset * 0.6f)
-                        .setDuration(170L)
+                        .translationX(-slideOffset * 0.65f)
+                        .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 360L))
+                        .setInterpolator(MotionPrefs.easeOutCurve)
+                        .withLayer()
                         .withEndAction {
                             if (idx + 1 != currentStep) {
                                 view.visibility = View.GONE
@@ -1363,8 +1413,12 @@ class SetupWizardActivity : Activity() {
         btnStep4WakeToggle.setTextColor(Color.parseColor(if (curWakeEn) "#6EE7B7" else "#94A3B8"))
 
         btnStep4AgentToggle.text = if (curAgentMode) "🤖 Агент ADB: ВКЛ" else "🤖 Агент ADB: ВЫКЛ"
-        btnStep4AgentToggle.setBackgroundResource(if (curAgentMode) R.drawable.bg_pill_gold else R.drawable.bg_pill)
-        btnStep4AgentToggle.setTextColor(Color.parseColor(if (curAgentMode) "#0B0F17" else "#94A3B8"))
+        btnStep4AgentToggle.background = if (curAgentMode) {
+            SpatialUiKit.makeGlassAccentSurface(this, radiusDp = 999f)
+        } else {
+            SpatialUiKit.makeGlassSurface(this, radiusDp = 999f)
+        }
+        btnStep4AgentToggle.setTextColor(Color.parseColor(if (curAgentMode) "#FEF3C7" else "#94A3B8"))
 
         val parsedRingCol = try {
             Color.parseColor(curRingColorHex.ifBlank { "#00d4ff" })
@@ -1664,22 +1718,11 @@ class SetupWizardActivity : Activity() {
         renderDynamicAssistantTexts()
 
         val otaBannerVer = postOtaVersion.ifEmpty { if (postOtaPending) curFwVersion else "" }
-        if (otaBannerVer.isNotEmpty()) {
-            headerOtaBadge.text = "🚀 OTA v$otaBannerVer"
-            headerOtaBadge.setTextColor(Color.parseColor("#0B0F17"))
-            headerOtaBadge.background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E8C686"))
-                cornerRadius = dp(999).toFloat()
-            }
-        } else {
-            headerOtaBadge.text = "v$curFwVersion"
-            headerOtaBadge.setTextColor(Color.parseColor("#6EE7B7"))
-            headerOtaBadge.background = GradientDrawable().apply {
-                setColor(Color.parseColor("#2410B981"))
-                setStroke(dp(1), Color.parseColor("#5510B981"))
-                cornerRadius = dp(999).toFloat()
-            }
-        }
+        applyHeaderOtaBadgeStyle(
+            badge = headerOtaBadge,
+            text = if (otaBannerVer.isNotEmpty()) "🚀 OTA v$otaBannerVer" else "v$curFwVersion",
+            isBanner = otaBannerVer.isNotEmpty()
+        )
 
         // Screen 1 Remote
         val remoteSt = StationAudioService.instance?.bleRemoteManager?.getRemoteStatus()
@@ -1828,6 +1871,22 @@ class SetupWizardActivity : Activity() {
         }
     }
 
+    private fun applyHeaderOtaBadgeStyle(badge: TextView, text: String, isBanner: Boolean) {
+        badge.text = text
+        badge.setTextColor(Color.parseColor(if (isBanner) "#FEF3C7" else "#6EE7B7"))
+        badge.background = if (isBanner) {
+            SpatialUiKit.makeGlassAccentSurface(this, radiusDp = 999f)
+        } else {
+            SpatialUiKit.makeGlassSurface(
+                context = this,
+                radiusDp = 999f,
+                normalTop = Color.parseColor("#2A0D3226"),
+                normalBottom = Color.parseColor("#18071E17"),
+                normalStroke = Color.parseColor("#556EE7B7")
+            )
+        }
+    }
+
     private fun makeStatusBadge(txt: String): TextView = TextView(this).apply {
         text = txt
         setTextColor(Color.parseColor("#E2E8F0"))
@@ -1835,24 +1894,16 @@ class SetupWizardActivity : Activity() {
         gravity = Gravity.CENTER
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
-        setPadding(dp(12), dp(6), dp(12), dp(6))
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#24FFFFFF"))
-            setStroke(dp(1), Color.parseColor("#33FFFFFF"))
-            cornerRadius = dp(999).toFloat()
-        }
+        setPadding(dp(14), dp(6), dp(14), dp(6))
+        background = SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 999f)
     }
 
     private fun makeCompactQrBox(caption: String): Triple<ImageView, TextView, LinearLayout> {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(14), dp(8))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#1AFFFFFF"))
-                setStroke(dp(1), Color.parseColor("#2AFFFFFF"))
-                cornerRadius = dp(14).toFloat()
-            }
+            setPadding(dp(12), dp(9), dp(16), dp(9))
+            background = SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 16f)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         val whiteFrame = FrameLayout(this).apply {
@@ -1875,11 +1926,11 @@ class SetupWizardActivity : Activity() {
             text = caption
             setTextColor(Color.parseColor("#F8FAFC"))
             textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@SetupWizardActivity)
         })
         val tvUrl = TextView(this).apply {
             text = "Загрузка адреса..."
-            setTextColor(Color.parseColor("#38BDF8"))
+            setTextColor(Color.parseColor("#7DD3FC"))
             textSize = 11.5f
             setPadding(0, dp(2), 0, 0)
         }
@@ -1892,38 +1943,43 @@ class SetupWizardActivity : Activity() {
     private fun makeSummaryTile(): TextView = TextView(this).apply {
         setTextColor(Color.parseColor("#E2E8F0"))
         textSize = 11.5f
-        setPadding(dp(12), dp(10), dp(12), dp(10))
+        setPadding(dp(14), dp(11), dp(14), dp(11))
         gravity = Gravity.CENTER
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#1FFFFFFF"))
-            setStroke(dp(1), Color.parseColor("#2AFFFFFF"))
-            cornerRadius = dp(14).toFloat()
-        }
+        background = SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 16f)
     }
 
     private fun updateSummaryTile(tv: TextView, ok: Boolean, title: String, sub: String) {
         tv.text = "${if (ok) "✓" else "•"} $title\n$sub"
-        tv.setTextColor(Color.parseColor(if (ok) "#D1FAE5" else "#FDE68A"))
-        tv.background = GradientDrawable().apply {
-            setColor(Color.parseColor(if (ok) "#2010B981" else "#20F59E0B"))
-            setStroke(dp(1), Color.parseColor(if (ok) "#5510B981" else "#44F59E0B"))
-            cornerRadius = dp(14).toFloat()
-        }
+        tv.setTextColor(Color.parseColor(if (ok) "#D1FAE5" else "#FEF3C7"))
+        tv.background = SpatialUiKit.makeGlassSurface(
+            context = this,
+            radiusDp = 16f,
+            normalTop = Color.parseColor(if (ok) "#2E0D2E25" else "#2E33250C"),
+            normalBottom = Color.parseColor(if (ok) "#1C081E18" else "#1E201708"),
+            normalStroke = Color.parseColor(if (ok) "#556EE7B7" else "#55FDE68A")
+        )
     }
 
     private fun makeActionPill(label: String, goldHighlight: Boolean = false, onClick: () -> Unit): TextView = TextView(this).apply {
         text = label
-        setTextColor(Color.parseColor(if (goldHighlight) "#0B0F17" else "#F8FAFC"))
+        setTextColor(Color.parseColor(if (goldHighlight) "#FEF3C7" else "#F8FAFC"))
         textSize = 12.5f
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = YandexFonts.displayBold(this@SetupWizardActivity)
         gravity = Gravity.CENTER
         setPadding(dp(16), dp(8), dp(16), dp(8))
-        setBackgroundResource(if (goldHighlight) R.drawable.bg_pill_gold else R.drawable.bg_pill)
+        background = if (goldHighlight) {
+            SpatialUiKit.makeGlassAccentSurface(this@SetupWizardActivity, radiusDp = 999f)
+        } else {
+            SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 999f)
+        }
+        SpatialUiKit.disableSystemHighlight(this)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         isFocusable = true
         isClickable = true
         setOnFocusChangeListener { v, hasFocus ->
-            v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(120L).start()
+            v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f)
+                .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 220L))
+                .setInterpolator(MotionPrefs.focusCurve).start()
         }
         setOnClickListener { onClick() }
     }
@@ -1932,17 +1988,20 @@ class SetupWizardActivity : Activity() {
         text = label
         setTextColor(Color.parseColor("#E2E8F0"))
         textSize = 11.5f
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = YandexFonts.displayBold(this@SetupWizardActivity)
         gravity = Gravity.CENTER
         setPadding(dp(13), dp(6), dp(13), dp(6))
-        setBackgroundResource(R.drawable.bg_pill)
+        background = SpatialUiKit.makeGlassSurface(this@SetupWizardActivity, radiusDp = 999f)
+        SpatialUiKit.disableSystemHighlight(this)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             marginEnd = dp(7)
         }
         isFocusable = true
         isClickable = true
         setOnFocusChangeListener { v, hasFocus ->
-            v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(110L).start()
+            v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f)
+                .setDuration(MotionPrefs.dur(this@SetupWizardActivity, 210L))
+                .setInterpolator(MotionPrefs.focusCurve).start()
         }
         setOnClickListener { onClick() }
     }
@@ -1955,7 +2014,7 @@ class SetupWizardActivity : Activity() {
         isFrameChild: Boolean = false
     ): ImageView {
         val iv = ImageView(this).apply {
-            setImageResource(resId)
+            setSpriteDrawable(resId)
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = if (isFrameChild) {
                 FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER)

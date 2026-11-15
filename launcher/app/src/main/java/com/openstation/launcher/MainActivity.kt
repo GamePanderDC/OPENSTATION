@@ -23,9 +23,11 @@ import android.graphics.LinearGradient
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.PorterDuff
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -129,23 +131,38 @@ class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val miscRepairHelper by lazy { MiscRepairDialogHelper(this, handler) }
-    private val easeOutCubic = PathInterpolator(0.22f, 1f, 0.36f, 1f)
+    private val easeOutCubic get() = MotionPrefs.easeOutCurve
+    private val focusSpring get() = MotionPrefs.focusCurve
 
-    // Root stage & multi-screen morph architecture
+    // Root stage & Hardware OpenGL ES 3.0 Spatial Liquid Glass Compositor
     private lateinit var rootFrame: FrameLayout
-    private lateinit var ivBg: ImageView
+    private lateinit var ivBgFallback: ImageView
+    private lateinit var bgScrimFallback: View
+    private lateinit var spatialBackdrop: SpatialGlassBackdropView
     private lateinit var shellCol: LinearLayout
-    private lateinit var blurCurtainHost: FrameLayout
-    private lateinit var ivBlurCurtain: ImageView
     private lateinit var topBar: FrameLayout
     private lateinit var pagesStage: FrameLayout
     private lateinit var page0View: FrameLayout
-    private lateinit var page1Scroll: ScrollView
-    private lateinit var page2Scroll: ScrollView
-    private lateinit var tabViews: Array<TextView>
-    private lateinit var tabBgShapes: Array<GradientDrawable>
+    private lateinit var pageMusicView: FrameLayout
+    private lateinit var btnControlTrigger: LinearLayout
+    private lateinit var controlStatusDotBg: GradientDrawable
 
-    // Persistent morphing Alice Sphere + Hero Response Card + Bottom Dock Bar
+    // GPU Lens cleanup pools to prevent leaked View references across dynamic rebuilds
+    private val staticLensCleanups = ArrayList<() -> Unit>()
+    private val drawerLensCleanups = ArrayList<() -> Unit>()
+    private val customOverlayLensCleanups = ArrayList<() -> Unit>()
+    private val ctxOverlayLensCleanups = ArrayList<() -> Unit>()
+    private val infoOverlayLensCleanups = ArrayList<() -> Unit>()
+
+    // Dynamic GPU blur/dim scene animation
+    private var sceneBlurFactor = 0f
+    private var sceneDimFactor = 0.08f
+    private var sceneCoverAlpha = 0f
+    private var backdropBlurAnimator: ValueAnimator? = null
+    @Volatile private var glBackdropReady = false
+    @Volatile private var glBackdropFailed = false
+
+    // Persistent Alice Sphere + On-Demand Hero Response Glass Pill
     private lateinit var heroOrbView: AliceOrbView
     private lateinit var btnHeroOrbClick: FrameLayout
     private lateinit var heroReplyCard: LinearLayout
@@ -154,10 +171,11 @@ class MainActivity : Activity() {
     private lateinit var tvHeroState: TextView
     private lateinit var tvHeroUser: TextView
     private lateinit var tvHeroReply: TextView
-    private lateinit var tvHeroMicroHint: TextView
+    private lateinit var heroNavHintsOverlay: FrameLayout
+    private lateinit var tvHeroOkHint: TextView
     private val appAccentCache = HashMap<String, Int>()
 
-    // Screen 0: Modular Liquid Glass Home Widgets (OFF by default)
+    // Screen 0: Optional Modular Spatial Glass Home Widgets (OFF by default)
     private lateinit var wLeftCol: LinearLayout
     private lateinit var wRightCol: LinearLayout
     private lateinit var eqWidgetController: HomeEqWidgetController
@@ -176,11 +194,15 @@ class MainActivity : Activity() {
     @Volatile private var bootRevealStarted = false
     @Volatile private var returningFromExternalApp = false
 
-    // Overlays: Apps Drawer (DPAD_DOWN), Home Customization (Long-press OK), Anchored App Menu & Info
+    // Overlays: Apps Grid (DPAD_DOWN), Control Center (DPAD_RIGHT/MENU), Modals & App Context Menu
     private lateinit var appsDrawerOverlay: FrameLayout
     private lateinit var drawerScrollView: ScrollView
+    private lateinit var drawerScrollContent: LinearLayout
     private lateinit var drawerAppsGrid: GridLayout
     private lateinit var tvDrawerStatusPill: TextView
+    private lateinit var controlCenter: SpatialControlCenter
+    private lateinit var musicPlayerSheet: SpatialMusicPlayerSheet
+    private lateinit var screensaverOverlay: SpatialScreensaverOverlay
     private lateinit var homeCustomOverlay: FrameLayout
     private lateinit var appContextOverlay: FrameLayout
     private lateinit var appInfoOverlay: FrameLayout
@@ -191,7 +213,6 @@ class MainActivity : Activity() {
     private var isProgrammaticPageFocus = false
     private var activeAppEntries: List<AppEntry> = emptyList()
     private val drawerTileViews = LinkedHashMap<String, View>()
-    private val screen1TileViews = LinkedHashMap<String, View>()
     private var reorderingPkg: String? = null
     private var okLongPressFired = false
     private var okLongPressAnchor: View? = null
@@ -200,16 +221,9 @@ class MainActivity : Activity() {
         handleOkLongPress(okLongPressAnchor)
     }
 
-    private lateinit var bottomDockBar: LinearLayout
-    private lateinit var bottomDockBg: LiquidGlassKit.RefractiveGlassDrawable
-    private lateinit var dockStateDotBg: GradientDrawable
-    private lateinit var tvDockState: TextView
-    private lateinit var tvDockMusic: TextView
-    private lateinit var tvDockReply: TextView
-    private lateinit var btnDockHome: LinearLayout
-
+    // Spatial horizontal stage: 0 = Hero Sphere (center), 1 = Immersive Music (left: screenPos = -1f)
     private var currentPage = 0
-    private var currentPagePos = 0f
+    private var currentScreenPos = 0f
     private var pageAnimator: ValueAnimator? = null
     private lateinit var swipeDetector: GestureDetector
 
@@ -220,39 +234,12 @@ class MainActivity : Activity() {
     private lateinit var tvStatusLine: TextView
     private lateinit var weatherOverlay: WeatherOverlayView
 
-    // Screen 2: Duo Clock, QR & BORK Station 3D visual
-    private lateinit var tvClock: TextView
-    private lateinit var tvDate: TextView
-    private lateinit var tvIpLine: TextView
-    private lateinit var tvStationTelemetry: TextView
-    private lateinit var ivQr: ImageView
-    private lateinit var ivStationRingGlow: View
-    private var stationRingGlowBg: GradientDrawable? = null
-    private lateinit var ivDialRing: ImageView
-    private var dialAnimator: ObjectAnimator? = null
-    private lateinit var btnOtaUpdate: TextView
+    // OTA & Dialog state (Control Center & Modals)
     @Volatile private var otaLatestJson: JSONObject? = null
-    private var otaDialog: AlertDialog? = null
-    private var otaDialogStatusTv: TextView? = null
-    private var otaDialogChangelogTv: TextView? = null
-    private var otaDialogInstallBtn: android.widget.Button? = null
-    private var lastOtaBtnKey = ""
-
-    // Hardware quick-control tiles (Screen 2)
-    private lateinit var tileRing: HwTileViews
-    private lateinit var tileMute: HwTileViews
-    private lateinit var tileRoute: HwTileViews
-    private lateinit var tileEq: HwTileViews
-    private lateinit var tileVis: HwTileViews
-    private lateinit var tileCec: HwTileViews
-
-    // Quick service strip & modal state (Screen 2)
-    private lateinit var btnServicePersona: LinearLayout
-    private lateinit var tvServicePersona: TextView
-    private lateinit var btnServiceHwEq: LinearLayout
-    private lateinit var tvServiceHwEq: TextView
-    private lateinit var btnServiceTimers: LinearLayout
-    private lateinit var tvServiceTimers: TextView
+    private var otaModalOpen = false
+    private var otaModalStatusTv: TextView? = null
+    private var otaModalChangelogTv: TextView? = null
+    private var otaModalInstallBtn: TextView? = null
     private var assistantNameState = "Алиса"
     private var assistantVoiceState = "Aoede"
     private var assistantPromptState = ""
@@ -265,14 +252,10 @@ class MainActivity : Activity() {
     private var lastTimersFetchedMs: Long = 0L
     private var timersScreenRef: TimersScreen? = null
 
-    // Screen 1: Apps grid & Native Yandex Music Vinyl Hero card
-    private lateinit var appsGrid: GridLayout
-    private lateinit var ivHomeVinyl: ImageView
+    // Immersive Now Playing Screen (DPAD_LEFT from Home)
     private lateinit var ivHomeCover: ImageView
-    private lateinit var viewHomeCoverBorder: View
-    private var vinylAnimator: ObjectAnimator? = null
+    private lateinit var coverGlassFrame: FrameLayout
     private lateinit var tvHomeSourceBadge: TextView
-    private lateinit var tvHomeCodecBadge: TextView
     private lateinit var tvHomeAuthBadge: TextView
     private lateinit var tvHomeTrackTitle: TextView
     private lateinit var tvHomeTrackArtist: TextView
@@ -283,8 +266,8 @@ class MainActivity : Activity() {
     private lateinit var btnHomePlayPause: IconBtnViews
     private lateinit var btnHomeNext: IconBtnViews
     private lateinit var btnHomeLike: IconBtnViews
-    private lateinit var btnHomeOpen: LinearLayout
     private var lastHomeCoverUrl = ""
+    private var latestCoverBmp: Bitmap? = null
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
@@ -298,37 +281,35 @@ class MainActivity : Activity() {
     private var assistantState = "idle"
     private var assistantEnabled = true
     private var volumePct = 50
+    private var cecState = false
     @Volatile private var daemonOnline = false
     @Volatile private var cachedAppsJson = ""
-    private var lastQrIp: String? = null
     private var setupCompletedState: Boolean? = null
     private var wizardAutoOpenedThisRun = false
 
     // Cached formatters & diff keys to eliminate redundant main-thread allocations/relayouts
     private val ruLocale = Locale("ru")
     private val timeFmt by lazy { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    private val fullDateFmt by lazy { SimpleDateFormat("EEEE, d MMMM yyyy", ruLocale) }
     private val shortDateFmt by lazy { SimpleDateFormat("EEE, d MMM", ruLocale) }
     private val clockDate = Date()
     private var lastClockStr = ""
     private var lastShortDateStr = ""
-    private var lastFullDateStr = ""
     @Volatile private var cachedLocalIp = "127.0.0.1"
     @Volatile private var lastIpDetectMs = 0L
     private var lastIpLineStr = ""
     private var lastStatusLineText = ""
-    private var lastTelemetryText = ""
     private var lastOrbUiKey = ""
     private var lastPillsKey = ""
-    private var lastGlowStateKey = ""
-    private var lastRenderedMicMuted: Boolean? = null
-    private var lastMusicChipStr = ""
-    private var lastDockMusicStr = ""
     private var lastTrackLiked: Boolean? = null
     private var lastPlayPauseIconKey = ""
 
     private val orbStateListener = LiveOrbState.StateListener {
         renderOrbAssistantUi()
+        if (::eqWidgetController.isInitialized && eqWidgetController.rootCard.visibility == View.VISIBLE && currentPage == 0 &&
+            (LiveOrbState.musicPlaying || LiveOrbState.assistantState != "idle")) {
+            handler.removeCallbacks(widgetEqTickRunnable)
+            handler.post(widgetEqTickRunnable)
+        }
     }
 
     private val pkgReceiver = object : BroadcastReceiver() {
@@ -363,8 +344,9 @@ class MainActivity : Activity() {
     private val pollRunnable = object : Runnable {
         override fun run() {
             pollDaemonStatus()
+            val ccOpen = ::controlCenter.isInitialized && controlCenter.isOpen
             val active = (assistantState != "idle") || (LiveOrbState.assistantState != "idle") ||
-                latestMusicSnap.playing || (currentPage == 2)
+                latestMusicSnap.playing || ccOpen || otaModalOpen
             handler.postDelayed(this, if (active) 2000L else 5000L)
         }
     }
@@ -374,8 +356,9 @@ class MainActivity : Activity() {
             if (::eqWidgetController.isInitialized && eqWidgetController.rootCard.visibility == View.VISIBLE && currentPage == 0) {
                 val live = LiveOrbState.musicPlaying || LiveOrbState.assistantState != "idle"
                 eqWidgetController.updateLiveSpectrum(LiveOrbState.rawBands, live)
-                val delay = if (live) 45L else 220L
-                handler.postDelayed(this, delay)
+                if (live || eqWidgetController.hasActiveSpectrumGlow()) {
+                    handler.postDelayed(this, if (live) 45L else 120L)
+                }
             }
         }
     }
@@ -403,11 +386,27 @@ class MainActivity : Activity() {
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
                 if (abs(dx) > dp(72) && abs(dx) > abs(dy) * 1.35f && abs(velocityX) > 250f) {
-                    if (dx < 0 && currentPage < 2) {
-                        setPage(currentPage + 1, animate = true)
+                    if (dx > 0) {
+                        if (::controlCenter.isInitialized && controlCenter.isOpen) {
+                            controlCenter.close()
+                        } else if (currentPage == 0) {
+                            setPage(1, animate = true)
+                        }
                         return true
-                    } else if (dx > 0 && currentPage > 0) {
-                        setPage(currentPage - 1, animate = true)
+                    } else {
+                        if (currentPage == 1) {
+                            setPage(0, animate = true)
+                        } else if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && ::controlCenter.isInitialized && !controlCenter.isOpen) {
+                            openControlCenter()
+                        }
+                        return true
+                    }
+                } else if (abs(dy) > dp(72) && abs(dy) > abs(dx) * 1.35f && abs(velocityY) > 250f) {
+                    if (dy < 0 && currentPage == 0 && !appsDrawerOpen && (!::controlCenter.isInitialized || !controlCenter.isOpen)) {
+                        openAppsDrawer()
+                        return true
+                    } else if (dy > 0 && appsDrawerOpen) {
+                        closeAppsDrawer()
                         return true
                     }
                 }
@@ -456,7 +455,7 @@ class MainActivity : Activity() {
                 setPage(0, animate = true)
                 settleFromExternalAppIfNeeded()
                 btnHeroOrbClick.post {
-                    if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
+                    if (currentPage == 0 && !isAnyOverlayActive()) {
                         isProgrammaticPageFocus = true
                         try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
                     }
@@ -467,6 +466,14 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        AliceOrbFrames.preloadAsync(this)
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this)
+            spatialBackdrop.onHostResume()
+        }
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.onHostResume()
+        }
         StationAudioService.setLauncherForegroundState(true)
         StationAudioService.ensureStarted(this)
         LiveOrbState.addListener(orbStateListener)
@@ -485,13 +492,17 @@ class MainActivity : Activity() {
         refreshMusicSnapshotFromService()
         renderOrbAssistantUi()
         syncHomeWidgetsUi()
-        updateAnimationsState()
         handler.removeCallbacks(clockRunnable)
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(widgetEqTickRunnable)
         handler.post(clockRunnable)
         handler.post(pollRunnable)
         handler.post(widgetEqTickRunnable)
+        if (!isAnyOverlayActive() && currentPage == 0 && (currentFocus == null || currentFocus === btnControlTrigger)) {
+            btnHeroOrbClick.post {
+                if (!isAnyOverlayActive() && currentPage == 0) focusPageControlDirect(0)
+            }
+        }
     }
 
     override fun onPause() {
@@ -501,8 +512,12 @@ class MainActivity : Activity() {
         handler.removeCallbacks(clockRunnable)
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(widgetEqTickRunnable)
-        vinylAnimator?.pause()
-        dialAnimator?.pause()
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.onHostPause()
+        }
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.onHostPause()
+        }
         super.onPause()
     }
 
@@ -511,17 +526,53 @@ class MainActivity : Activity() {
         handler.removeCallbacks(okLongPressRunnable)
         LiveOrbState.removeListener(orbStateListener)
         pageAnimator?.cancel()
-        vinylAnimator?.cancel()
-        dialAnimator?.cancel()
+        backdropBlurAnimator?.cancel()
         handler.removeCallbacks(widgetEqTickRunnable)
         handler.removeCallbacks(otaDialogPollRunnable)
-        try { otaDialog?.dismiss() } catch (_: Throwable) {}
-        otaDialog = null
+        otaModalOpen = false
         miscRepairHelper.dismissIfShowing()
+        if (::screensaverOverlay.isInitialized) screensaverOverlay.release()
+        if (::musicPlayerSheet.isInitialized) musicPlayerSheet.release()
+        if (::controlCenter.isInitialized) controlCenter.release()
+        clearLensCleanups(staticLensCleanups)
+        clearLensCleanups(drawerLensCleanups)
+        clearLensCleanups(customOverlayLensCleanups)
+        clearLensCleanups(ctxOverlayLensCleanups)
+        clearLensCleanups(infoOverlayLensCleanups)
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.releaseGl()
+        }
         try { unregisterReceiver(pkgReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(musicStateReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(clockReceiver) } catch (_: Throwable) {}
         super.onDestroy()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this)
+            spatialBackdrop.onHostResume()
+        }
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.onHostResume()
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.onHostPause()
+        }
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.onHostPause()
+        }
+        LiquidGlassKit.clearStagePhotoCache()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        LiquidGlassKit.trimCachesForPressure(level, allowReleaseOrb = !hasWindowFocus())
     }
 
     override fun onBackPressed() {
@@ -549,7 +600,7 @@ class MainActivity : Activity() {
                 }
                 setPage(0, animate = true)
                 btnHeroOrbClick.post {
-                    if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
+                    if (currentPage == 0 && !isAnyOverlayActive()) {
                         isProgrammaticPageFocus = true
                         try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
                     }
@@ -596,7 +647,11 @@ class MainActivity : Activity() {
         }
 
         if (event.action == KeyEvent.ACTION_DOWN) {
-            // 1. Topmost modals & App Reordering interception
+            // 1. Screensaver & Topmost modals / App Reordering / Spatial Player Sheet interception
+            if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+                if (screensaverOverlay.handleKeyEvent(event)) return true
+                return super.dispatchKeyEvent(event)
+            }
             if (appInfoOpen || (::appInfoOverlay.isInitialized && appInfoOverlay.visibility == View.VISIBLE)) {
                 if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                     closeAppInfoModal()
@@ -618,188 +673,221 @@ class MainActivity : Activity() {
                 }
                 return super.dispatchKeyEvent(event)
             }
+            if (::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen) {
+                if (musicPlayerSheet.handleKeyEvent(event)) return true
+                return super.dispatchKeyEvent(event)
+            }
+            if (::controlCenter.isInitialized && controlCenter.isOpen) {
+                if (controlCenter.handleKeyEvent(event)) return true
+                return super.dispatchKeyEvent(event)
+            }
             if (reorderingPkg != null) {
+                val cols = if (::drawerAppsGrid.isInitialized) maxOf(1, drawerAppsGrid.columnCount) else 5
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> { moveReorderingApp(-1); return true }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> { moveReorderingApp(+1); return true }
-                    KeyEvent.KEYCODE_DPAD_UP -> { moveReorderingApp(-5); return true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { moveReorderingApp(+5); return true }
+                    KeyEvent.KEYCODE_DPAD_UP -> { moveReorderingApp(-cols); return true }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> { moveReorderingApp(+cols); return true }
                     KeyEvent.KEYCODE_BACK -> { finishReorderMode(); return true }
                 }
             }
             if (appsDrawerOpen) {
+                val cur = currentFocus
                 when (event.keyCode) {
                     KeyEvent.KEYCODE_BACK -> {
                         closeAppsDrawer()
                         return true
                     }
+                    KeyEvent.KEYCODE_MENU -> {
+                        val app = findAppForView(cur)
+                        if (app != null && cur != null) {
+                            showAnchoredAppMenu(app, cur)
+                        } else {
+                            openControlCenter()
+                        }
+                        return true
+                    }
                     KeyEvent.KEYCODE_DPAD_UP -> {
-                        val cur = currentFocus
+                        val cols = if (::drawerAppsGrid.isInitialized) maxOf(1, drawerAppsGrid.columnCount) else 5
                         val idx = activeAppEntries.indexOfFirst { drawerTileViews[it.pkg] === cur }
-                        if (idx in 0 until 5 && (!::drawerScrollView.isInitialized || drawerScrollView.scrollY <= dp(8))) {
+                        if (idx in 0 until cols && (!::drawerScrollView.isInitialized || drawerScrollView.scrollY <= dp(8))) {
                             closeAppsDrawer()
                             return true
+                        }
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (::drawerAppsGrid.isInitialized && isViewInside(cur, drawerAppsGrid)) {
+                            val scroll = if (::drawerScrollView.isInitialized) drawerScrollView else null
+                            if (focusGridDownPartialRow(drawerAppsGrid, scroll, cur)) return true
+                            val downNext = FocusFinder.getInstance().findNextFocus(scroll ?: drawerAppsGrid, cur, View.FOCUS_DOWN)
+                            if (downNext == null || downNext === cur) {
+                                nudgeView(cur, dx = 0f, dy = -dp(6).toFloat())
+                                return true
+                            }
                         }
                     }
                 }
                 return super.dispatchKeyEvent(event)
             }
 
-            // 2. Main 3-screen ergonomic navigation
+            // 2. Spatial Star Navigation (Home = 0 center, Music = 1 left, Apps = down, Control Center = right)
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> {
                     if (currentPage != 0) {
-                        setPage(0, animate = true)
+                        switchToPageContentFocused(0)
                         return true
                     }
+                }
+                KeyEvent.KEYCODE_MENU -> {
+                    openControlCenter()
+                    return true
                 }
                 KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_DOWN -> {
-                    if (currentPage < 2) {
-                        setPage(currentPage + 1, animate = true)
-                        return true
-                    }
+                    if (currentPage == 0) openControlCenter()
+                    else switchToPageContentFocused(0)
+                    return true
                 }
                 KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_UP -> {
-                    if (currentPage > 0) {
-                        setPage(currentPage - 1, animate = true)
-                        return true
-                    }
+                    if (currentPage == 0) switchToPageContentFocused(1)
+                    return true
                 }
                 else -> {
                     val cur = currentFocus
-                    if (::tabViews.isInitialized) {
-                        val tabIdx = tabViews.indexOfFirst { it === cur }
-                        if (tabIdx >= 0) {
-                            when (event.keyCode) {
-                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                    if (tabIdx < 2) switchToPageTabFocused(tabIdx + 1)
-                                    else nudgeView(tabViews[tabIdx], dx = -dp(8).toFloat(), dy = 0f)
-                                    return true
-                                }
-                                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                    if (tabIdx > 0) switchToPageTabFocused(tabIdx - 1)
-                                    else nudgeView(tabViews[tabIdx], dx = dp(8).toFloat(), dy = 0f)
-                                    return true
-                                }
-                                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                    if (tabIdx == 0) {
-                                        btnHeroOrbClick.requestFocus()
-                                    } else {
-                                        focusPageControlDirect(currentPage)
-                                    }
-                                    return true
-                                }
+                    if (::tvTopWeather.isInitialized && cur === tvTopWeather) {
+                        when (event.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                if (::btnControlTrigger.isInitialized) btnControlTrigger.requestFocus()
+                                return true
                             }
+                            KeyEvent.KEYCODE_DPAD_DOWN -> { focusPageControlDirect(currentPage); return true }
+                            KeyEvent.KEYCODE_DPAD_LEFT -> { nudgeView(tvTopWeather, dx = dp(6).toFloat(), dy = 0f); return true }
+                            KeyEvent.KEYCODE_DPAD_UP -> { nudgeView(tvTopWeather, dx = 0f, dy = dp(4).toFloat()); return true }
+                        }
+                    }
+                    if (::btnControlTrigger.isInitialized && cur === btnControlTrigger) {
+                        when (event.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                if (::tvTopWeather.isInitialized && tvTopWeather.visibility == View.VISIBLE) {
+                                    tvTopWeather.requestFocus()
+                                } else {
+                                    focusPageControlDirect(currentPage)
+                                }
+                                return true
+                            }
+                            KeyEvent.KEYCODE_DPAD_DOWN -> { focusPageControlDirect(currentPage); return true }
+                            KeyEvent.KEYCODE_DPAD_RIGHT -> { openControlCenter(); return true }
+                            KeyEvent.KEYCODE_DPAD_UP -> { nudgeView(btnControlTrigger, dx = 0f, dy = dp(4).toFloat()); return true }
                         }
                     }
 
                     if (currentPage == 0 && ::eqWidgetController.isInitialized && eqWidgetController.handleKeyEvent(event, cur)) {
                         return true
                     }
+                    val eqOwnsCur = ::eqWidgetController.isInitialized && eqWidgetController.isOwningFocus(cur)
                     when (event.keyCode) {
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (currentPage == 0) {
-                                if (cur != null && (
-                                        (::eqWidgetController.isInitialized && eqWidgetController.isOwningFocus(cur)) ||
-                                        (::wBtCard.isInitialized && cur === wBtCard) ||
-                                        (::wWeatherCard.isInitialized && cur === wWeatherCard) ||
-                                        (::wRemoteCard.isInitialized && cur === wRemoteCard)
-                                    )
-                                ) {
-                                    btnHeroOrbClick.requestFocus()
-                                    return true
+                                when {
+                                    cur === wWeatherCard -> {
+                                        if (isRemoteVisible()) wRemoteCard.requestFocus() else btnHeroOrbClick.requestFocus()
+                                        return true
+                                    }
+                                    eqOwnsCur -> {
+                                        if (isBtVisible()) wBtCard.requestFocus() else openAppsDrawer()
+                                        return true
+                                    }
+                                    cur === wBtCard || cur === wRemoteCard -> {
+                                        btnHeroOrbClick.requestFocus()
+                                        return true
+                                    }
+                                    else -> {
+                                        openAppsDrawer()
+                                        return true
+                                    }
                                 }
-                                openAppsDrawer()
+                            } else if (currentPage == 1) {
+                                openMusicPlayerSheet()
                                 return true
                             }
                         }
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (currentPage == 0) {
-                                if (cur === btnHeroOrbClick || cur == null) {
-                                    if (!focusFirstVisibleHomeWidget()) {
-                                        nudgeView(heroOrbView, dx = 0f, dy = -dp(12).toFloat())
+                                when {
+                                    cur === wBtCard -> {
+                                        if (isEqVisible()) eqWidgetController.focusDefault() else openScreensaver()
+                                        return true
                                     }
-                                    return true
+                                    cur === wRemoteCard -> {
+                                        if (isWeatherVisible()) wWeatherCard.requestFocus() else openScreensaver()
+                                        return true
+                                    }
+                                    cur === wWeatherCard || eqOwnsCur || cur === btnHeroOrbClick || cur == null -> {
+                                        openScreensaver()
+                                        return true
+                                    }
                                 }
-                            } else if (currentPage == 1 || currentPage == 2) {
-                                val scrollRoot = if (currentPage == 1) page1Scroll else page2Scroll
-                                val atTopHero = (currentPage == 1 && (
-                                    cur === btnHomeOpen || cur === btnHomeWave ||
-                                    (::btnHomePrev.isInitialized && cur === btnHomePrev.root) ||
-                                    (::btnHomePlayPause.isInitialized && cur === btnHomePlayPause.root) ||
-                                    (::btnHomeNext.isInitialized && cur === btnHomeNext.root) ||
-                                    (::btnHomeLike.isInitialized && cur === btnHomeLike.root)
-                                ))
-                                val upNext = if (cur == null || atTopHero || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather) {
+                            } else if (currentPage == 1) {
+                                openScreensaver()
+                                return true
+                            }
+                        }
+                        KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            if (currentPage == 0) {
+                                when {
+                                    (::wWeatherCard.isInitialized && cur === wWeatherCard) ||
+                                    (::wRemoteCard.isInitialized && cur === wRemoteCard) -> {
+                                        btnHeroOrbClick.requestFocus()
+                                        return true
+                                    }
+                                    cur === btnHeroOrbClick -> {
+                                        if (!focusFirstLeftWidget()) {
+                                            switchToPageContentFocused(1)
+                                        }
+                                        return true
+                                    }
+                                    else -> {
+                                        switchToPageContentFocused(1)
+                                        return true
+                                    }
+                                }
+                            } else if (currentPage == 1) {
+                                val next = if (cur == null || (::coverGlassFrame.isInitialized && cur === coverGlassFrame)) {
                                     null
                                 } else {
-                                    FocusFinder.getInstance().findNextFocus(scrollRoot, cur, View.FOCUS_UP)
+                                    FocusFinder.getInstance().findNextFocus(pageMusicView, cur, View.FOCUS_LEFT)
                                 }
-                                if (upNext == null && ::tabViews.isInitialized) {
-                                    isProgrammaticPageFocus = true
-                                    try {
-                                        tabViews[currentPage].requestFocus()
-                                    } finally {
-                                        isProgrammaticPageFocus = false
-                                    }
-                                    updateTabsAppearance(focusedIdx = currentPage)
+                                if (next == null || next === cur) {
+                                    nudgeView(cur ?: pageMusicView, dx = dp(10).toFloat(), dy = 0f)
                                     return true
                                 }
                             }
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (currentPage == 0) {
-                                if (::wBtCard.isInitialized && cur === wBtCard) {
-                                    btnHeroOrbClick.requestFocus()
-                                    return true
-                                }
-                                switchToPageTabFocused(1)
-                                return true
-                            } else if (currentPage == 1) {
-                                val next = if (cur == null || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather ||
-                                    (::btnHomeOpen.isInitialized && cur === btnHomeOpen)
-                                ) {
-                                    null
-                                } else {
-                                    FocusFinder.getInstance().findNextFocus(page1Scroll, cur, View.FOCUS_RIGHT)
-                                }
-                                if (next == null) {
-                                    switchToPageTabFocused(2)
-                                    return true
-                                }
-                            }
-                        }
-                        KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            if (currentPage == 0) {
-                                if ((::wWeatherCard.isInitialized && cur === wWeatherCard) ||
-                                    (::wRemoteCard.isInitialized && cur === wRemoteCard)
-                                ) {
-                                    btnHeroOrbClick.requestFocus()
-                                    return true
-                                }
-                                nudgeView(page0View, dx = dp(14).toFloat(), dy = 0f)
-                                return true
-                            } else if (currentPage == 2) {
-                                val next = if (cur == null || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather) {
-                                    null
-                                } else {
-                                    FocusFinder.getInstance().findNextFocus(page2Scroll, cur, View.FOCUS_LEFT)
-                                }
-                                if (next == null) {
-                                    switchToPageTabFocused(1)
-                                    return true
+                                when {
+                                    eqOwnsCur || (::wBtCard.isInitialized && cur === wBtCard) -> {
+                                        btnHeroOrbClick.requestFocus()
+                                        return true
+                                    }
+                                    cur === btnHeroOrbClick -> {
+                                        if (!focusFirstRightWidget()) {
+                                            openControlCenter()
+                                        }
+                                        return true
+                                    }
+                                    else -> {
+                                        openControlCenter()
+                                        return true
+                                    }
                                 }
                             } else if (currentPage == 1) {
-                                val next = if (cur == null || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather ||
-                                    (::btnHomeWave.isInitialized && cur === btnHomeWave) ||
-                                    (::btnHomePrev.isInitialized && cur === btnHomePrev.root)
-                                ) {
+                                val next = if (cur == null || (::btnHomeLike.isInitialized && cur === btnHomeLike.root)) {
                                     null
                                 } else {
-                                    FocusFinder.getInstance().findNextFocus(page1Scroll, cur, View.FOCUS_LEFT)
+                                    FocusFinder.getInstance().findNextFocus(pageMusicView, cur, View.FOCUS_RIGHT)
                                 }
-                                if (next == null) {
-                                    switchToPageTabFocused(0)
+                                if (next == null || next === cur) {
+                                    switchToPageContentFocused(0)
                                     return true
                                 }
                             }
@@ -811,8 +899,16 @@ class MainActivity : Activity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun focusTopBarOrNudge(cur: View?) {
+        when {
+            ::btnControlTrigger.isInitialized -> btnControlTrigger.requestFocus()
+            ::tvTopWeather.isInitialized && tvTopWeather.visibility == View.VISIBLE -> tvTopWeather.requestFocus()
+            else -> nudgeView(cur, dx = 0f, dy = dp(4).toFloat())
+        }
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_INFO) {
+        if (keyCode == KeyEvent.KEYCODE_INFO) {
             loadAndRenderApps()
             Toast.makeText(this, "Список приложений обновлён", Toast.LENGTH_SHORT).show()
             return true
@@ -825,18 +921,217 @@ class MainActivity : Activity() {
 
     private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 
-    private fun buildUi() {
-        rootFrame = FrameLayout(this)
-
-        // 0. Atmospheric Dynamic Wallpaper Backdrop + Obsidian Gradient Scrim
-        val bgLayerHost = FrameLayout(this).apply {
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+    private fun bindGlassLens(
+        cleanupPool: MutableList<() -> Unit>,
+        view: View,
+        spec: SpatialLensSpec = SpatialLensSpec(),
+        fallbackTint: Int = Color.parseColor("#660C1220")
+    ) {
+        if (::spatialBackdrop.isInitialized && !glBackdropFailed) {
+            cleanupPool.add(spatialBackdrop.registerLens(view, spec))
+        } else {
+            LiquidGlassKit.applyGlass(
+                view,
+                radiusDp = spec.radiusDp,
+                baseTint = fallbackTint,
+                focusTint = Color.parseColor("#88162338"),
+                normalStroke = Color.parseColor("#20FFFFFF"),
+                focusStroke = Color.parseColor("#66BAE6FD"),
+                refractStrength = 0.9f
             )
         }
-        ivBg = ImageView(this).apply {
+    }
+
+    private fun clearLensCleanups(pool: MutableList<() -> Unit>) {
+        pool.forEach { it() }
+        pool.clear()
+    }
+
+    private fun isAnyOverlayActive(): Boolean =
+        appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen ||
+            (::controlCenter.isInitialized && controlCenter.isOpen) ||
+            (::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen) ||
+            (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen)
+
+    private fun computeHeroOrbCenterX(w: Float, screenPos: Float, ccOpen: Boolean): Float {
+        val pageOffset = (0f - screenPos) * w
+        if (!ccOpen) return w * 0.5f + pageOffset
+        val freeLeftW = maxOf(dp(260).toFloat(), w - dp(438).toFloat())
+        return freeLeftW * 0.5f + pageOffset
+    }
+
+    private fun syncBackdropBlurForUiState(animate: Boolean = true) {
+        val ccOpen = ::controlCenter.isInitialized && controlCenter.isOpen
+        val musicSheetActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
+        val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
+        val otherOverlayActive = appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen || musicSheetActive || saverActive
+        val overlayActive = ccOpen || otherOverlayActive
+        val topTargetAlpha = if (otherOverlayActive) 0f else 1f
+        val ctrlTriggerTargetAlpha = if (overlayActive) 0f else 1f
+        val orbTargetAlpha = if (otherOverlayActive || currentPage != 0) 0f else 1f
+        val orbTargetScale = when {
+            otherOverlayActive -> 0.88f
+            ccOpen -> 0.88f
+            ::btnHeroOrbClick.isInitialized && btnHeroOrbClick.hasFocus() -> 1.045f
+            else -> 1f
+        }
+        val replyBusy = startupShowActive || LiveOrbState.assistantState != "idle" ||
+            LiveOrbState.bestDisplayText().isNotEmpty() || LiveOrbState.liveUserText.isNotBlank()
+        val hintsTargetAlpha = if (!overlayActive && currentPage == 0 && !replyBusy) 1f else 0f
+
+        if (::heroNavHintsOverlay.isInitialized) {
+            heroNavHintsOverlay.animate().cancel()
+            if (animate) {
+                heroNavHintsOverlay.animate().alpha(hintsTargetAlpha)
+                    .setDuration(MotionPrefs.dur(this, 360L)).setInterpolator(easeOutCubic).start()
+            } else {
+                heroNavHintsOverlay.alpha = hintsTargetAlpha
+            }
+        }
+
+        if (::topBar.isInitialized) {
+            topBar.animate().cancel()
+            if (animate) {
+                topBar.animate().alpha(topTargetAlpha)
+                    .setDuration(MotionPrefs.dur(this, 400L)).setInterpolator(easeOutCubic).start()
+            } else {
+                topBar.alpha = topTargetAlpha
+            }
+        }
+        if (::btnControlTrigger.isInitialized) {
+            btnControlTrigger.animate().cancel()
+            if (animate) {
+                btnControlTrigger.animate().alpha(ctrlTriggerTargetAlpha)
+                    .setDuration(MotionPrefs.dur(this, 380L)).setInterpolator(easeOutCubic).start()
+            } else {
+                btnControlTrigger.alpha = ctrlTriggerTargetAlpha
+            }
+        }
+        if (::pagesStage.isInitialized) {
+            val stageTargetAlpha = if (otherOverlayActive) 0f else 1f
+            val stageTargetScale = if (otherOverlayActive) 0.96f else 1f
+            val wantVisible = !otherOverlayActive
+            if (wantVisible && pagesStage.visibility != View.VISIBLE) {
+                pagesStage.visibility = View.VISIBLE
+            }
+            if (animate) {
+                val alreadySettled = wantVisible == (pagesStage.visibility == View.VISIBLE) &&
+                    kotlin.math.abs(pagesStage.alpha - stageTargetAlpha) < 0.01f &&
+                    kotlin.math.abs(pagesStage.scaleX - stageTargetScale) < 0.005f
+                if (!alreadySettled) {
+                    pagesStage.animate().cancel()
+                    pagesStage.animate()
+                        .alpha(stageTargetAlpha)
+                        .scaleX(stageTargetScale)
+                        .scaleY(stageTargetScale)
+                        .setDuration(MotionPrefs.dur(this, if (wantVisible) 420L else 360L))
+                        .setInterpolator(easeOutCubic)
+                        .withLayer()
+                        .withEndAction {
+                            if (pagesStage.alpha < 0.02f) {
+                                pagesStage.visibility = View.INVISIBLE
+                            }
+                        }
+                        .start()
+                }
+            } else {
+                pagesStage.animate().cancel()
+                pagesStage.alpha = stageTargetAlpha
+                pagesStage.scaleX = stageTargetScale
+                pagesStage.scaleY = stageTargetScale
+                pagesStage.visibility = if (wantVisible) View.VISIBLE else View.INVISIBLE
+            }
+        }
+        if (::heroOrbView.isInitialized && (overlayActive || currentPage == 0)) {
+            val w = (if (::rootFrame.isInitialized && rootFrame.width > 0) rootFrame.width else resources.displayMetrics.widthPixels).toFloat()
+            val heroSize = dp(304).toFloat()
+            val targetX = computeHeroOrbCenterX(w, currentScreenPos, ccOpen) - heroSize * 0.5f
+            heroOrbView.animate().cancel()
+            if (orbTargetAlpha > 0.02f) {
+                heroOrbView.wakeAnimation()
+            }
+            if (animate) {
+                heroOrbView.animate()
+                    .alpha(orbTargetAlpha)
+                    .scaleX(orbTargetScale)
+                    .scaleY(orbTargetScale)
+                    .translationX(targetX)
+                    .setDuration(MotionPrefs.dur(this, 480L))
+                    .setInterpolator(easeOutCubic)
+                    .start()
+            } else {
+                heroOrbView.alpha = orbTargetAlpha
+                heroOrbView.scaleX = orbTargetScale
+                heroOrbView.scaleY = orbTargetScale
+                heroOrbView.translationX = targetX
+            }
+        }
+
+        if (!::spatialBackdrop.isInitialized) return
+        val (targetBlur, targetDim) = when {
+            saverActive -> 0.30f to 0.20f
+            homeCustomOpen || appContextOpen || appInfoOpen -> 0.94f to 0.50f
+            musicSheetActive -> 0.96f to 0.52f
+            ccOpen -> 0.90f to 0.50f
+            appsDrawerOpen -> 0.90f to 0.42f
+            currentPage == 1 -> 0.76f to 0.36f
+            else -> 0.0f to 0.06f
+        }
+        val targetCover = if ((currentPage == 1 || musicSheetActive) && !appsDrawerOpen && !ccOpen && !saverActive && latestCoverBmp != null) 0.90f else 0f
+        sceneCoverAlpha = targetCover
+        val st = LiveOrbState.assistantState
+        val orbE = when (st) {
+            "listening", "speaking" -> 1.15f
+            "thinking", "connecting" -> 0.75f
+            else -> if (latestMusicSnap.playing) 0.45f else 0.14f
+        }
+        val orbCol = when (st) {
+            "listening" -> Color.parseColor("#2DD4BF")
+            "thinking" -> Color.parseColor("#E8C686")
+            "speaking" -> Color.parseColor("#C084FC")
+            "error" -> Color.parseColor("#F87171")
+            else -> Color.parseColor("#38BDF8")
+        }
+
+        if (!animate) {
+            backdropBlurAnimator?.cancel()
+            sceneBlurFactor = targetBlur
+            sceneDimFactor = targetDim
+            spatialBackdrop.setSceneState(sceneBlurFactor, sceneDimFactor, orbE, orbCol, sceneCoverAlpha)
+            return
+        }
+        backdropBlurAnimator?.cancel()
+        val startBlur = sceneBlurFactor
+        val startDim = sceneDimFactor
+        backdropBlurAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = MotionPrefs.dur(this@MainActivity, 520L)
+            interpolator = easeOutCubic
+            addUpdateListener { anim ->
+                val t = anim.animatedValue as Float
+                sceneBlurFactor = lerp(startBlur, targetBlur, t)
+                sceneDimFactor = lerp(startDim, targetDim, t)
+                spatialBackdrop.setSceneState(sceneBlurFactor, sceneDimFactor, orbE, orbCol, sceneCoverAlpha)
+            }
+            start()
+        }
+    }
+
+    private fun openControlCenter() {
+        if (!::controlCenter.isInitialized || controlCenter.isOpen) return
+        if (appsDrawerOpen) closeAppsDrawer(immediate = true)
+        updateControlCenterMusic()
+        updateControlCenterState()
+        controlCenter.open()
+        syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = true)
+    }
+
+    private fun buildUi() {
+        clearLensCleanups(staticLensCleanups)
+        rootFrame = FrameLayout(this)
+
+        // 0. Fallback Hardware Wallpaper Layer (hidden cleanly once GPU GLES3 compositor is active)
+        ivBgFallback = ImageView(this).apply {
             val wall = LiquidGlassKit.sharpWallpaper
             if (wall != null && !wall.isRecycled) {
                 setImageBitmap(wall)
@@ -849,13 +1144,13 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        val scrimView = View(this).apply {
+        bgScrimFallback = View(this).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(
-                    Color.parseColor("#54050811"),
-                    Color.parseColor("#18050811"),
-                    Color.parseColor("#78050811")
+                    Color.parseColor("#32040710"),
+                    Color.TRANSPARENT,
+                    Color.parseColor("#44040710")
                 )
             )
             layoutParams = FrameLayout.LayoutParams(
@@ -863,32 +1158,66 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        bgLayerHost.addView(ivBg)
-        bgLayerHost.addView(scrimView)
-        rootFrame.addView(bgLayerHost)
+        rootFrame.addView(ivBgFallback)
+        rootFrame.addView(bgScrimFallback)
 
-        // Main vertical container: Top Bar + 3-Screen Morphing Stage
+        // 0b. GPU OpenGL ES 3.0 Dual-Kawase & SDF Optical Lens Compositor
+        spatialBackdrop = SpatialGlassBackdropView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            LiquidGlassKit.sharpWallpaper?.let { setWallpaperBitmap(it) }
+            onGlStatusListener = { ready, failed ->
+                glBackdropReady = ready
+                glBackdropFailed = failed
+                handler.post {
+                    if (ready && !failed) {
+                        ivBgFallback.visibility = View.GONE
+                        bgScrimFallback.visibility = View.GONE
+                    } else {
+                        ivBgFallback.visibility = View.VISIBLE
+                        bgScrimFallback.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }
+        rootFrame.addView(spatialBackdrop)
+
+        rootFrame.viewTreeObserver.addOnPreDrawListener {
+            if (::spatialBackdrop.isInitialized && !glBackdropFailed) {
+                spatialBackdrop.syncLensesBeforeDraw(waitForFrame = true)
+            }
+            true
+        }
+
+        // Main vertical container: Minimal Header + Spatial Star Stage
         shellCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
 
-        // ===== 1. MINIMAL TOP HEADER & SCREEN TABS =====
+        // ===== 1. ULTRA-MINIMAL TOP HEADER (Borderless Clock Left · Single Glass Capsule Right) =====
         topBar = FrameLayout(this).apply {
-            setPadding(dp(26), dp(6), dp(26), dp(2))
+            setPadding(dp(34), dp(10), dp(34), dp(4))
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(46)
+                dp(54)
             )
         }
 
-        // Left: Minimal Clock + Date + Edition
         val topLeft = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -898,39 +1227,55 @@ class MainActivity : Activity() {
         tvTopClock = TextView(this).apply {
             text = "--:--"
             setTextColor(Color.parseColor("#F8FAFC"))
-            textSize = 19f
+            textSize = 25f
             maxLines = 1
             includeFontPadding = false
-            typeface = Typeface.create("sans-serif-light", Typeface.BOLD)
-            letterSpacing = 0.03f
+            typeface = YandexFonts.displayMedium(this@MainActivity)
+            letterSpacing = 0.02f
+            setShadowLayer(10f, 0f, 2f, Color.parseColor("#66000000"))
         }
         tvTopDate = TextView(this).apply {
             text = ""
-            setTextColor(Color.parseColor("#8A99AD"))
-            textSize = 11.5f
+            setTextColor(Color.parseColor("#D8E2F0"))
+            alpha = 0.78f
+            textSize = 12.5f
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 1
+            setShadowLayer(6f, 0f, 1f, Color.parseColor("#55000000"))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(10)
+                marginStart = dp(12)
             }
         }
         tvTopWeather = TextView(this).apply {
             text = ""
-            setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 11.5f
+            setTextColor(Color.parseColor("#F1F5F9"))
+            textSize = 12f
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 1
             isFocusable = true
             isClickable = true
-            setPadding(dp(10), dp(3), dp(10), dp(3))
-            LiquidGlassKit.applyGlass(
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            bindGlassLens(
+                staticLensCleanups,
                 this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#2A0A101C"),
-                focusTint = Color.parseColor("#66203048"),
-                normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#B0FFFFFF"),
-                refractStrength = 0.7f
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#20090E1B"),
+                    focusTint = Color.parseColor("#4C182946"),
+                    bevelDp = 9f,
+                    refractDp = 7f,
+                    chromaDp = 1.6f,
+                    shadowDp = 10f,
+                    rimAlpha = 0.24f,
+                    focusRimAlpha = 0.82f,
+                    blurMix = 0.85f
+                )
             )
             visibility = View.GONE
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().scaleX(if (hasFocus) 1.045f else 1f).scaleY(if (hasFocus) 1.045f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 230L)).setInterpolator(focusSpring).start()
+            }
             setOnClickListener {
                 if (LiveOrbState.weatherValid) {
                     weatherOverlay.showWeather(
@@ -942,107 +1287,73 @@ class MainActivity : Activity() {
                 }
             }
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(10)
+                marginStart = dp(12)
             }
         }
         topLeft.addView(tvTopClock)
         topLeft.addView(tvTopDate)
         topLeft.addView(tvTopWeather)
 
-        // Center: Spatial Glass Pill Switcher
-        val tabsPillGroup = LinearLayout(this).apply {
+        // Right: Non-focusable Ambient Status Capsule (tappable via pointer, never highlights on D-pad)
+        btnControlTrigger = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#38080D18"),
-                focusTint = Color.parseColor("#54101B2E"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#88FFFFFF"),
-                refractStrength = 0.9f
-            )
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        val tabTitles = arrayOf("Сфера", "Музыка и ТВ", "Станция")
-        val tmpTabs = ArrayList<TextView>(3)
-        val tmpShapes = ArrayList<GradientDrawable>(3)
-        tabTitles.forEachIndexed { idx, title ->
-            val shape = GradientDrawable().apply {
-                cornerRadius = dp(999).toFloat()
-                setColor(Color.TRANSPARENT)
-            }
-            tmpShapes.add(shape)
-            val tv = TextView(this).apply {
-                text = title
-                textSize = 12f
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setTextColor(Color.parseColor("#CBD5E1"))
-                gravity = Gravity.CENTER
-                setPadding(dp(16), dp(5), dp(16), dp(5))
-                background = shape
-                isFocusable = true
-                isClickable = true
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
-                    if (hasFocus && !isProgrammaticPageFocus && currentPage != idx) {
-                        setPage(idx, animate = true)
-                    } else {
-                        updateTabsAppearance(focusedIdx = if (hasFocus) idx else -1)
-                    }
-                }
-                setOnClickListener { setPage(idx, animate = true) }
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    if (idx < 2) marginEnd = dp(4)
-                }
-            }
-            tmpTabs.add(tv)
-            tabsPillGroup.addView(tv)
-        }
-        tabViews = tmpTabs.toTypedArray()
-        tabBgShapes = tmpShapes.toTypedArray()
-
-        // Right: Compact Status Pill (Optical Spatial Glass)
-        tvStatusLine = TextView(this).apply {
-            text = "○ Подключение..."
-            setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(12), dp(5), dp(12), dp(5))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#2A080D18"),
-                focusTint = Color.parseColor("#58172338"),
-                normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
-                refractStrength = 0.8f
-            )
-            isFocusable = true
+            setPadding(dp(13), dp(6), dp(14), dp(6))
+            isFocusable = false
+            isFocusableInTouchMode = false
             isClickable = true
-            setOnClickListener { setPage(2, animate = true) }
+            bindGlassLens(
+                staticLensCleanups,
+                this,
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#20090E1B"),
+                    focusTint = Color.parseColor("#20090E1B"),
+                    bevelDp = 10f,
+                    refractDp = 8f,
+                    chromaDp = 1.8f,
+                    shadowDp = 10f,
+                    rimAlpha = 0.26f,
+                    focusRimAlpha = 0.26f,
+                    blurMix = 0.85f
+                )
+            )
+            setOnClickListener { openControlCenter() }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.CENTER_VERTICAL
             )
         }
+        controlStatusDotBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor("#64748B"))
+        }
+        val statusDot = View(this).apply {
+            background = controlStatusDotBg
+            layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply {
+                marginEnd = dp(8)
+            }
+        }
+        tvStatusLine = TextView(this).apply {
+            text = "Ожидание"
+            setTextColor(Color.parseColor("#E2E8F0"))
+            textSize = 12f
+            typeface = YandexFonts.textMedium(this@MainActivity)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        btnControlTrigger.addView(statusDot)
+        btnControlTrigger.addView(tvStatusLine)
 
         topBar.addView(topLeft)
-        topBar.addView(tabsPillGroup)
-        topBar.addView(tvStatusLine)
+        topBar.addView(btnControlTrigger)
         shellCol.addView(topBar)
 
-        // ===== 2. MULTI-SCREEN PAGES STAGE =====
+        // ===== 2. SPATIAL HORIZONTAL STAGE (0 = Center Sphere · 1 = Left Music) =====
         pagesStage = FrameLayout(this).apply {
             clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
@@ -1051,77 +1362,116 @@ class MainActivity : Activity() {
         }
 
         page0View = buildScreen0Hero()
-        page1Scroll = buildScreen1MediaApps()
-        page2Scroll = buildScreen2StationSettings()
-        page1Scroll.setOnScrollChangeListener { _, _, _, _, _ -> LiquidGlassKit.refreshGlassTree(page1Scroll) }
-        page2Scroll.setOnScrollChangeListener { _, _, _, _, _ -> LiquidGlassKit.refreshGlassTree(page2Scroll) }
+        pageMusicView = buildScreenMusic()
 
         pagesStage.addView(page0View)
-        pagesStage.addView(page1Scroll)
-        pagesStage.addView(page2Scroll)
+        pagesStage.addView(pageMusicView)
         shellCol.addView(pagesStage)
         rootFrame.addView(shellCol)
 
-        // ===== 3. MORPHING BOTTOM DOCK BAR (Screens 1 & 2) =====
-        bottomDockBar = buildBottomDockBar()
-        rootFrame.addView(bottomDockBar)
-
-        // ===== 4. PERSISTENT MORPHING ALICE SPHERE OVERLAY =====
+        // ===== 3. PERSISTENT CENTER ALICE SPHERE =====
         heroOrbView = AliceOrbView(this).apply {
             isClickable = false
             isFocusable = false
             elevation = dp(18).toFloat()
             outlineProvider = null
-            layoutParams = FrameLayout.LayoutParams(dp(320), dp(320))
+            layoutParams = FrameLayout.LayoutParams(dp(304), dp(304))
         }
         rootFrame.addView(heroOrbView)
 
         rootFrame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            applyPageVisuals(currentPagePos)
+            applyPageVisuals(currentScreenPos)
         }
 
-        // ===== 5. BLURRED TRANSITION CURTAIN + FLAGSHIP OVERLAYS =====
-        blurCurtainHost = FrameLayout(this).apply {
-            visibility = View.GONE
-            alpha = 0f
-            elevation = dp(24).toFloat()
-            isClickable = false
-            isFocusable = false
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        ivBlurCurtain = ImageView(this).apply {
-            LiquidGlassKit.blurredWallpaper?.let { setImageBitmap(it) }
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        val blurScrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#66040812"))
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        blurCurtainHost.addView(ivBlurCurtain)
-        blurCurtainHost.addView(blurScrim)
-        rootFrame.addView(blurCurtainHost)
-
+        // ===== 4. APPS OVERLAY (DPAD_DOWN) + CONTROL CENTER (DPAD_RIGHT) + MODALS =====
         appsDrawerOverlay = buildAppsDrawerOverlay().apply {
             visibility = View.GONE
             alpha = 0f
-            elevation = dp(26).toFloat()
+            elevation = dp(25).toFloat()
         }
         rootFrame.addView(appsDrawerOverlay)
+
+        controlCenter = SpatialControlCenter(
+            this,
+            spatialBackdrop,
+            object : SpatialControlCenter.Callbacks {
+                override fun onCycleRing() = cycleRingMode()
+                override fun onToggleMic() = toggleMute()
+                override fun onCycleRoute() = cycleOutputRoute()
+                override fun onCycleEq() = cycleEqPreset()
+                override fun onCycleVisualizer() = cycleVisualizerStyle()
+                override fun onToggleCec() = toggleCec()
+                override fun onOpenMusicScreen() {
+                    controlCenter.close(immediate = false)
+                    openMusicPlayerSheet()
+                }
+                override fun onMusicPlayPause() = sendMusicAction("PLAY_PAUSE")
+                override fun onMusicNext() = sendMusicAction("NEXT")
+                override fun onOpenPersona() {
+                    controlCenter.close(immediate = true)
+                    showAssistantPersonaModal()
+                }
+                override fun onOpenHardwareEq() {
+                    controlCenter.close(immediate = true)
+                    showHardwareEqModal()
+                }
+                override fun onOpenTimers() {
+                    controlCenter.close(immediate = true)
+                    showTimersModal()
+                }
+                override fun onOpenRemoteSetup() {
+                    controlCenter.close(immediate = true)
+                    launchWithGlassTransition(null) {
+                        startActivity(Intent(this@MainActivity, RemoteSetupActivity::class.java))
+                    }
+                }
+                override fun onOpenWebQr() {
+                    controlCenter.close(immediate = true)
+                    showWebQrModal()
+                }
+                override fun onOpenCustomization() {
+                    controlCenter.close(immediate = true)
+                    showHomeCustomizationMenu()
+                }
+                override fun onOpenOta() {
+                    controlCenter.close(immediate = true)
+                    openOtaDialog()
+                }
+                override fun onOpenWizard() {
+                    controlCenter.close(immediate = true)
+                    openSetupWizard(manual = true)
+                }
+                override fun onOpenShellReset() {
+                    controlCenter.close(immediate = false)
+                    showShellResetModal()
+                }
+                override fun onOpenAndroidSettingsMenu() {
+                    controlCenter.close(immediate = true)
+                    showAndroidTvSettingsModal()
+                }
+                override fun onAnimationSpeedChanged(speed: MotionPrefs.Speed) {
+                    if (::spatialBackdrop.isInitialized) {
+                        spatialBackdrop.motionRateScale = MotionPrefs.glSmoothFactor(this@MainActivity)
+                    }
+                }
+                override fun onClosed() {
+                    syncLayerFocusability()
+                    syncBackdropBlurForUiState(animate = true)
+                    if (!homeCustomOpen && !appContextOpen && !appInfoOpen && !appsDrawerOpen &&
+                        (!::musicPlayerSheet.isInitialized || !musicPlayerSheet.isOpen) &&
+                        (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)
+                    ) {
+                        focusPageControlDirect(currentPage)
+                    }
+                }
+            }
+        )
+        rootFrame.addView(controlCenter.rootOverlay)
 
         homeCustomOverlay = FrameLayout(this).apply {
             visibility = View.GONE
             alpha = 0f
-            elevation = dp(28).toFloat()
+            elevation = dp(29).toFloat()
             isClickable = true
             isFocusable = false
             setOnClickListener { closeHomeCustomizationMenu() }
@@ -1135,7 +1485,7 @@ class MainActivity : Activity() {
         appContextOverlay = FrameLayout(this).apply {
             visibility = View.GONE
             alpha = 0f
-            elevation = dp(30).toFloat()
+            elevation = dp(31).toFloat()
             isClickable = true
             isFocusable = false
             setOnClickListener { closeAnchoredAppMenu() }
@@ -1149,7 +1499,7 @@ class MainActivity : Activity() {
         appInfoOverlay = FrameLayout(this).apply {
             visibility = View.GONE
             alpha = 0f
-            elevation = dp(31).toFloat()
+            elevation = dp(33).toFloat()
             isClickable = true
             isFocusable = false
             setOnClickListener { closeAppInfoModal() }
@@ -1165,28 +1515,34 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            elevation = dp(34).toFloat()
+            elevation = dp(35).toFloat()
         }
         rootFrame.addView(weatherOverlay)
 
-        setContentView(rootFrame)
+        musicPlayerSheet = SpatialMusicPlayerSheet(
+            context = this,
+            spatialBackdrop = spatialBackdrop,
+            closeLabel = "Свернуть",
+            isEmbeddedOverlay = true,
+            onCoverBitmapLoaded = { bmp ->
+                if (bmp != null) setHomeCoverArt(bmp)
+            },
+            onCloseRequested = { closeMusicPlayerSheet() }
+        )
+        rootFrame.addView(musicPlayerSheet.rootOverlay)
 
-        // Subtle animations for Screen 1 Vinyl & Screen 2 Dial
-        vinylAnimator = ObjectAnimator.ofFloat(ivHomeVinyl, View.ROTATION, 0f, 360f).apply {
-            duration = 9000L
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-        }
-        dialAnimator = ObjectAnimator.ofFloat(ivDialRing, View.ROTATION, 0f, 360f).apply {
-            duration = 28000L
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-        }
+        screensaverOverlay = SpatialScreensaverOverlay(
+            context = this,
+            onDismissRequested = { closeScreensaver() }
+        )
+        rootFrame.addView(screensaverOverlay.rootOverlay)
+
+        setContentView(rootFrame)
 
         syncLayerFocusability()
         setPage(0, animate = false)
         btnHeroOrbClick.post {
-            if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
+            if (currentPage == 0 && !isAnyOverlayActive()) {
                 isProgrammaticPageFocus = true
                 try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
             }
@@ -1194,32 +1550,33 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // SCREEN 0: Ultra-Clean Hero Sphere + Assistant Response Text + Subtle Navigation Strip
+    // SCREEN 0: Pure Minimalist Home Sphere (On-Demand Voice Card Only When Active)
     // -----------------------------------------------------------------------------------------
     private fun buildScreen0Hero(): FrameLayout {
         val page = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
 
-        // Borderless feathered radial focus glow behind AliceOrbView (zero circular edge line)
         val orbFocusSel = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 gradientType = GradientDrawable.RADIAL_GRADIENT
-                gradientRadius = dp(156).toFloat()
+                gradientRadius = dp(152).toFloat()
                 colors = intArrayOf(
                     Color.parseColor("#18FFFFFF"),
-                    Color.parseColor("#06FFFFFF"),
+                    Color.parseColor("#05FFFFFF"),
                     Color.TRANSPARENT
                 )
             })
             addState(intArrayOf(android.R.attr.state_pressed), GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 gradientType = GradientDrawable.RADIAL_GRADIENT
-                gradientRadius = dp(156).toFloat()
+                gradientRadius = dp(152).toFloat()
                 colors = intArrayOf(
                     Color.parseColor("#24FFFFFF"),
                     Color.parseColor("#0AFFFFFF"),
@@ -1234,13 +1591,15 @@ class MainActivity : Activity() {
         btnHeroOrbClick = FrameLayout(this).apply {
             background = orbFocusSel
             isFocusable = true
+            isFocusedByDefault = true
             isClickable = true
             setOnFocusChangeListener { _, hasFocus ->
-                if (::heroOrbView.isInitialized && currentPage == 0) {
+                if (::heroOrbView.isInitialized && currentPage == 0 && !isAnyOverlayActive()) {
                     heroOrbView.animate()
-                        .scaleX(if (hasFocus) 1.035f else 1f)
-                        .scaleY(if (hasFocus) 1.035f else 1f)
-                        .setDuration(140L)
+                        .scaleX(if (hasFocus) 1.045f else 1f)
+                        .scaleY(if (hasFocus) 1.045f else 1f)
+                        .setDuration(MotionPrefs.dur(this@MainActivity, 260L))
+                        .setInterpolator(focusSpring)
                         .start()
                 }
             }
@@ -1250,41 +1609,52 @@ class MainActivity : Activity() {
                 true
             }
             layoutParams = FrameLayout.LayoutParams(
-                dp(320),
-                dp(320),
+                dp(304),
+                dp(304),
                 Gravity.CENTER_HORIZONTAL or Gravity.TOP
-            )
+            ).apply {
+                topMargin = dp(64)
+            }
         }
         page.addView(btnHeroOrbClick)
 
-        // Spatial Glass Assistant Pill / Response Card cleanly below the 320dp Orb
+        // Materializes softly with real optical refraction ONLY when voice assistant is engaged
         heroReplyCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                staticLensCleanups,
                 this,
-                radiusDp = 20f,
-                baseTint = Color.parseColor("#44080D18"),
-                focusTint = Color.parseColor("#66111B2E"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
-                refractStrength = 0.95f
+                SpatialLensSpec(
+                    radiusDp = 24f,
+                    baseTint = Color.parseColor("#34090E1B"),
+                    focusTint = Color.parseColor("#44121C32"),
+                    bevelDp = 15f,
+                    refractDp = 13f,
+                    chromaDp = 2.5f,
+                    shadowDp = 18f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.72f,
+                    blurMix = 0.90f
+                ),
+                fallbackTint = Color.parseColor("#B0090E1B")
             )
-            setPadding(dp(20), dp(9), dp(20), dp(10))
+            setPadding(dp(22), dp(11), dp(22), dp(12))
             isFocusable = false
             isClickable = false
+            visibility = View.GONE
+            alpha = 0f
             layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(600),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER_HORIZONTAL or Gravity.TOP
             ).apply {
-                topMargin = dp(328)
+                topMargin = dp(378)
             }
         }
 
         heroReplyHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1292,7 +1662,6 @@ class MainActivity : Activity() {
                 bottomMargin = dp(5)
             }
         }
-
         heroStateDotBg = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(Color.parseColor("#38BDF8"))
@@ -1304,8 +1673,8 @@ class MainActivity : Activity() {
             }
         }
         tvHeroState = TextView(this).apply {
-            text = "${LiveOrbState.effectiveName().uppercase()} · ${LiveOrbState.readyWord(caps = true)}"
-            setTextColor(Color.parseColor("#CBD5E1"))
+            text = ""
+            setTextColor(Color.parseColor("#E2E8F0"))
             textSize = 11f
             letterSpacing = 0.08f
             typeface = Typeface.DEFAULT_BOLD
@@ -1328,13 +1697,13 @@ class MainActivity : Activity() {
         heroReplyHeader.addView(tvHeroUser)
 
         tvHeroReply = TextView(this).apply {
-            text = "Скажите «${LiveOrbState.effectiveName()}» или нажмите OK"
-            setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 13.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            text = ""
+            setTextColor(Color.parseColor("#F8FAFC"))
+            textSize = 15f
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 3
             minLines = 1
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.START
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(2).toFloat(), 1.08f)
         }
@@ -1342,20 +1711,22 @@ class MainActivity : Activity() {
         heroReplyCard.addView(tvHeroReply)
         page.addView(heroReplyCard)
 
-        // Modular Liquid Glass Home Widgets Flanking the Alice Sphere (ALL OFF by default)
+        // Modular Home Widgets Flanking the Alice Sphere (ALL OFF by default)
         wLeftCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             layoutParams = FrameLayout.LayoutParams(
-                dp(284),
+                dp(274),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.START or Gravity.TOP
             ).apply {
-                marginStart = dp(20)
-                topMargin = dp(22)
+                marginStart = dp(24)
+                topMargin = dp(26)
             }
         }
 
-        // Widget 1: Interactive Home Equalizer Console (Preset + Bass + 5 Frequency Bands)
         eqWidgetController = HomeEqWidgetController(
             context = this,
             onCyclePreset = { cycleEqPreset() },
@@ -1373,14 +1744,14 @@ class MainActivity : Activity() {
             },
             onNavigateOutUpOrDown = { dir ->
                 if (dir > 0) {
-                    if (::wBtCard.isInitialized && wBtCard.visibility == View.VISIBLE) {
+                    if (isBtVisible()) {
                         wBtCard.requestFocus()
                     } else {
                         btnHeroOrbClick.requestFocus()
                     }
                     true
                 } else {
-                    btnHeroOrbClick.requestFocus()
+                    focusTopBarOrNudge(eqWidgetController.rootCard)
                     true
                 }
             }
@@ -1392,7 +1763,6 @@ class MainActivity : Activity() {
         }
         wLeftCol.addView(eqCard)
 
-        // Widget 2: Bluetooth Speaker Quick Card
         wBtCard = makeGlassWidgetCard("#A855F7") { toggleBtFromWidget() }
         val btHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1417,7 +1787,7 @@ class MainActivity : Activity() {
         btHeader.addView(btDot)
         btHeader.addView(tvBtHead)
         tvWidgetBtState = TextView(this).apply {
-            text = "Выключен · Нажмите для пары"
+            text = "Выключен · Нажмите"
             setTextColor(Color.parseColor("#E2E8F0"))
             textSize = 11.5f
             maxLines = 1
@@ -1431,17 +1801,19 @@ class MainActivity : Activity() {
 
         wRightCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             layoutParams = FrameLayout.LayoutParams(
                 dp(248),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.END or Gravity.TOP
             ).apply {
-                marginEnd = dp(20)
-                topMargin = dp(22)
+                marginEnd = dp(24)
+                topMargin = dp(26)
             }
         }
 
-        // Widget 3: Weather Glass Card
         wWeatherCard = makeGlassWidgetCard("#94A3B8") {
             if (LiveOrbState.weatherValid) {
                 weatherOverlay.showWeather(
@@ -1459,7 +1831,7 @@ class MainActivity : Activity() {
             }
         }
         tvWidgetWeatherCity = TextView(this).apply {
-            text = "ПОГОДА СТАНЦИИ"
+            text = "ПОГОДА"
             setTextColor(Color.parseColor("#CBD5E1"))
             textSize = 10f
             letterSpacing = 0.08f
@@ -1470,7 +1842,7 @@ class MainActivity : Activity() {
             text = "--°"
             setTextColor(Color.WHITE)
             textSize = 26f
-            typeface = Typeface.create("sans-serif-light", Typeface.BOLD)
+            typeface = YandexFonts.displayRegular(this@MainActivity)
             setPadding(0, dp(2), 0, 0)
         }
         tvWidgetWeatherDesc = TextView(this).apply {
@@ -1485,13 +1857,17 @@ class MainActivity : Activity() {
         wWeatherCard.addView(tvWidgetWeatherDesc)
         wRightCol.addView(wWeatherCard)
 
-        // Widget 4: BLE Remote Finder Card
         wRemoteCard = makeGlassWidgetCard("#10D281") {
-            postAsync("http://127.0.0.1:8080/api/remote/find", "{}")
-            Toast.makeText(this, "Отправлен BLE-сигнал поиска пульта", Toast.LENGTH_SHORT).show()
+            val st = StationAudioService.instance?.bleRemoteManager?.getRemoteStatus()
+            if (st != null && st.connected) {
+                postAsync("http://127.0.0.1:8080/api/remote/find", "{}")
+                Toast.makeText(this, "Отправлен BLE-сигнал поиска пульта", Toast.LENGTH_SHORT).show()
+            } else {
+                startActivity(Intent(this, RemoteSetupActivity::class.java))
+            }
         }
         val tvRemHead = TextView(this).apply {
-            text = "ПУЛЬТ YNDX · ПОИСК"
+            text = "ПУЛЬТ ДУ · ПОИСК"
             setTextColor(Color.parseColor("#34D399"))
             textSize = 10f
             letterSpacing = 0.08f
@@ -1499,7 +1875,7 @@ class MainActivity : Activity() {
             maxLines = 1
         }
         tvWidgetRemoteState = TextView(this).apply {
-            text = "Нажмите — пульт запищит"
+            text = "Нажмите для поиска"
             setTextColor(Color.parseColor("#E2E8F0"))
             textSize = 11.5f
             maxLines = 1
@@ -1510,873 +1886,457 @@ class MainActivity : Activity() {
         wRightCol.addView(wRemoteCard)
         page.addView(wRightCol)
 
-        applyWidgetsVisibility()
-
-        // Uncluttered Subtle Bottom Navigation Cue (non-focusable, quiet Spatial OLED aesthetic)
-        tvHeroMicroHint = TextView(this).apply {
-            text = "◄ ►  экраны    ·    ▼  приложения    ·    удерж. ОК  настройка"
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 10.5f
-            letterSpacing = 0.04f
-            alpha = 0.46f
-            gravity = Gravity.CENTER
-            isFocusable = false
-            isClickable = true
-            setOnClickListener { openAppsDrawer() }
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            ).apply {
-                bottomMargin = dp(14)
-            }
-        }
-        page.addView(tvHeroMicroHint)
-
-        return page
-    }
-
-    // -----------------------------------------------------------------------------------------
-    // SCREEN 1: BORK Vinyl × Yandex Music + All TV Apps Grid (above Morphing Bottom Dock)
-    // -----------------------------------------------------------------------------------------
-    private fun buildScreen1MediaApps(): ScrollView {
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            isVerticalScrollBarEnabled = false
+        heroNavHintsOverlay = FrameLayout(this).apply {
+            clipChildren = false
             clipToPadding = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(26), dp(4), dp(26), dp(22))
-        }
 
-        // Spatial Glass Music Hero Card
-        val musicHeroCard = FrameLayout(this).apply {
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 24f,
-                baseTint = Color.parseColor("#54090E1A"),
-                focusTint = Color.parseColor("#76131D30"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
-                refractStrength = 1.0f
-            )
-            clipToOutline = true
-            elevation = dp(6).toFloat()
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(216)
-            ).apply {
-                bottomMargin = dp(16)
-            }
+        val cueTop = makeNavCue("⌃  Заставка", Gravity.CENTER_HORIZONTAL or Gravity.TOP) {
+            openScreensaver()
+        }.apply {
+            alpha = 0.44f
+            textSize = 11f
+            (layoutParams as FrameLayout.LayoutParams).topMargin = dp(18)
         }
+        val cueLeft = makeNavCue("‹  Музыка", Gravity.START or Gravity.CENTER_VERTICAL) {
+            switchToPageContentFocused(1)
+        }.apply {
+            (layoutParams as FrameLayout.LayoutParams).marginStart = dp(18)
+        }
+        val cueRight = makeNavCue("Управление  ›", Gravity.END or Gravity.CENTER_VERTICAL) {
+            openControlCenter()
+        }.apply {
+            (layoutParams as FrameLayout.LayoutParams).marginEnd = dp(18)
+        }
+        tvHeroOkHint = makeNavCue("OK · ${LiveOrbState.effectiveName()}", Gravity.CENTER_HORIZONTAL or Gravity.TOP) {
+            triggerAlice()
+        }.apply {
+            alpha = 0.50f
+            textSize = 11.5f
+            (layoutParams as FrameLayout.LayoutParams).topMargin = dp(378)
+        }
+        val cueBottom = makeNavCue("⌄  Приложения", Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM) {
+            openAppsDrawer()
+        }.apply {
+            (layoutParams as FrameLayout.LayoutParams).bottomMargin = dp(12)
+        }
+        heroNavHintsOverlay.addView(cueTop)
+        heroNavHintsOverlay.addView(cueLeft)
+        heroNavHintsOverlay.addView(cueRight)
+        heroNavHintsOverlay.addView(tvHeroOkHint)
+        heroNavHintsOverlay.addView(cueBottom)
+        page.addView(heroNavHintsOverlay)
 
-        val ivWaveBackdrop = ImageView(this).apply {
-            setImageResource(R.drawable.hero_wave_texture)
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            alpha = 0.24f
+        applyWidgetsVisibility()
+        return page
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // SCREEN 1 (LEFT): Immersive Spatial Now Playing (Zero Clutter · Dynamic Album Backdrop)
+    // -----------------------------------------------------------------------------------------
+    private fun buildScreenMusic(): FrameLayout {
+        val page = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        val heroScrim = View(this).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(
-                    Color.parseColor("#C8080D18"),
-                    Color.parseColor("#78080D18"),
-                    Color.parseColor("#AA080D18")
+
+        val stageRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = FrameLayout.LayoutParams(
+                dp(840),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                bottomMargin = dp(18)
+            }
+        }
+
+        // Left: Flagship Spatial Liquid Glass Album Cover Card (tap/OK opens Player)
+        coverGlassFrame = FrameLayout(this).apply {
+            id = View.generateViewId()
+            bindGlassLens(
+                staticLensCleanups,
+                this,
+                SpatialLensSpec(
+                    radiusDp = 28f,
+                    baseTint = Color.parseColor("#2A0B101C"),
+                    focusTint = Color.parseColor("#3E142038"),
+                    bevelDp = 16f,
+                    refractDp = 12f,
+                    chromaDp = 2.0f,
+                    shadowDp = 24f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.88f,
+                    blurMix = 0.88f
                 )
             )
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        musicHeroCard.addView(ivWaveBackdrop)
-        musicHeroCard.addView(heroScrim)
-
-        val heroContent = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        val heroBadgeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        tvHomeSourceBadge = TextView(this).apply {
-            text = "ЯНДЕКС МУЗЫКА"
-            setTextColor(Color.parseColor("#E2E8F0"))
-            textSize = 10f
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.08f
-            setPadding(dp(10), dp(3), dp(10), dp(3))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#1AFFFFFF"))
-                setStroke(dp(1), Color.parseColor("#22FFFFFF"))
-                cornerRadius = dp(999).toFloat()
+            clipChildren = true
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(28).toFloat())
+                }
             }
-        }
-        tvHomeCodecBadge = TextView(this).apply {
-            text = ""
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 10f
-            typeface = Typeface.DEFAULT_BOLD
-            visibility = View.GONE
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#2238BDF8"))
-                setStroke(dp(1), Color.parseColor("#4438BDF8"))
-                cornerRadius = dp(999).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(6)
-            }
-        }
-        tvHomeAuthBadge = TextView(this).apply {
-            text = "Проверка входа..."
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(8)
-                marginEnd = dp(8)
-            }
-        }
-        heroBadgeRow.addView(tvHomeSourceBadge)
-        heroBadgeRow.addView(tvHomeCodecBadge)
-        heroBadgeRow.addView(tvHomeAuthBadge)
-        heroContent.addView(heroBadgeRow)
-
-        val heroMidRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        }
-        val vinylFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(168), dp(116))
-        }
-        ivHomeVinyl = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_vinyl_disc)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(106), dp(106), Gravity.CENTER_VERTICAL).apply {
-                marginStart = dp(52)
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { openMusicPlayerSheet() }
+            layoutParams = LinearLayout.LayoutParams(dp(256), dp(256)).apply {
+                gravity = Gravity.CENTER_VERTICAL
             }
         }
         ivHomeCover = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_ym_emblem)
-            scaleType = ImageView.ScaleType.FIT_CENTER
+            setSpriteDrawable(R.drawable.sprite_ym_emblem)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleX = 1.0f
+            scaleY = 1.0f
             clipToOutline = true
-            layoutParams = FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER_VERTICAL)
-        }
-        viewHomeCoverBorder = View(this).apply {
-            visibility = View.GONE
-            background = GradientDrawable().apply {
-                setColor(Color.TRANSPARENT)
-                setStroke(dp(1), Color.parseColor("#28FFFFFF"))
-                cornerRadius = dp(14).toFloat()
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(28).toFloat())
+                }
             }
-            layoutParams = FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER_VERTICAL)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
-        vinylFrame.addView(ivHomeVinyl)
-        vinylFrame.addView(ivHomeCover)
-        vinylFrame.addView(viewHomeCoverBorder)
+        val coverGlassBevel = View(this).apply {
+            isFocusable = false
+            isClickable = false
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(
+                    Color.parseColor("#2AFFFFFF"),
+                    Color.parseColor("#05FFFFFF"),
+                    Color.parseColor("#00000000"),
+                    Color.parseColor("#18000000")
+                )
+            ).apply {
+                cornerRadius = dp(28).toFloat()
+                setStroke(dp(1), Color.parseColor("#44FFFFFF"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        coverGlassFrame.setOnFocusChangeListener { v, hasFocus ->
+            v.animate().scaleX(if (hasFocus) 1.045f else 1f).scaleY(if (hasFocus) 1.045f else 1f)
+                .setDuration(MotionPrefs.dur(this@MainActivity, 240L)).setInterpolator(focusSpring).start()
+            coverGlassBevel.background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(
+                    Color.parseColor(if (hasFocus) "#42FFFFFF" else "#2AFFFFFF"),
+                    Color.parseColor("#05FFFFFF"),
+                    Color.parseColor("#00000000"),
+                    Color.parseColor("#18000000")
+                )
+            ).apply {
+                cornerRadius = dp(28).toFloat()
+                setStroke(
+                    if (hasFocus) dp(2) else dp(1),
+                    Color.parseColor(if (hasFocus) "#AAFFFFFF" else "#44FFFFFF")
+                )
+            }
+        }
+        coverGlassFrame.addView(ivHomeCover)
+        coverGlassFrame.addView(coverGlassBevel)
+        stageRow.addView(coverGlassFrame)
 
-        val metaCol = LinearLayout(this).apply {
+        // Right: Typography & Tactile Optical Transport Orbs
+        val infoCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(16)
+                marginStart = dp(44)
             }
         }
-        tvHomeTrackTitle = TextView(this).apply {
-            text = "Моя волна — поток музыки"
-            setTextColor(Color.WHITE)
-            textSize = 21f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+
+        val badgeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(10)
+            }
+        }
+        tvHomeSourceBadge = TextView(this).apply {
+            text = "ЯНДЕКС МУЗЫКА"
+            setTextColor(Color.parseColor("#CBD5E1"))
+            textSize = 10.5f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.10f
+        }
+        tvHomeAuthBadge = TextView(this).apply {
+            text = ""
+            setTextColor(Color.parseColor("#8A99AD"))
+            textSize = 11f
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(12)
+            }
+        }
+        badgeRow.addView(tvHomeSourceBadge)
+        badgeRow.addView(tvHomeAuthBadge)
+        infoCol.addView(badgeRow)
+
+        tvHomeTrackTitle = TextView(this).apply {
+            text = "Моя волна"
+            setTextColor(Color.WHITE)
+            textSize = 30f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(dp(2).toFloat(), 1.04f)
+            setShadowLayer(12f, 0f, 3f, Color.parseColor("#55000000"))
         }
         tvHomeTrackArtist = TextView(this).apply {
-            text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или жмите «Моя волна»"
+            text = "Нажмите «Моя волна» для запуска потока"
             setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 12.5f
+            textSize = 15.5f
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(3), 0, dp(10))
+            setPadding(0, dp(6), 0, dp(14))
         }
+        infoCol.addView(tvHomeTrackTitle)
+        infoCol.addView(tvHomeTrackArtist)
+
         pbHomeTrack = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progress = 0
             progressDrawable = getDrawable(R.drawable.bg_progress_gold)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4))
         }
         tvHomeTrackTime = TextView(this).apply {
-            text = "00:00 / 00:00"
+            text = ""
             setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11f
-            setPadding(0, dp(4), 0, 0)
+            textSize = 12f
+            typeface = YandexFonts.textMedium(this@MainActivity)
+            visibility = View.GONE
+            setPadding(0, dp(6), 0, 0)
         }
-        metaCol.addView(tvHomeTrackTitle)
-        metaCol.addView(tvHomeTrackArtist)
-        metaCol.addView(pbHomeTrack)
-        metaCol.addView(tvHomeTrackTime)
-
-        heroMidRow.addView(vinylFrame)
-        heroMidRow.addView(metaCol)
-        heroContent.addView(heroMidRow)
+        infoCol.addView(pbHomeTrack)
+        infoCol.addView(tvHomeTrackTime)
 
         val ctrlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-        }
-        btnHomeWave = makeTextIconPill(R.drawable.ic_wave, "Моя волна", gold = true) {
-            sendMusicServiceCmd("play_my_wave")
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
-                marginEnd = dp(10)
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(20)
             }
         }
+        btnHomeWave = makeTextIconPill(R.drawable.ic_wave, "Моя волна", accent = true) {
+            sendMusicServiceCmd("play_my_wave")
+        }.apply {
+            id = View.generateViewId()
+            nextFocusLeftId = coverGlassFrame.id
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+                marginEnd = dp(12)
+            }
+        }
+        coverGlassFrame.nextFocusRightId = btnHomeWave.id
         btnHomePrev = makeIconBtn(R.drawable.ic_prev, Color.WHITE) { sendMusicAction("PREV") }
         btnHomePlayPause = makeIconBtn(R.drawable.ic_play, Color.WHITE) { sendMusicAction("PLAY_PAUSE") }
         btnHomeNext = makeIconBtn(R.drawable.ic_next, Color.WHITE) { sendMusicAction("NEXT") }
         btnHomeLike = makeIconBtn(R.drawable.ic_heart_outline, null) { sendMusicAction("LIKE") }
 
         ctrlRow.addView(btnHomeWave)
-        listOf(btnHomePrev, btnHomePlayPause, btnHomeNext, btnHomeLike).forEach {
-            it.root.layoutParams = LinearLayout.LayoutParams(dp(44), dp(36)).apply {
-                marginEnd = dp(8)
+        val transportButtons = listOf(btnHomePrev, btnHomePlayPause, btnHomeNext, btnHomeLike)
+        transportButtons.forEachIndexed { idx, btn ->
+            btn.root.layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply {
+                marginEnd = if (idx < transportButtons.lastIndex) dp(10) else 0
             }
-            ctrlRow.addView(it.root)
+            ctrlRow.addView(btn.root)
         }
-        ctrlRow.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-        })
-        btnHomeOpen = makeTextIconPill(R.drawable.ic_open_external, "Полный плеер", gold = false) {
-            launchYandexMusic()
+        infoCol.addView(ctrlRow)
+
+        stageRow.addView(infoCol)
+        page.addView(stageRow)
+
+        val cueMusicTop = makeNavCue("⌃  Заставка", Gravity.CENTER_HORIZONTAL or Gravity.TOP) {
+            openScreensaver()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34))
+            alpha = 0.44f
+            textSize = 11f
+            (layoutParams as FrameLayout.LayoutParams).topMargin = dp(16)
         }
-        ctrlRow.addView(btnHomeOpen)
-        heroContent.addView(ctrlRow)
-
-        musicHeroCard.addView(heroContent)
-        col.addView(musicHeroCard)
-
-        // Applications Grid
-        col.addView(makeSectionTitle("Приложения", R.drawable.ic_yaos_apps))
-        appsGrid = GridLayout(this).apply {
-            columnCount = 5
-            useDefaultMargins = false
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+        val cueMusicBottom = makeNavCue("⌄  Плеер", Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM) {
+            openMusicPlayerSheet()
+        }.apply {
+            alpha = 0.62f
+            (layoutParams as FrameLayout.LayoutParams).bottomMargin = dp(12)
         }
-        col.addView(appsGrid)
-
-        scroll.addView(col)
-        return scroll
+        page.addView(cueMusicTop)
+        page.addView(cueMusicBottom)
+        return page
     }
 
-    // -----------------------------------------------------------------------------------------
-    // SCREEN 2: BORK × Duo Max Hardware Showcase + QR + Hardware Tiles + Android TV Settings
-    // -----------------------------------------------------------------------------------------
-    private fun buildScreen2StationSettings(): ScrollView {
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            isVerticalScrollBarEnabled = false
-            clipToPadding = false
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(26), dp(4), dp(26), dp(22))
-        }
-
-        val topSplit = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            weightSum = 1.0f
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(264)
-            ).apply {
-                bottomMargin = dp(16)
-            }
-        }
-
-        // Left Card: Clock + QR + Clean Hardware Render
-        val stationCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 22f,
-                baseTint = Color.parseColor("#54090E1A"),
-                focusTint = Color.parseColor("#76131D30"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
-                refractStrength = 1.0f
-            )
-            elevation = dp(6).toFloat()
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.44f).apply {
-                marginEnd = dp(14)
-            }
-        }
-
-        val clockStationRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        }
-        val clockQrCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        tvClock = TextView(this).apply {
-            text = "--:--"
-            setTextColor(Color.WHITE)
-            textSize = 42f
-            maxLines = 1
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif-light", Typeface.BOLD)
-            letterSpacing = 0.02f
-        }
-        tvDate = TextView(this).apply {
-            text = "..."
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 12f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(2), 0, dp(10))
-        }
-
-        val qrRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val qrFrame = LinearLayout(this).apply {
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            alpha = 0.94f
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F1F5F9"))
-                cornerRadius = dp(10).toFloat()
-            }
-        }
-        ivQr = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        qrFrame.addView(ivQr)
-        val qrTxtCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), 0, 0, 0)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val tvQrLbl = TextView(this).apply {
-            text = "Веб-пульт"
-            setTextColor(Color.parseColor("#F1F5F9"))
-            textSize = 12.5f
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        tvIpLine = TextView(this).apply {
-            text = "127.0.0.1:8080"
-            setTextColor(Color.parseColor("#38BDF8"))
-            textSize = 10.5f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        val tvQrSub = TextView(this).apply {
-            text = "Откройте на телефоне"
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 10f
-        }
-        qrTxtCol.addView(tvQrLbl)
-        qrTxtCol.addView(tvIpLine)
-        qrTxtCol.addView(tvQrSub)
-        qrRow.addView(qrFrame)
-        qrRow.addView(qrTxtCol)
-
-        clockQrCol.addView(tvClock)
-        clockQrCol.addView(tvDate)
-        clockQrCol.addView(qrRow)
-
-        val stationVisualBox = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(128), dp(128))
-        }
-        stationRingGlowBg = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.parseColor("#24FFFFFF"), Color.parseColor("#1838BDF8"))
-        ).apply {
-            shape = GradientDrawable.OVAL
-        }
-        ivStationRingGlow = View(this).apply {
-            background = stationRingGlowBg
-            layoutParams = FrameLayout.LayoutParams(dp(102), dp(102), Gravity.CENTER)
-        }
-        ivDialRing = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_bork_dial_ring)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            visibility = View.GONE
-            alpha = 0f
-            layoutParams = FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER)
-        }
-        val ivStationHero = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_station_hero)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(116), dp(116), Gravity.CENTER)
-        }
-        stationVisualBox.addView(ivStationRingGlow)
-        stationVisualBox.addView(ivDialRing)
-        stationVisualBox.addView(ivStationHero)
-
-        clockStationRow.addView(clockQrCol)
-        clockStationRow.addView(stationVisualBox)
-        stationCard.addView(clockStationRow)
-
-        val divider = View(this).apply {
-            setBackgroundColor(Color.parseColor("#1AFFFFFF"))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(8)
-                bottomMargin = dp(8)
-            }
-        }
-        tvStationTelemetry = TextView(this).apply {
-            text = "Ожидание системы..."
-            setTextColor(Color.parseColor("#CBD5E1"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(8)
-            }
-        }
-        val btnWizard = TextView(this).apply {
-            text = "Мастер"
-            setTextColor(Color.parseColor("#090D16"))
-            textSize = 10.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(11), dp(4), dp(11), dp(4))
-            setBackgroundResource(R.drawable.bg_pill_gold)
-            isFocusable = true
-            isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
-            }
-            setOnClickListener { openSetupWizard(manual = true) }
-        }
-        val telemetryRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        btnOtaUpdate = TextView(this).apply {
-            text = "OTA"
-            setTextColor(Color.parseColor("#E2E8F0"))
-            textSize = 10.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(10), dp(4), dp(10), dp(4))
-            setBackgroundResource(R.drawable.bg_pill)
-            isFocusable = true
-            isClickable = true
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                marginEnd = dp(6)
-            }
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(90).start()
-            }
-            setOnClickListener { openOtaDialog() }
-        }
-        telemetryRow.addView(tvStationTelemetry)
-        telemetryRow.addView(btnOtaUpdate)
-        telemetryRow.addView(btnWizard)
-        stationCard.addView(divider)
-        stationCard.addView(telemetryRow)
-        topSplit.addView(stationCard)
-
-        // Right Card: 6 Consumer Quick Controls (3 rows x 2 columns)
-        val hwPanel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(14))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 22f,
-                baseTint = Color.parseColor("#54090E1A"),
-                focusTint = Color.parseColor("#76131D30"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
-                refractStrength = 1.0f
-            )
-            elevation = dp(6).toFloat()
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.56f)
-        }
-        hwPanel.addView(makeSectionTitle("Быстрое управление", R.drawable.ic_hw_chip))
-
-        tileRing = makeHwTile(R.drawable.ic_hw_ring, "Кольцо: Спектр") { cycleRingMode() }
-        tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
-        tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
-        tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
-        tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
-
-        val hwGrid = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-            )
-        }
-        val hwTiles = listOf(tileRing, tileMute, tileRoute, tileEq, tileVis, tileCec)
-        for (r in 0 until 3) {
-            val rowLayout = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                ).apply {
-                    if (r < 2) bottomMargin = dp(8)
-                }
-            }
-            for (c in 0 until 2) {
-                val tile = hwTiles[r * 2 + c]
-                tile.root.layoutParams = LinearLayout.LayoutParams(
-                    0,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    1f
-                ).apply {
-                    if (c == 0) marginEnd = dp(8)
-                }
-                rowLayout.addView(tile.root)
-            }
-            hwGrid.addView(rowLayout)
-        }
-        hwPanel.addView(hwGrid)
-        topSplit.addView(hwPanel)
-        col.addView(topSplit)
-
-        // Quick Services Strip (Persona, SY6045S DSP, Timers & Alarms, BLE Remote)
-        val serviceRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(36)
-            ).apply {
-                topMargin = dp(8)
-                bottomMargin = dp(2)
-            }
-        }
-        fun makeServiceChip(initialText: String, accentHex: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
-            val tv = TextView(this).apply {
-                text = initialText
-                setTextColor(Color.parseColor(accentHex))
-                textSize = 11.5f
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-            }
-            val box = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                setPadding(dp(12), dp(4), dp(12), dp(4))
-                isFocusable = true
-                isClickable = true
-                LiquidGlassKit.applyGlass(
-                    this,
-                    radiusDp = 999f,
-                    baseTint = Color.parseColor("#5C0B1324"),
-                    focusTint = Color.parseColor("#99192948"),
-                    normalStroke = Color.parseColor("#24FFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
-                )
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(90).start()
-                }
-                setOnClickListener { onClick() }
-                addView(tv)
-            }
-            return box to tv
-        }
-        val (pBox, pTv) = makeServiceChip("🎙 Имя: ${LiveOrbState.effectiveName()}", "#7DD3FC") {
-            showAssistantPersonaModal()
-        }
-        btnServicePersona = pBox
-        tvServicePersona = pTv
-        pBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-            marginEnd = dp(6)
-        }
-        serviceRow.addView(pBox)
-
-        val (hwBox, hwTv) = makeServiceChip("🎚 DSP SY6045S", "#FFE8C686") {
-            showHardwareEqModal()
-        }
-        btnServiceHwEq = hwBox
-        tvServiceHwEq = hwTv
-        hwBox.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
-        hwBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-            marginEnd = dp(6)
-        }
-        serviceRow.addView(hwBox)
-
-        val (tmBox, tmTv) = makeServiceChip("⏱ Таймеры и будильники", "#E2E8F0") {
-            showTimersModal()
-        }
-        btnServiceTimers = tmBox
-        tvServiceTimers = tmTv
-        tmBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-            marginEnd = dp(6)
-        }
-        serviceRow.addView(tmBox)
-
-        val (remBox, _) = makeServiceChip("🎮 Пульт BLE", "#CBD5E1") {
-            startActivity(Intent(this, RemoteSetupActivity::class.java))
-        }
-        remBox.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.85f)
-        serviceRow.addView(remBox)
-        col.addView(serviceRow)
-
-        // System Settings Dock (5 unified monochrome spatial categories)
-        col.addView(makeSectionTitle("Настройки Android TV", R.drawable.ic_settings))
-        val sysRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(74)
-            )
-        }
-        val sysItems = listOf(
-            SysItem(R.drawable.ic_hw_wifi, false, "Wi-Fi и сеть") {
-                openSettingsIntent(Settings.ACTION_WIFI_SETTINGS, "com.android.tv.settings")
-            },
-            SysItem(R.drawable.ic_hw_bluetooth, false, "Bluetooth") {
-                openTvAccessories()
-            },
-            SysItem(R.drawable.ic_hw_eq, false, "Звук и аудио") {
-                openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
-            },
-            SysItem(R.drawable.ic_settings, false, "Дата и время") {
-                openSettingsIntent(Settings.ACTION_DATE_SETTINGS, "com.android.tv.settings")
-            },
-            SysItem(R.drawable.ic_hw_apps, false, "Приложения") {
-                openSettingsIntent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS, "com.android.tv.settings")
-            },
-            SysItem(R.drawable.ic_settings, false, "Настройки TV") {
-                launchPackageName("com.android.tv.settings")
-            }
+    private fun makeNavCue(label: String, gravity: Int, onTap: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        setTextColor(Color.parseColor("#E2E8F0"))
+        alpha = 0.56f
+        textSize = 12f
+        typeface = YandexFonts.displayMedium(this@MainActivity)
+        letterSpacing = 0.04f
+        setShadowLayer(10f, 0f, 2f, Color.parseColor("#88000000"))
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        isFocusable = false
+        isClickable = true
+        setOnClickListener { onTap() }
+        layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            gravity
         )
-        sysItems.forEachIndexed { idx, item ->
-            val card = makeSysTile(item.iconRes, item.isSprite, item.label, item.onClick)
-            card.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                if (idx < sysItems.lastIndex) marginEnd = dp(6)
-            }
-            sysRow.addView(card)
-        }
-        col.addView(sysRow)
-
-        scroll.addView(col)
-        return scroll
     }
 
     // -----------------------------------------------------------------------------------------
-    // MORPHING BOTTOM DOCK BAR (Receives shrunken AliceOrbView + shows Assistant Text)
+    // SPATIAL TRANSITION & CONTINUOUS SPHERE MORPHING MATH
     // -----------------------------------------------------------------------------------------
-    private fun buildBottomDockBar(): LinearLayout {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            bottomDockBg = LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 22f,
-                baseTint = Color.parseColor("#78080D18"),
-                focusTint = Color.parseColor("#92121D32"),
-                normalStroke = Color.parseColor("#24FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
-                refractStrength = 1.0f
-            )
-            elevation = dp(10).toFloat()
-            setPadding(dp(12), dp(8), dp(14), dp(8))
-            isFocusable = true
-            isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.012f else 1f).scaleY(if (hasFocus) 1.012f else 1f).setDuration(90).start()
-            }
-            setOnClickListener { triggerAlice() }
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(68),
-                Gravity.BOTTOM
-            ).apply {
-                leftMargin = dp(26)
-                rightMargin = dp(26)
-                bottomMargin = dp(10)
-            }
+    private fun isViewInside(view: View?, container: ViewGroup?): Boolean {
+        if (view == null || container == null) return false
+        var cur: View? = view
+        while (cur != null) {
+            if (cur === container) return true
+            cur = cur.parent as? View
         }
-
-        // Empty left socket (62dp wide) directly beneath where heroOrbView scales down to 56dp
-        val orbSlotSpacer = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(62), dp(52)).apply {
-                marginEnd = dp(12)
-            }
-        }
-        bar.addView(orbSlotSpacer)
-
-        val textCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val metaRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        dockStateDotBg = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(Color.parseColor("#38BDF8"))
-        }
-        val dockDot = View(this).apply {
-            background = dockStateDotBg
-            layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply {
-                marginEnd = dp(7)
-            }
-        }
-        tvDockState = TextView(this).apply {
-            text = "${LiveOrbState.effectiveName().uppercase()} · ${LiveOrbState.readyWord(caps = true)}"
-            setTextColor(Color.parseColor("#E8C686"))
-            textSize = 11f
-            letterSpacing = 0.08f
-            typeface = Typeface.DEFAULT_BOLD
-            maxLines = 1
-        }
-        tvDockMusic = TextView(this).apply {
-            text = ""
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(12)
-                marginEnd = dp(12)
-            }
-        }
-        metaRow.addView(dockDot)
-        metaRow.addView(tvDockState)
-        metaRow.addView(tvDockMusic)
-
-        tvDockReply = TextView(this).apply {
-            text = "Скажите «${LiveOrbState.effectiveName()}» или нажмите сюда для вопроса"
-            setTextColor(Color.parseColor("#F8FAFC"))
-            textSize = 13.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(2), dp(8), 0)
-        }
-        textCol.addView(metaRow)
-        textCol.addView(tvDockReply)
-        bar.addView(textCol)
-
-        btnDockHome = makeTextIconPill(R.drawable.ic_wave, "Сфера", gold = false) {
-            setPage(0, animate = true)
-        }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34))
-        }
-        bar.addView(btnDockHome)
-
-        return bar
+        return false
     }
 
-    // -----------------------------------------------------------------------------------------
-    // SMOOTH PAGE TRANSITION & CONTINUOUS SPHERE MORPHING MATH
-    // -----------------------------------------------------------------------------------------
-    private fun switchToPageTabFocused(targetPage: Int) {
-        val clamped = targetPage.coerceIn(0, 2)
-        isProgrammaticPageFocus = true
-        try {
-            if (clamped == 0 && ::btnHeroOrbClick.isInitialized) {
-                btnHeroOrbClick.requestFocus()
-            } else if (::tabViews.isInitialized) {
-                tabViews[clamped].requestFocus()
-            }
-            setPage(clamped, animate = true)
-        } finally {
-            isProgrammaticPageFocus = false
+    private fun isEqVisible(): Boolean =
+        ::eqWidgetController.isInitialized && eqWidgetController.rootCard.visibility == View.VISIBLE
+
+    private fun isBtVisible(): Boolean =
+        ::wBtCard.isInitialized && wBtCard.visibility == View.VISIBLE
+
+    private fun isWeatherVisible(): Boolean =
+        ::wWeatherCard.isInitialized && wWeatherCard.visibility == View.VISIBLE
+
+    private fun isRemoteVisible(): Boolean =
+        ::wRemoteCard.isInitialized && wRemoteCard.visibility == View.VISIBLE
+
+    private fun focusFirstLeftWidget(): Boolean {
+        if (isEqVisible()) {
+            eqWidgetController.focusDefault()
+            return true
         }
-        updateTabsAppearance(focusedIdx = if (clamped == 0) -1 else clamped)
+        if (isBtVisible()) {
+            wBtCard.requestFocus()
+            return true
+        }
+        return false
+    }
+
+    private fun focusFirstRightWidget(): Boolean {
+        if (isWeatherVisible()) {
+            wWeatherCard.requestFocus()
+            return true
+        }
+        if (isRemoteVisible()) {
+            wRemoteCard.requestFocus()
+            return true
+        }
+        return false
+    }
+
+    private fun focusGridDownPartialRow(grid: GridLayout, scroll: ScrollView?, cur: View?): Boolean {
+        if (cur == null || grid.childCount == 0) return false
+        val normalNext = FocusFinder.getInstance().findNextFocus(scroll ?: grid, cur, View.FOCUS_DOWN)
+        if (normalNext != null && normalNext !== cur && isViewInside(normalNext, grid)) return false
+        var cell: View? = cur
+        while (cell != null && cell.parent !== grid) {
+            cell = cell.parent as? View
+        }
+        val idx = if (cell != null) grid.indexOfChild(cell) else -1
+        if (idx < 0) return false
+        val cols = max(1, grid.columnCount)
+        val lastIdx = grid.childCount - 1
+        if ((idx / cols) < (lastIdx / cols)) {
+            val target = grid.getChildAt(lastIdx) ?: return false
+            target.requestFocus()
+            scroll?.post {
+                val rect = Rect(0, 0, target.width, target.height)
+                target.requestRectangleOnScreen(rect, false)
+            }
+            return true
+        }
+        return false
+    }
+
+    private fun switchToPageContentFocused(targetPage: Int) {
+        val clamped = targetPage.coerceIn(0, 1)
+        val targetRoot: ViewGroup = if (clamped == 0) page0View else pageMusicView
+        targetRoot.visibility = View.VISIBLE
+        targetRoot.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        setPage(clamped, animate = true)
+        focusPageControlDirect(clamped)
     }
 
     private fun setPage(targetIdx: Int, animate: Boolean) {
-        val clamped = targetIdx.coerceIn(0, 2)
+        val clamped = targetIdx.coerceIn(0, 1)
         val prevPage = currentPage
         currentPage = clamped
+        val targetPos = if (clamped == 1) -1f else 0f
 
-        // Drop the old end-listener first: cancel() would fire it and snap to the new page mid-slide
         pageAnimator?.removeAllListeners()
         pageAnimator?.cancel()
-        updateTabsAppearance()
 
         if (clamped == 1) {
             renderMusicSnapshot(latestMusicSnap, forceViews = true)
-        } else if (clamped == 2) {
-            updateClock(force = true)
-            updateNetworkHeader(cachedLocalIp, force = true)
-            syncPills(forceViews = true)
         }
 
-        // Make involved pages visible during slide transition
         page0View.visibility = View.VISIBLE
-        page1Scroll.visibility = View.VISIBLE
-        page2Scroll.visibility = View.VISIBLE
+        pageMusicView.visibility = View.VISIBLE
         page0View.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-        page1Scroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-        page2Scroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        pageMusicView.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
 
-        // Move focus off outgoing page synchronously BEFORE finalizing visibility,
-        // otherwise hiding the previously focused view triggers Android fallback focus to tabViews[0]!
         if (clamped != prevPage) {
             focusInitialControlOnPage(clamped, immediate = true)
+            syncBackdropBlurForUiState(animate = true)
         }
 
-        if (!animate || abs(clamped - currentPagePos) < 0.005f) {
-            currentPagePos = clamped.toFloat()
-            applyPageVisuals(currentPagePos)
+        if (!animate || abs(targetPos - currentScreenPos) < 0.005f) {
+            currentScreenPos = targetPos
+            applyPageVisuals(currentScreenPos)
             focusInitialControlOnPage(clamped, immediate = true)
             finalizePageVisibility()
             return
         }
 
-        pageAnimator = ValueAnimator.ofFloat(currentPagePos, clamped.toFloat()).apply {
-            duration = if (abs(clamped - prevPage) > 1) 480L else 420L
+        pageAnimator = ValueAnimator.ofFloat(currentScreenPos, targetPos).apply {
+            duration = MotionPrefs.dur(this@MainActivity, 540L)
             interpolator = easeOutCubic
             addUpdateListener { anim ->
-                currentPagePos = anim.animatedValue as Float
-                applyPageVisuals(currentPagePos)
+                currentScreenPos = anim.animatedValue as Float
+                applyPageVisuals(currentScreenPos)
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    currentPagePos = currentPage.toFloat()
-                    applyPageVisuals(currentPagePos)
+                    currentScreenPos = if (currentPage == 1) -1f else 0f
+                    applyPageVisuals(currentScreenPos)
                     focusInitialControlOnPage(currentPage, immediate = true)
                     finalizePageVisibility()
                 }
@@ -2386,261 +2346,194 @@ class MainActivity : Activity() {
     }
 
     private fun finalizePageVisibility() {
-        val pages = arrayOf<ViewGroup>(page0View, page1Scroll, page2Scroll)
-        pages.forEachIndexed { idx, v ->
-            val active = (idx == currentPage)
-            v.visibility = if (active) View.VISIBLE else View.INVISIBLE
-            v.descendantFocusability = if (active) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BLOCK_DESCENDANTS
-        }
-        val showDock = (currentPage != 0) && (LiveOrbState.assistantState != "idle")
-        bottomDockBar.visibility = if (showDock) View.VISIBLE else View.GONE
+        val active0 = (currentPage == 0)
+        page0View.visibility = if (active0) View.VISIBLE else View.INVISIBLE
+        page0View.descendantFocusability = if (active0) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+
+        pageMusicView.visibility = if (!active0) View.VISIBLE else View.INVISIBLE
+        pageMusicView.descendantFocusability = if (!active0) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+
         syncLayerFocusability()
-        updateAnimationsState()
+        syncBackdropBlurForUiState(animate = false)
     }
 
     private fun focusPageControlDirect(idx: Int) {
-        if (appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen) return
+        if (isAnyOverlayActive()) return
         isProgrammaticPageFocus = true
         try {
             when (idx) {
                 0 -> if (::btnHeroOrbClick.isInitialized) btnHeroOrbClick.requestFocus()
                 1 -> if (::btnHomeWave.isInitialized) btnHomeWave.requestFocus()
-                2 -> if (::tileRing.isInitialized) tileRing.root.requestFocus()
             }
         } finally {
             isProgrammaticPageFocus = false
         }
     }
 
+    private fun shouldKeepFocusOnPageSwitch(cur: View?, targetPage: Int): Boolean {
+        if (cur == null) return false
+        if (::tvTopWeather.isInitialized && cur === tvTopWeather) return true
+        if (::btnControlTrigger.isInitialized && cur === btnControlTrigger) return true
+        val targetRoot: ViewGroup = if (targetPage == 0) page0View else pageMusicView
+        return isViewInside(cur, targetRoot)
+    }
+
     private fun focusInitialControlOnPage(idx: Int, immediate: Boolean = false) {
-        val cur = currentFocus
-        // Keep focus on tab switcher only if user switched screens via top tabs
-        if (cur != null && ::tabViews.isInitialized && tabViews.any { it === cur }) return
+        if (shouldKeepFocusOnPageSwitch(currentFocus, idx)) return
         if (immediate) {
             focusPageControlDirect(idx)
         } else {
             handler.post {
-                val nowCur = currentFocus
-                if (nowCur != null && ::tabViews.isInitialized && tabViews.any { it === nowCur }) return@post
+                if (shouldKeepFocusOnPageSwitch(currentFocus, idx)) return@post
                 focusPageControlDirect(idx)
             }
         }
     }
 
-    private fun applyPageVisuals(pagePos: Float) {
+    private fun applyPageVisuals(screenPos: Float) {
         val w = (if (rootFrame.width > 0) rootFrame.width else resources.displayMetrics.widthPixels).toFloat()
-        val h = (if (rootFrame.height > 0) rootFrame.height else resources.displayMetrics.heightPixels).toFloat()
-        val topBarBottom = max(dp(46).toFloat(), topBar.bottom.toFloat())
+        val topBarBottom = maxOf(dp(54).toFloat(), topBar.bottom.toFloat())
 
-        // 1. Horizontal slide + depth alpha across the 3 screens
-        page0View.translationX = (0f - pagePos) * w
-        page1Scroll.translationX = (1f - pagePos) * w
-        page2Scroll.translationX = (2f - pagePos) * w
+        // Spatial horizontal slide: Center Home = 0, Left Immersive Music = -1
+        page0View.translationX = (0f - screenPos) * w
+        pageMusicView.translationX = (-1f - screenPos) * w
 
-        page0View.alpha = (1f - pagePos * 1.15f).coerceIn(0f, 1f)
-        page1Scroll.alpha = (1f - abs(pagePos - 1f) * 0.45f).coerceIn(0f, 1f)
-        page2Scroll.alpha = (1f - abs(pagePos - 2f) * 0.45f).coerceIn(0f, 1f)
+        val homeAlpha = (1f + screenPos * 1.35f).coerceIn(0f, 1f)
+        page0View.alpha = homeAlpha
+        pageMusicView.alpha = (1f - abs(screenPos + 1f) * 0.55f).coerceIn(0f, 1f)
 
-        // 2. Bottom Dock Bar fade + rise into view ONLY when Alice is actively engaged on Screens 1 & 2
-        val dockActive = (LiveOrbState.assistantState != "idle")
-        val dockAlpha = if (dockActive) ((pagePos - 0.14f) / 0.86f).coerceIn(0f, 1f) else 0f
-        bottomDockBar.alpha = dockAlpha
-        bottomDockBar.translationY = (1f - dockAlpha) * dp(44).toFloat()
-        if (dockAlpha > 0.01f) {
-            if (bottomDockBar.visibility != View.VISIBLE) bottomDockBar.visibility = View.VISIBLE
-        } else if (bottomDockBar.visibility != View.GONE && currentPage != 0) {
-            bottomDockBar.visibility = View.GONE
+        val heroSize = dp(304).toFloat()
+        val ccOpen = ::controlCenter.isInitialized && controlCenter.isOpen
+        val cx = computeHeroOrbCenterX(w, screenPos, ccOpen)
+        val cy = topBarBottom + dp(64) + heroSize * 0.5f
+        heroOrbView.compactGlowBoost = 0f
+        if (!startupShowActive && !returningFromExternalApp && (!isAnyOverlayActive() || ccOpen)) {
+            heroOrbView.alpha = homeAlpha
+            if (homeAlpha > 0.02f) heroOrbView.wakeAnimation()
         }
-
-        // 3. Persistent Alice Sphere Morph: shrinks into dock when busy, smoothly dissolves on idle page slide
-        val dockT = pagePos.coerceIn(0f, 1f)
-        val heroSize = dp(320).toFloat()
-        val dockSize = dp(56).toFloat()
-
-        val cx0 = w * 0.5f
-        val cy0 = topBarBottom + heroSize * 0.5f
-        val cx1 = dp(26 + 12 + 31).toFloat()
-        val cy1 = h - dp(10 + 34).toFloat()
-
-        val cx = lerp(cx0, cx1, dockT)
-        val cy = lerp(cy0, cy1, dockT)
-        val sc = lerp(1.0f, dockSize / heroSize, dockT)
-
-        heroOrbView.compactGlowBoost = dockT
-        heroOrbView.alpha = if (dockActive) 1f else (1f - dockT * 1.65f).coerceIn(0f, 1f)
         heroOrbView.pivotX = heroSize * 0.5f
         heroOrbView.pivotY = heroSize * 0.5f
-        heroOrbView.scaleX = sc
-        heroOrbView.scaleY = sc
         heroOrbView.translationX = cx - heroSize * 0.5f
         heroOrbView.translationY = cy - heroSize * 0.5f
     }
 
-    private fun updateTabsAppearance(focusedIdx: Int = -1) {
-        tabViews.forEachIndexed { idx, tv ->
-            val selected = (idx == currentPage)
-            val focused = (idx == focusedIdx)
-            val shape = tabBgShapes[idx]
-            when {
-                selected -> {
-                    shape.setColor(Color.parseColor(if (focused) "#48FFFFFF" else "#28FFFFFF"))
-                    shape.setStroke(dp(1), Color.parseColor(if (focused) "#CCFFFFFF" else "#48FFFFFF"))
-                    tv.setTextColor(Color.WHITE)
-                }
-                focused -> {
-                    shape.setColor(Color.parseColor("#38FFFFFF"))
-                    shape.setStroke(dp(1), Color.parseColor("#B8FFFFFF"))
-                    tv.setTextColor(Color.WHITE)
-                }
-                else -> {
-                    shape.setColor(Color.TRANSPARENT)
-                    shape.setStroke(0, Color.TRANSPARENT)
-                    tv.setTextColor(Color.parseColor("#8A99AD"))
-                }
-            }
-        }
-    }
-
     // -----------------------------------------------------------------------------------------
-    // LIVE ASSISTANT / ORB UI TEXT SYNC (Screen 0 Hero Card + Bottom Dock Bar)
+    // LIVE ASSISTANT / ORB UI TEXT SYNC (Shown Only When Active / Speaking)
     // -----------------------------------------------------------------------------------------
     private fun renderOrbAssistantUi() {
         val st = LiveOrbState.assistantState
         val effName = LiveOrbState.effectiveName()
+        if (::tvHeroOkHint.isInitialized) {
+            tvHeroOkHint.text = "OK · $effName"
+        }
         val effMale = LiveOrbState.isGrammaticallyMale()
         val userTxt = if (st == "idle") "" else LiveOrbState.liveUserText.trim()
         val display = LiveOrbState.bestDisplayText()
-        val uiKey = "$st|$assistantEnabled|$effName|$effMale|$userTxt|$display"
+        val uiKey = "$st|$assistantEnabled|$effName|$effMale|$userTxt|$display|$startupShowActive"
         if (uiKey == lastOrbUiKey) return
         lastOrbUiKey = uiKey
 
         val effCaps = effName.uppercase()
         val accent: Int
-        val borderColor: Int
         val stateLabel: String
         val heroFallback: String
-        val dockFallback: String
 
         when (st) {
             "connecting" -> {
                 accent = Color.parseColor("#38BDF8")
-                borderColor = Color.parseColor("#8838BDF8")
                 stateLabel = "$effCaps · ПОДКЛЮЧЕНИЕ"
                 heroFallback = "Подключаю голосовой поток..."
-                dockFallback = "Подключаю голосовой поток..."
             }
             "listening" -> {
                 accent = Color.parseColor("#2DD4BF")
-                borderColor = Color.parseColor("#992DD4BF")
                 stateLabel = "$effCaps · СЛУШАЮ"
                 heroFallback = "Говорите, я внимательно слушаю..."
-                dockFallback = "Говорите, я внимательно слушаю..."
             }
             "thinking" -> {
                 accent = Color.parseColor("#E8C686")
-                borderColor = Color.parseColor("#AAE8C686")
                 stateLabel = "$effCaps · ДУМАЮ"
                 heroFallback = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
-                dockFallback = if (userTxt.isNotEmpty()) "Обрабатываю: «$userTxt»" else "Формирую ответ..."
             }
             "speaking" -> {
                 accent = Color.parseColor("#C084FC")
-                borderColor = Color.parseColor("#AAC084FC")
                 stateLabel = "$effCaps · ОТВЕЧАЮ"
                 heroFallback = "Отвечаю голосом..."
-                dockFallback = "Отвечаю голосом..."
             }
             "error" -> {
                 accent = Color.parseColor("#F87171")
-                borderColor = Color.parseColor("#AAF87171")
                 stateLabel = "$effCaps · ОШИБКА"
                 heroFallback = "Не удалось выполнить запрос"
-                dockFallback = "Ошибка ассистента"
             }
             else -> {
                 accent = if (assistantEnabled) Color.parseColor("#E2E8F0") else Color.parseColor("#64748B")
-                borderColor = Color.parseColor("#18FFFFFF")
                 val offUpper = if (effMale) "ВЫКЛЮЧЕН" else "ВЫКЛЮЧЕНА"
                 stateLabel = if (assistantEnabled) "$effCaps · ${LiveOrbState.readyWord(caps = true)}" else "$effCaps · $offUpper"
-                heroFallback = if (assistantEnabled) "$effName ${LiveOrbState.readyWord()} · Нажмите OK" else "Микрофон выключен · Нажмите OK"
-                dockFallback = "Скажите «$effName» или нажмите, чтобы задать вопрос"
+                heroFallback = ""
             }
         }
 
-        val compactIdle = (st == "idle" && display.isEmpty() && userTxt.isEmpty())
+        val showCard = startupShowActive || (st != "idle") || display.isNotEmpty() || userTxt.isNotEmpty()
         heroStateDotBg.setColor(accent)
-        dockStateDotBg.setColor(accent)
-        (heroReplyCard.background as? LiquidGlassKit.RefractiveGlassDrawable)?.setStrokeColors(
-            borderColor,
-            Color.parseColor("#B0FFFFFF")
-        )
-        bottomDockBg.setStrokeColors(borderColor, Color.parseColor("#B0FFFFFF"))
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.updateLensSpec(heroReplyCard) { it.copy(accentTint = accent) }
+        }
 
-        tvHeroState.text = stateLabel
-        tvHeroState.setTextColor(accent)
-        tvDockState.text = stateLabel
-        tvDockState.setTextColor(accent)
-
-        if (compactIdle) {
-            heroReplyHeader.visibility = View.GONE
-            (heroReplyCard.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                if (lp.width != ViewGroup.LayoutParams.WRAP_CONTENT) {
-                    lp.width = ViewGroup.LayoutParams.WRAP_CONTENT
-                    heroReplyCard.layoutParams = lp
-                }
+        if (!showCard) {
+            if (heroReplyCard.visibility == View.VISIBLE) {
+                heroReplyCard.animate().cancel()
+                heroReplyCard.animate()
+                    .alpha(0f)
+                    .translationY(dp(8).toFloat())
+                    .setDuration(MotionPrefs.dur(this, 360L))
+                    .setInterpolator(easeOutCubic)
+                    .withEndAction {
+                        if (LiveOrbState.assistantState == "idle" &&
+                            LiveOrbState.bestDisplayText().isEmpty() &&
+                            !startupShowActive
+                        ) {
+                            heroReplyCard.visibility = View.GONE
+                            heroReplyCard.translationY = 0f
+                        }
+                    }
+                    .start()
             }
-            heroReplyCard.setPadding(dp(20), dp(8), dp(20), dp(9))
-            tvHeroReply.gravity = Gravity.CENTER_HORIZONTAL
-            tvHeroReply.textSize = 13.5f
-            tvHeroReply.text = heroFallback
-            tvHeroReply.setTextColor(Color.parseColor("#CBD5E1"))
         } else {
-            heroReplyHeader.visibility = View.VISIBLE
-            (heroReplyCard.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                val targetW = dp(620)
-                if (lp.width != targetW) {
-                    lp.width = targetW
-                    heroReplyCard.layoutParams = lp
+            if (!startupShowActive) {
+                tvHeroState.text = stateLabel
+                tvHeroState.setTextColor(accent)
+                if (userTxt.isNotEmpty() && display != "«$userTxt»") {
+                    tvHeroUser.text = "Вы: «$userTxt»"
+                    tvHeroUser.visibility = View.VISIBLE
+                } else {
+                    tvHeroUser.text = ""
+                    tvHeroUser.visibility = View.GONE
                 }
+                val heroBody = display.ifEmpty { heroFallback }
+                tvHeroReply.text = heroBody
+                tvHeroReply.setTextColor(
+                    if (display.isNotEmpty()) Color.parseColor("#F8FAFC") else Color.parseColor("#CBD5E1")
+                )
             }
-            heroReplyCard.setPadding(dp(22), dp(10), dp(22), dp(12))
-            tvHeroReply.gravity = Gravity.START
-            tvHeroReply.textSize = 15f
-
-            if (userTxt.isNotEmpty() && display != "«$userTxt»") {
-                tvHeroUser.text = "Вы: «$userTxt»"
-                tvHeroUser.visibility = View.VISIBLE
-            } else {
-                tvHeroUser.text = ""
-                tvHeroUser.visibility = View.GONE
+            if (heroReplyCard.visibility != View.VISIBLE || heroReplyCard.alpha < 0.99f) {
+                heroReplyCard.animate().cancel()
+                if (heroReplyCard.visibility != View.VISIBLE) {
+                    heroReplyCard.alpha = 0f
+                    heroReplyCard.translationY = dp(8).toFloat()
+                    heroReplyCard.visibility = View.VISIBLE
+                }
+                heroReplyCard.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(MotionPrefs.dur(this, 420L))
+                    .setInterpolator(easeOutCubic)
+                    .start()
             }
-
-            val heroBody = display.ifEmpty { heroFallback }
-            tvHeroReply.text = heroBody
-            tvHeroReply.setTextColor(
-                if (display.isNotEmpty()) Color.parseColor("#F8FAFC") else Color.parseColor("#CBD5E1")
-            )
         }
-
-        val dockBody = display.ifEmpty { dockFallback }
-        tvDockReply.text = dockBody
-        tvDockReply.setTextColor(
-            if (display.isNotEmpty()) Color.parseColor("#F8FAFC") else Color.parseColor("#CBD5E1")
-        )
-
-        if (currentPage != 0) {
-            val dockActive = (st != "idle")
-            if (!dockActive && bottomDockBar.visibility == View.VISIBLE) {
-                bottomDockBar.visibility = View.GONE
-            } else if (dockActive && bottomDockBar.visibility != View.VISIBLE) {
-                bottomDockBar.visibility = View.VISIBLE
-            }
-            applyPageVisuals(currentPagePos)
-        }
+        syncBackdropBlurForUiState(animate = true)
     }
 
     // -----------------------------------------------------------------------------------------
-    // REUSABLE UI FACTORIES
+    // REUSABLE SPATIAL GLASS FACTORIES
     // -----------------------------------------------------------------------------------------
     private fun makeSectionTitle(label: String, iconRes: Int): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -2660,60 +2553,40 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 10.5f
             letterSpacing = 0.09f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@MainActivity)
         }
         addView(iv)
         addView(tv)
     }
 
-    private fun makeHwTile(iconRes: Int, initialText: String, onClick: () -> Unit): HwTileViews {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(11), 0, dp(11), 0)
-            LiquidGlassKit.applyGlass(
+    private fun makeIconBtn(
+        iconRes: Int,
+        tintColor: Int?,
+        cleanupPool: MutableList<() -> Unit> = staticLensCleanups,
+        onClick: () -> Unit
+    ): IconBtnViews {
+        val box = FrameLayout(this).apply {
+            bindGlassLens(
+                cleanupPool,
                 this,
-                radiusDp = 14f,
-                baseTint = Color.parseColor("#3A0A1120"),
-                focusTint = Color.parseColor("#7A1A2B48"),
-                normalStroke = Color.parseColor("#16FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
-                refractStrength = 0.85f
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#2A0C1220"),
+                    focusTint = Color.parseColor("#541A2C4A"),
+                    bevelDp = 12f,
+                    refractDp = 10f,
+                    chromaDp = 2.0f,
+                    shadowDp = 12f,
+                    rimAlpha = 0.30f,
+                    focusRimAlpha = 0.85f,
+                    blurMix = 0.88f
+                )
             )
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(90).start()
-            }
-            setOnClickListener { onClick() }
-        }
-        val iv = ImageView(this).apply {
-            setImageResource(iconRes)
-            setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply {
-                marginEnd = dp(8)
-            }
-        }
-        val tv = TextView(this).apply {
-            text = initialText
-            setTextColor(Color.parseColor("#E2E8F0"))
-            textSize = 11.5f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        root.addView(iv)
-        root.addView(tv)
-        return HwTileViews(root, iv, tv)
-    }
-
-    private fun makeIconBtn(iconRes: Int, tintColor: Int?, onClick: () -> Unit): IconBtnViews {
-        val box = FrameLayout(this).apply {
-            setBackgroundResource(R.drawable.bg_pill)
-            isFocusable = true
-            isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.08f else 1f).scaleY(if (hasFocus) 1.08f else 1f).setDuration(90).start()
+                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 230L)).setInterpolator(focusSpring).start()
             }
             setOnClickListener { onClick() }
         }
@@ -2722,81 +2595,131 @@ class MainActivity : Activity() {
             if (d != null && tintColor != null) d.setTint(tintColor)
             setImageDrawable(d)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(19), dp(19), Gravity.CENTER)
         }
         box.addView(iv)
         return IconBtnViews(box, iv)
     }
 
-    private fun makeTextIconPill(iconRes: Int, label: String, gold: Boolean, onClick: () -> Unit): LinearLayout =
+    private fun makeTextIconPill(
+        iconRes: Int,
+        label: String,
+        accent: Boolean = false,
+        cleanupPool: MutableList<() -> Unit> = customOverlayLensCleanups,
+        onClick: () -> Unit
+    ): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(4), dp(14), dp(4))
-            setBackgroundResource(if (gold) R.drawable.bg_pill_gold else R.drawable.bg_pill)
+            setPadding(dp(16), dp(6), dp(18), dp(6))
+            val spec = if (accent) {
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#442B2210"),
+                    focusTint = Color.parseColor("#6A403014"),
+                    accentTint = Color.parseColor("#FBBF24"),
+                    bevelDp = 12f,
+                    refractDp = 10f,
+                    chromaDp = 2.2f,
+                    shadowDp = 14f,
+                    rimAlpha = 0.42f,
+                    focusRimAlpha = 0.90f,
+                    blurMix = 0.86f
+                )
+            } else {
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#2A0C1220"),
+                    focusTint = Color.parseColor("#541A2C4A"),
+                    bevelDp = 12f,
+                    refractDp = 10f,
+                    chromaDp = 2.0f,
+                    shadowDp = 12f,
+                    rimAlpha = 0.28f,
+                    focusRimAlpha = 0.85f,
+                    blurMix = 0.88f
+                )
+            }
+            bindGlassLens(cleanupPool, this, spec)
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
+                v.animate().scaleX(if (hasFocus) 1.055f else 1f).scaleY(if (hasFocus) 1.055f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 230L)).setInterpolator(focusSpring).start()
             }
             setOnClickListener { onClick() }
 
             val iv = ImageView(this@MainActivity).apply {
                 val d = getDrawable(iconRes)?.mutate()
-                if (d != null && gold) d.setTint(Color.parseColor("#0B0F17"))
+                d?.setTint(if (accent) Color.parseColor("#FDE68A") else Color.parseColor("#F1F5F9"))
                 setImageDrawable(d)
                 scaleType = ImageView.ScaleType.FIT_CENTER
-                layoutParams = LinearLayout.LayoutParams(dp(14), dp(14)).apply {
-                    marginEnd = dp(6)
+                layoutParams = LinearLayout.LayoutParams(dp(15), dp(15)).apply {
+                    marginEnd = dp(7)
                 }
             }
             val tv = TextView(this@MainActivity).apply {
                 text = label
-                setTextColor(Color.parseColor(if (gold) "#0B0F17" else "#F1F5F9"))
-                textSize = 11.5f
-                typeface = if (gold) Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(if (accent) Color.parseColor("#FEF3C7") else Color.parseColor("#F8FAFC"))
+                textSize = 12.5f
+                typeface = YandexFonts.displayBold(this@MainActivity)
                 maxLines = 1
             }
             addView(iv)
             addView(tv)
         }
 
-    private fun makeSysTile(iconRes: Int, isSprite: Boolean, label: String, onClick: () -> Unit): LinearLayout =
+    private fun makeSysTile(
+        iconRes: Int,
+        isSprite: Boolean,
+        label: String,
+        cleanupPool: MutableList<() -> Unit> = customOverlayLensCleanups,
+        onClick: () -> Unit
+    ): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(6), dp(8), dp(6), dp(8))
-            LiquidGlassKit.applyGlass(
+            setPadding(dp(10), dp(12), dp(10), dp(12))
+            bindGlassLens(
+                cleanupPool,
                 this,
-                radiusDp = 16f,
-                baseTint = Color.parseColor("#3A0A1120"),
-                focusTint = Color.parseColor("#7A1A2B48"),
-                normalStroke = Color.parseColor("#16FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
-                refractStrength = 0.85f
+                SpatialLensSpec(
+                    radiusDp = 20f,
+                    baseTint = Color.parseColor("#2A0C1220"),
+                    focusTint = Color.parseColor("#541A2C4A"),
+                    bevelDp = 13f,
+                    refractDp = 11f,
+                    chromaDp = 2.0f,
+                    shadowDp = 14f,
+                    rimAlpha = 0.28f,
+                    focusRimAlpha = 0.85f,
+                    blurMix = 0.88f
+                )
             )
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(95).start()
+                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 220L)).setInterpolator(focusSpring).start()
             }
             setOnClickListener { onClick() }
 
             val iv = ImageView(this@MainActivity).apply {
-                setImageResource(iconRes)
+                if (isSprite) setSpriteDrawable(iconRes) else setImageResource(iconRes)
                 if (!isSprite) {
                     setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
                 }
                 scaleType = ImageView.ScaleType.FIT_CENTER
-                val iconSz = if (isSprite) dp(24) else dp(22)
+                val iconSz = if (isSprite) dp(28) else dp(24)
                 layoutParams = LinearLayout.LayoutParams(iconSz, iconSz).apply {
-                    bottomMargin = dp(6)
+                    bottomMargin = dp(8)
                 }
             }
             val tv = TextView(this@MainActivity).apply {
                 text = label
-                setTextColor(Color.parseColor("#E2E8F0"))
-                textSize = 10.5f
+                setTextColor(Color.parseColor("#F1F5F9"))
+                textSize = 11.5f
+                typeface = YandexFonts.textMedium(this@MainActivity)
                 gravity = Gravity.CENTER
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
@@ -2889,16 +2812,16 @@ class MainActivity : Activity() {
             intent = Intent(this, MarketActivity::class.java),
             leanback = true,
             isVirtual = true,
-            subtitle = "Магазин ТВ · APK"
+            subtitle = null
         )
         val ymEntry = AppEntry(
             pkg = PKG_YANDEX_MUSIC,
             label = "Яндекс Музыка",
-            icon = getDrawable(R.drawable.sprite_ym_emblem) ?: applicationInfo.loadIcon(pm),
+            icon = AnimatedSpriteHelper.loadDrawable(this, R.drawable.sprite_ym_emblem) ?: applicationInfo.loadIcon(pm),
             intent = Intent(this, YandexMusicActivity::class.java),
             leanback = true,
             isVirtual = true,
-            subtitle = "Моя волна · Hi-Fi"
+            subtitle = null
         )
 
         val savedOrder = getSavedAppOrder()
@@ -2913,28 +2836,39 @@ class MainActivity : Activity() {
         activeAppEntries = visible
 
         drawerTileViews.clear()
-        screen1TileViews.clear()
-        appsGrid.removeAllViews()
+        clearLensCleanups(drawerLensCleanups)
         if (::drawerAppsGrid.isInitialized) {
             drawerAppsGrid.removeAllViews()
-        }
-
-        val tileMargin = dp(5)
-        val screenW = resources.displayMetrics.widthPixels - dp(52)
-        val colW = maxOf(dp(150), (screenW / 5) - tileMargin * 2)
-
-        for (app in visible) {
-            addAppTileToGrid(appsGrid, app, colW, tileMargin, screen1TileViews)
-            if (::drawerAppsGrid.isInitialized) {
+            val cols = visible.size.coerceIn(1, 5)
+            drawerAppsGrid.columnCount = cols
+            if (::drawerScrollContent.isInitialized) {
+                drawerScrollContent.gravity = if (visible.size <= 10) {
+                    Gravity.CENTER
+                } else {
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                }
+            }
+            val tileMargin = dp(8)
+            val colW = dp(152)
+            for (app in visible) {
                 addAppTileToGrid(drawerAppsGrid, app, colW, tileMargin, drawerTileViews)
             }
         }
 
         if (::tvDrawerStatusPill.isInitialized) {
-            tvDrawerStatusPill.text = when {
-                reorderingPkg != null -> "ПЕРЕМЕЩЕНИЕ · ◄►▲▼ сдвиг · OK готово"
-                hiddenSet.isNotEmpty() -> "${visible.size} прилож. · ${hiddenSet.size} скрыто"
-                else -> "${visible.size} прилож. · удерж. OK меню"
+            when {
+                reorderingPkg != null -> {
+                    tvDrawerStatusPill.text = "Перемещение · ◄►▲▼ сдвиг · OK готово"
+                    tvDrawerStatusPill.visibility = View.VISIBLE
+                }
+                hiddenSet.isNotEmpty() -> {
+                    tvDrawerStatusPill.text = "${visible.size} прилож. · ${hiddenSet.size} скрыто"
+                    tvDrawerStatusPill.visibility = View.VISIBLE
+                }
+                else -> {
+                    tvDrawerStatusPill.text = "${visible.size} прилож."
+                    tvDrawerStatusPill.visibility = View.VISIBLE
+                }
             }
         }
 
@@ -2954,7 +2888,7 @@ class MainActivity : Activity() {
 
     private fun extractAppAccentColor(pkg: String, icon: Drawable): Int {
         appAccentCache[pkg]?.let { return it }
-        var res = Color.parseColor("#334155")
+        var res = Color.parseColor("#7DD3FC")
         try {
             val bmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
             val c = Canvas(bmp)
@@ -2995,96 +2929,103 @@ class MainActivity : Activity() {
         val isPinnedApps = (app.pkg == PKG_OPENSTATION_APPS)
         val isMoving = (reorderingPkg == app.pkg)
         val accent = extractAppAccentColor(app.pkg, app.icon)
-        val tintR = (Color.red(accent) * 0.22f + 9f).toInt().coerceIn(0, 255)
-        val tintG = (Color.green(accent) * 0.22f + 14f).toInt().coerceIn(0, 255)
-        val tintB = (Color.blue(accent) * 0.22f + 24f).toInt().coerceIn(0, 255)
+
         val baseCardTint = when {
-            isMoving -> Color.argb(148, 30, 58, 96)
-            isPinnedApps -> Color.argb(136, 16, 36, 66)
-            else -> Color.argb(115, tintR, tintG, tintB)
+            isMoving -> Color.parseColor("#46183058")
+            isPinnedApps -> Color.parseColor("#2A0F1A30")
+            else -> Color.parseColor("#220A101E")
         }
         val focusCardTint = when {
-            isPinnedApps -> Color.argb(190, 28, 62, 108)
-            else -> Color.argb(176, minOf(255, tintR + 24), minOf(255, tintG + 28), minOf(255, tintB + 36))
+            isMoving -> Color.parseColor("#66204074")
+            else -> Color.parseColor("#4A162442")
         }
 
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(10), dp(10), dp(10), dp(9))
+            setPadding(dp(12), dp(14), dp(12), dp(12))
             tag = app.pkg
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                drawerLensCleanups,
                 this,
-                radiusDp = 18f,
-                baseTint = baseCardTint,
-                focusTint = focusCardTint,
-                normalStroke = when {
-                    isMoving -> Color.parseColor("#93C5FD")
-                    isPinnedApps -> Color.parseColor("#447DD3FC")
-                    else -> Color.parseColor("#18FFFFFF")
-                },
-                focusStroke = Color.parseColor("#CCFFFFFF"),
-                refractStrength = if (isPinnedApps) 1.05f else 0.9f
+                SpatialLensSpec(
+                    radiusDp = 24f,
+                    baseTint = baseCardTint,
+                    focusTint = focusCardTint,
+                    accentTint = if (isMoving) Color.parseColor("#93C5FD") else accent,
+                    bevelDp = 15f,
+                    refractDp = 12f,
+                    chromaDp = 2.4f,
+                    shadowDp = 16f,
+                    rimAlpha = 0.28f,
+                    focusRimAlpha = 0.90f,
+                    blurMix = 0.88f,
+                    clipParent = if (::drawerScrollView.isInitialized) drawerScrollView else null
+                ),
+                fallbackTint = baseCardTint
             )
             elevation = dp(if (isMoving || isPinnedApps) 8 else 4).toFloat()
             isFocusable = true
             isClickable = true
             layoutParams = GridLayout.LayoutParams().apply {
                 width = colW
-                height = dp(96)
+                height = dp(126)
                 setMargins(tileMargin, tileMargin, tileMargin, tileMargin)
             }
         }
         val iv = ImageView(this).apply {
             setImageDrawable(app.icon)
+            (app.icon as? Animatable)?.start()
             scaleType = ImageView.ScaleType.FIT_CENTER
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, dp(11).toFloat())
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(14).toFloat())
                 }
             }
             clipToOutline = true
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            layoutParams = LinearLayout.LayoutParams(dp(54), dp(54))
         }
         val tvName = TextView(this).apply {
             text = app.label
-            setTextColor(Color.parseColor("#F1F5F9"))
-            textSize = 12f
+            setTextColor(Color.parseColor("#F8FAFC"))
+            textSize = 12.5f
             gravity = Gravity.CENTER
-            typeface = Typeface.create("sans-serif-medium", if (isPinnedApps || app.isVirtual) Typeface.BOLD else Typeface.NORMAL)
+            typeface = YandexFonts.textMedium(this@MainActivity)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(7)
+                topMargin = dp(10)
             }
         }
         card.addView(iv)
         card.addView(tvName)
 
-        val showSub = isMoving || isPinnedApps || (app.subtitle != null && app.pkg != PKG_YANDEX_MUSIC)
-        if (showSub) {
+        if (isMoving) {
             val tvSub = TextView(this).apply {
-                text = when {
-                    isMoving -> "◄►▲▼ сдвиг"
-                    else -> app.subtitle ?: ""
-                }
-                setTextColor(Color.parseColor(if (isMoving) "#93C5FD" else "#7DD3FC"))
-                textSize = 9.5f
+                text = "◄►▲▼ сдвиг"
+                setTextColor(Color.parseColor("#93C5FD"))
+                textSize = 10f
+                typeface = YandexFonts.displayBold(this@MainActivity)
                 gravity = Gravity.CENTER
                 maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(2) }
             }
             card.addView(tvSub)
         }
 
         card.setOnFocusChangeListener { v, hasFocus ->
+            v.elevation = dp(if (hasFocus) 10 else if (isMoving || isPinnedApps) 8 else 4).toFloat()
             v.animate()
-                .scaleX(if (hasFocus) 1.06f else 1f)
-                .scaleY(if (hasFocus) 1.06f else 1f)
-                .setDuration(110)
+                .scaleX(if (hasFocus) 1.07f else 1f)
+                .scaleY(if (hasFocus) 1.07f else 1f)
+                .setDuration(MotionPrefs.dur(this@MainActivity, 240L))
+                .setInterpolator(focusSpring)
                 .start()
         }
         card.setOnClickListener { launchApp(app, card) }
@@ -3177,6 +3118,8 @@ class MainActivity : Activity() {
         launchPackageName("com.android.tv.settings")
     }
 
+    private var remoteConnectedTextState = "Bluetooth и пульт"
+
     // -----------------------------------------------------------------------------------------
     // CLOCK, NETWORK & DAEMON TELEMETRY
     // -----------------------------------------------------------------------------------------
@@ -3184,7 +3127,6 @@ class MainActivity : Activity() {
         val tz = TimeZone.getDefault()
         timeFmt.timeZone = tz
         shortDateFmt.timeZone = tz
-        fullDateFmt.timeZone = tz
         clockDate.time = System.currentTimeMillis()
 
         val style = LiveOrbState.clockStyle
@@ -3203,38 +3145,36 @@ class MainActivity : Activity() {
         }
 
         val shortDate = shortDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
-        val fullDate = fullDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
 
         if (force || timeStr != lastClockStr) {
             lastClockStr = timeStr
             tvTopClock.text = timeStr
-            tvClock.text = timeStr
 
             when (style) {
                 "minimal" -> {
-                    tvClock.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
-                    tvClock.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
-                    tvClock.setTextColor(Color.parseColor("#E2E8F0"))
+                    tvTopClock.typeface = YandexFonts.displayRegular(this)
+                    tvTopClock.setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+                    tvTopClock.setTextColor(Color.parseColor("#E2E8F0"))
                 }
                 "bold" -> {
-                    tvClock.typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
-                    tvClock.setShadowLayer(8f, 0f, 3f, Color.parseColor("#40000000"))
-                    tvClock.setTextColor(Color.WHITE)
+                    tvTopClock.typeface = YandexFonts.displayBold(this)
+                    tvTopClock.setShadowLayer(10f, 0f, 3f, Color.parseColor("#55000000"))
+                    tvTopClock.setTextColor(Color.WHITE)
                 }
                 "neon" -> {
-                    tvClock.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    tvClock.setTextColor(Color.parseColor("#E0F2FE"))
-                    tvClock.setShadowLayer(18f, 0f, 0f, Color.parseColor("#00D4FF"))
+                    tvTopClock.typeface = YandexFonts.displayMedium(this)
+                    tvTopClock.setTextColor(Color.parseColor("#E0F2FE"))
+                    tvTopClock.setShadowLayer(18f, 0f, 0f, Color.parseColor("#00D4FF"))
                 }
                 "retro" -> {
-                    tvClock.typeface = Typeface.MONOSPACE
-                    tvClock.setTextColor(Color.parseColor("#E2E8F0"))
-                    tvClock.setShadowLayer(8f, 0f, 0f, Color.parseColor("#28FFFFFF"))
+                    tvTopClock.typeface = Typeface.MONOSPACE
+                    tvTopClock.setTextColor(Color.parseColor("#E2E8F0"))
+                    tvTopClock.setShadowLayer(8f, 0f, 0f, Color.parseColor("#33FFFFFF"))
                 }
                 else -> {
-                    tvClock.typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-                    tvClock.setTextColor(Color.WHITE)
-                    tvClock.setShadowLayer(6f, 0f, 2f, Color.parseColor("#33000000"))
+                    tvTopClock.typeface = YandexFonts.displayMedium(this)
+                    tvTopClock.setTextColor(Color.WHITE)
+                    tvTopClock.setShadowLayer(8f, 0f, 2f, Color.parseColor("#44000000"))
                 }
             }
         }
@@ -3242,17 +3182,25 @@ class MainActivity : Activity() {
             lastShortDateStr = shortDate
             tvTopDate.text = shortDate
         }
-        if (force || fullDate != lastFullDateStr) {
-            lastFullDateStr = fullDate
-            tvDate.text = fullDate
-        }
 
         if (LiveOrbState.weatherValid) {
             val sign = if (LiveOrbState.weatherTemp > 0) "+" else ""
-            tvTopWeather.text = "☀️ $sign${LiveOrbState.weatherTemp}°"
+            tvTopWeather.text = "$sign${LiveOrbState.weatherTemp}°"
             tvTopWeather.visibility = View.VISIBLE
         } else {
             tvTopWeather.visibility = View.GONE
+        }
+        if (::screensaverOverlay.isInitialized) {
+            val longDateFmt = SimpleDateFormat("EEEE, d MMMM", ruLocale).apply { timeZone = tz }
+            val fullDate = longDateFmt.format(clockDate).replaceFirstChar { it.uppercase() }
+            val weatherSummary = if (LiveOrbState.weatherValid) {
+                val sign = if (LiveOrbState.weatherTemp > 0) "+" else ""
+                val cond = LiveOrbState.weatherConditionText.takeIf { it.isNotBlank() }?.let { " $it" } ?: ""
+                "$sign${LiveOrbState.weatherTemp}°$cond"
+            } else {
+                null
+            }
+            screensaverOverlay.updateClockAndWeather(timeStr, fullDate, weatherSummary)
         }
     }
 
@@ -3273,16 +3221,11 @@ class MainActivity : Activity() {
         val ipLine = if (url != null) {
             "$ip:8080"
         } else {
-            "Подключите станцию к сети"
+            "Нет сети"
         }
         if (force || ipLine != lastIpLineStr) {
             lastIpLineStr = ipLine
-            tvIpLine.text = ipLine
-        }
-        if (ip != lastQrIp) {
-            lastQrIp = ip
-            (ivQr.parent as? View)?.visibility = if (url == null) View.GONE else View.VISIBLE
-            ivQr.setImageBitmap(if (url == null) null else QrGenerator.generateBitmap(url, 180))
+            updateControlCenterState()
         }
     }
 
@@ -3332,6 +3275,17 @@ class MainActivity : Activity() {
                     hwEqSupportedState = hwEqObj?.optBoolean("supported", false) ?: false
                     hwEqProfileState = hwEqObj?.optString("profile", "original") ?: "original"
                     LiveOrbState.updateHardwareEq(hwEqProfileState, hwEqSupportedState)
+
+                    val remObj = root.optJSONObject("remote")
+                    val remConnArr = remObj?.optJSONArray("connected")
+                    val remCount = remConnArr?.length() ?: 0
+                    val remFirst = remConnArr?.optJSONObject(0)?.optString("name", "")?.trim() ?: ""
+                    remoteConnectedTextState = when {
+                        remCount > 0 && remFirst.isNotEmpty() -> remFirst
+                        remCount > 0 -> "Подключён ($remCount)"
+                        remObj?.optBoolean("scanning", false) == true -> "Поиск пульта..."
+                        else -> "Не подключён"
+                    }
 
                     val timersArr = root.optJSONArray("timers")
                     val alarmsArr = root.optJSONArray("alarms")
@@ -3392,30 +3346,19 @@ class MainActivity : Activity() {
                     }
 
                     val ip = detectLocalIp()
-                    val statusStr = if (micMuted) {
-                        "● Громкость $volumePct% · Мик выкл"
-                    } else {
-                        "● Громкость $volumePct%"
-                    }
-                    val astTxt = if (assistantState != "idle") {
-                        "${LiveOrbState.effectiveName()} ${LiveOrbState.activeWord()}"
-                    } else {
-                        "${LiveOrbState.effectiveName()} ${LiveOrbState.readyWord()}"
-                    }
-                    val telStr = "● $astTxt · v$fwVer"
+                    val statusStr = if (micMuted) "$volumePct% · Мик выкл" else "$volumePct%"
+                    val dotColor = Color.parseColor(if (micMuted) "#FDA4AF" else "#34D399")
 
                     handler.post {
                         updateNetworkHeader(ip)
                         renderOrbAssistantUi()
-                        syncServiceChips()
                         timersScreenRef?.update(lastTimersJson, lastTimersFetchedMs, lastAlarmsJson, lastRingingAlarmJson)
                         if (statusStr != lastStatusLineText) {
                             lastStatusLineText = statusStr
                             tvStatusLine.text = statusStr
                         }
-                        if (telStr != lastTelemetryText) {
-                            lastTelemetryText = telStr
-                            tvStationTelemetry.text = telStr
+                        if (::controlStatusDotBg.isInitialized) {
+                            controlStatusDotBg.setColor(dotColor)
                         }
                         val svcSnap = StationAudioService.instance?.musicPlayer?.getSnapshot()
                         if (svcSnap != null) {
@@ -3470,98 +3413,65 @@ class MainActivity : Activity() {
     private fun markDaemonOffline() {
         daemonOnline = false
         handler.post {
-            val s = "○ Подключение..."
+            val s = "Ожидание"
             if (s != lastStatusLineText) {
                 lastStatusLineText = s
                 tvStatusLine.text = s
             }
-            val t = "○ Ожидание системы..."
-            if (t != lastTelemetryText) {
-                lastTelemetryText = t
-                tvStationTelemetry.text = t
+            if (::controlStatusDotBg.isInitialized) {
+                controlStatusDotBg.setColor(Color.parseColor("#64748B"))
             }
             syncPills()
         }
     }
 
-    private fun syncPills(forceViews: Boolean = false) {
-        if (currentPage == 2 || forceViews) {
-            val curVis = LiveOrbState.visualizerStyle
-            val pillsKey = "$ringMode|$micMuted|$outputRoute|$eqPreset|$curVis"
-            if (forceViews || pillsKey != lastPillsKey) {
-                lastPillsKey = pillsKey
-                val ringLabel = when (ringMode) {
-                    "rainbow" -> "Радуга"
-                    "solid" -> "Свет"
-                    "breathe" -> "Дыхание"
-                    "spinner" -> "Круг"
-                    "spectrum", "music" -> "Спектр"
-                    "off" -> "Выкл"
-                    else -> ringMode
-                }
-                tileRing.label.text = "Кольцо: $ringLabel"
-                tileMute.label.text = if (micMuted) "Мик: Выкл" else "Мик: Вкл"
-                if (lastRenderedMicMuted != micMuted) {
-                    lastRenderedMicMuted = micMuted
-                    tileMute.icon.setImageResource(if (micMuted) R.drawable.ic_hw_mic_off else R.drawable.ic_hw_mic_on)
-                }
-                tileMute.root.isSelected = micMuted
-
-                tileRoute.label.text = "Выход: " + when (outputRoute) {
-                    "speakers" -> "Колонка"
-                    "headphones" -> "Наушники"
-                    "hdmi" -> "HDMI"
-                    "both" -> "Вместе"
-                    else -> "Авто"
-                }
-                tileEq.label.text = "EQ: " + when (eqPreset) {
-                    "bass_boost" -> "Бас+"
-                    "vocal" -> "Вокал"
-                    "night" -> "Ночь"
-                    "rock" -> "Рок"
-                    "electronic" -> "Клуб"
-                    "flat" -> "Обычный"
-                    "custom" -> "Кастом"
-                    else -> "Баланс"
-                }
-                tileVis.label.text = "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}"
-            }
-
-            val astBusy = assistantState != "idle"
-            val glowKey = "$astBusy|$ringMode"
-            if (forceViews || glowKey != lastGlowStateKey) {
-                lastGlowStateKey = glowKey
-                val glowColors = when {
-                    astBusy -> intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#33818CF8"))
-                    ringMode == "off" -> intArrayOf(Color.parseColor("#0DFFFFFF"), Color.parseColor("#00FFFFFF"))
-                    ringMode == "solid" -> intArrayOf(Color.parseColor("#2AFFFFFF"), Color.parseColor("#1494A3B8"))
-                    else -> intArrayOf(Color.parseColor("#24FFFFFF"), Color.parseColor("#1838BDF8"))
-                }
-                stationRingGlowBg?.colors = glowColors
-            }
+    private fun updateControlCenterState() {
+        if (!::controlCenter.isInitialized) return
+        val ringing = lastRingingAlarmJson
+        val tCount = lastTimersJson?.length() ?: 0
+        val aEnabled = (0 until (lastAlarmsJson?.length() ?: 0)).count {
+            lastAlarmsJson?.optJSONObject(it)?.optBoolean("enabled", false) == true
         }
-        renderOrbAssistantUi()
-        updateAnimationsState()
+        val timersTxt = when {
+            ringing != null -> "Звонит будильник!"
+            tCount > 0 && aEnabled > 0 -> "Т: $tCount · Б: $aEnabled"
+            tCount > 0 -> "Таймеры ($tCount)"
+            aEnabled > 0 -> "Будильники ($aEnabled)"
+            else -> "Нет активных"
+        }
+        val astStatus = when {
+            !daemonOnline -> "Подключение к системе · v$fwVer"
+            assistantState != "idle" -> "${LiveOrbState.effectiveName()} ${LiveOrbState.activeWord()} · v$fwVer"
+            else -> "${LiveOrbState.effectiveName()} ${LiveOrbState.readyWord()} · v$fwVer"
+        }
+        controlCenter.syncState(
+            telemetry = astStatus,
+            micMuted = micMuted,
+            ringMode = ringMode,
+            outputRoute = outputRoute,
+            eqPreset = eqPreset,
+            visualizerStyle = LiveOrbState.visualizerStyle,
+            visualizerLabel = visualizerLabel(LiveOrbState.visualizerStyle),
+            cecStandby = cecState,
+            assistantName = LiveOrbState.effectiveName(),
+            hwEqSupported = hwEqSupportedState,
+            hwEqProfile = hwEqProfileState,
+            timersCountText = timersTxt,
+            remoteConnectedText = remoteConnectedTextState,
+            ipLine = lastIpLineStr,
+            fwVer = fwVer,
+            otaJson = otaLatestJson
+        )
     }
 
-    private fun updateAnimationsState() {
-        val runVinyl = (currentPage == 1) && latestMusicSnap.playing
-        if (runVinyl) {
-            vinylAnimator?.let {
-                if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
-            }
-        } else {
-            vinylAnimator?.let { if (it.isRunning) it.pause() }
-        }
+    private fun updateControlCenterMusic() {
+        if (!::controlCenter.isInitialized) return
+        controlCenter.syncMusic(latestMusicSnap, latestCoverBmp)
+    }
 
-        val runDial = (currentPage == 2) && (latestMusicSnap.playing || LiveOrbState.assistantState != "idle")
-        if (runDial) {
-            dialAnimator?.let {
-                if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
-            }
-        } else {
-            dialAnimator?.let { if (it.isRunning) it.pause() }
-        }
+    private fun syncPills(forceViews: Boolean = false) {
+        updateControlCenterState()
+        renderOrbAssistantUi()
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3579,20 +3489,46 @@ class MainActivity : Activity() {
     }
 
     private fun setHomeCoverArt(bmp: android.graphics.Bitmap?) {
+        latestCoverBmp = bmp
         if (bmp != null) {
             ivHomeCover.scaleType = ImageView.ScaleType.CENTER_CROP
+            ivHomeCover.scaleX = 1.0f
+            ivHomeCover.scaleY = 1.0f
             ivHomeCover.background = GradientDrawable().apply {
                 setColor(Color.parseColor("#111927"))
-                cornerRadius = dp(14).toFloat()
+                cornerRadius = dp(24).toFloat()
+            }
+            ivHomeCover.clipToOutline = true
+            ivHomeCover.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, v.width, v.height, dp(24).toFloat())
+                }
             }
             ivHomeCover.setImageBitmap(bmp)
-            viewHomeCoverBorder.visibility = View.VISIBLE
         } else {
-            ivHomeCover.scaleType = ImageView.ScaleType.FIT_CENTER
+            ivHomeCover.scaleType = ImageView.ScaleType.CENTER_CROP
+            ivHomeCover.scaleX = 1.0f
+            ivHomeCover.scaleY = 1.0f
             ivHomeCover.background = null
-            ivHomeCover.setImageResource(R.drawable.sprite_ym_emblem)
-            viewHomeCoverBorder.visibility = View.GONE
+            ivHomeCover.clipToOutline = true
+            ivHomeCover.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(v: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, v.width, v.height, dp(24).toFloat())
+                }
+            }
+            ivHomeCover.setSpriteDrawable(R.drawable.sprite_ym_emblem)
         }
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.setMusicCoverBitmap(bmp, showAmbient = true)
+            syncBackdropBlurForUiState(animate = false)
+        }
+        if (::musicPlayerSheet.isInitialized && (musicPlayerSheet.isOpen || bmp != null)) {
+            musicPlayerSheet.renderSnapshot(latestMusicSnap, cachedCoverBmp = bmp)
+        }
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.updateMusic(latestMusicSnap, bmp)
+        }
+        updateControlCenterMusic()
     }
 
     private fun renderMusicSnapshot(snap: YmPlayerSnapshot, forceViews: Boolean = false) {
@@ -3600,29 +3536,47 @@ class MainActivity : Activity() {
         LiveOrbState.musicPlaying = snap.playing
 
         val tr = snap.currentTrack
-        val chipText = if (tr != null) {
-            val prefix = if (snap.playing) "♫ " else "❚❚ "
-            "$prefix${tr.artists} — ${tr.title}"
-        } else {
-            "Яндекс Музыка · Моя волна"
-        }
-        val dockStr = if (tr != null) chipText else ""
-        if (dockStr != lastDockMusicStr) {
-            lastDockMusicStr = dockStr
-            tvDockMusic.text = dockStr
-            tvDockMusic.visibility = if (dockStr.isNotEmpty()) View.VISIBLE else View.GONE
+        updateControlCenterMusic()
+
+        val shouldLoadCover = (currentPage == 1) || forceViews ||
+            (::controlCenter.isInitialized && controlCenter.isOpen) ||
+            (::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen) ||
+            (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen)
+        if (tr != null && shouldLoadCover) {
+            val coverUrl = tr.coverUrl(300)
+            if (coverUrl != lastHomeCoverUrl) {
+                lastHomeCoverUrl = coverUrl
+                if (coverUrl.isBlank()) {
+                    setHomeCoverArt(null)
+                } else {
+                    val api = StationAudioService.instance?.musicPlayer?.api
+                    if (api != null) {
+                        thread(isDaemon = true) {
+                            val bmp = api.loadCoverBitmap(coverUrl, 300)
+                            if (bmp != null && lastHomeCoverUrl == coverUrl) {
+                                handler.post {
+                                    if (lastHomeCoverUrl == coverUrl) {
+                                        setHomeCoverArt(bmp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (tr == null && lastHomeCoverUrl.isNotEmpty()) {
+            lastHomeCoverUrl = ""
+            setHomeCoverArt(null)
         }
 
         if (currentPage == 1 || forceViews) {
             tvHomeSourceBadge.text = snap.sourceLabel.uppercase(Locale.getDefault())
 
-            tvHomeCodecBadge.visibility = View.GONE
-
             val err = snap.lastError
             val errClean = err.removePrefix("AUTH_REQUIRED:").trim()
             when {
                 err.isNotBlank() -> {
-                    tvHomeAuthBadge.text = "⚠ $errClean"
+                    tvHomeAuthBadge.text = errClean
                     tvHomeAuthBadge.setTextColor(Color.parseColor("#FCA5A5"))
                 }
                 snap.buffering -> {
@@ -3630,24 +3584,31 @@ class MainActivity : Activity() {
                     tvHomeAuthBadge.setTextColor(Color.parseColor("#CBD5E1"))
                 }
                 snap.account.loggedIn -> {
-                    val nm = snap.account.login.ifBlank { snap.account.fullName.ifBlank { "OK" } }
+                    val nm = snap.account.login.ifBlank { snap.account.fullName.ifBlank { "Аккаунт" } }
                     val plus = if (snap.account.hasPlus) " · Плюс" else ""
-                    tvHomeAuthBadge.text = "● $nm$plus"
+                    tvHomeAuthBadge.text = "$nm$plus"
                     tvHomeAuthBadge.setTextColor(Color.parseColor("#86EFAC"))
                 }
                 else -> {
-                    tvHomeAuthBadge.text = "Нужен вход · нажмите «Плеер»"
+                    tvHomeAuthBadge.text = "Откройте обложку или ↓"
                     tvHomeAuthBadge.setTextColor(Color.parseColor("#94A3B8"))
                 }
             }
 
             if (tr != null) {
                 tvHomeTrackTitle.text = tr.title
-                tvHomeTrackArtist.text = if (tr.album.isNotBlank()) "${tr.artists}  ·  ${tr.album}" else tr.artists
+                tvHomeTrackArtist.text = if (tr.album.isNotBlank()) "${tr.artists} · ${tr.album}" else tr.artists
                 val dur = maxOf(snap.durationMs, tr.durationMs)
                 val pos = snap.positionMs.coerceAtLeast(0L)
-                pbHomeTrack.progress = if (dur > 0L) ((pos * 1000L) / dur).toInt().coerceIn(0, 1000) else 0
-                tvHomeTrackTime.text = "${formatTimeMs(pos)} / ${formatTimeMs(dur)}"
+                if (dur > 0L) {
+                    pbHomeTrack.visibility = View.VISIBLE
+                    tvHomeTrackTime.visibility = View.VISIBLE
+                    pbHomeTrack.progress = ((pos * 1000L) / dur).toInt().coerceIn(0, 1000)
+                    tvHomeTrackTime.text = "${formatTimeMs(pos)} / ${formatTimeMs(dur)}"
+                } else {
+                    pbHomeTrack.visibility = View.INVISIBLE
+                    tvHomeTrackTime.visibility = View.INVISIBLE
+                }
 
                 if (forceViews || lastTrackLiked != tr.liked) {
                     lastTrackLiked = tr.liked
@@ -3655,40 +3616,14 @@ class MainActivity : Activity() {
                         getDrawable(if (tr.liked) R.drawable.ic_heart_filled else R.drawable.ic_heart_outline)
                     )
                 }
-
-                val coverUrl = tr.coverUrl(300)
-                if (coverUrl != lastHomeCoverUrl) {
-                    lastHomeCoverUrl = coverUrl
-                    if (coverUrl.isBlank()) {
-                        setHomeCoverArt(null)
-                    } else {
-                        val api = StationAudioService.instance?.musicPlayer?.api
-                        if (api != null) {
-                            thread(isDaemon = true) {
-                                val bmp = api.loadCoverBitmap(coverUrl, 300)
-                                if (bmp != null && lastHomeCoverUrl == coverUrl) {
-                                    handler.post {
-                                        if (lastHomeCoverUrl == coverUrl) {
-                                            setHomeCoverArt(bmp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             } else {
-                tvHomeTrackTitle.text = "Моя волна — поток музыки"
-                tvHomeTrackArtist.text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или жмите «Моя волна»"
-                pbHomeTrack.progress = 0
-                tvHomeTrackTime.text = "00:00 / 00:00"
+                tvHomeTrackTitle.text = "Моя волна"
+                tvHomeTrackArtist.text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или нажмите «Моя волна»"
+                pbHomeTrack.visibility = View.INVISIBLE
+                tvHomeTrackTime.visibility = View.INVISIBLE
                 if (forceViews || lastTrackLiked != false) {
                     lastTrackLiked = false
                     btnHomeLike.icon.setImageDrawable(getDrawable(R.drawable.ic_heart_outline))
-                }
-                if (lastHomeCoverUrl.isNotEmpty()) {
-                    lastHomeCoverUrl = ""
-                    setHomeCoverArt(null)
                 }
             }
 
@@ -3707,7 +3642,12 @@ class MainActivity : Activity() {
                 btnHomePlayPause.icon.setImageDrawable(ppIcon)
             }
         }
-        updateAnimationsState()
+        if (::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen) {
+            musicPlayerSheet.renderSnapshot(snap, cachedCoverBmp = latestCoverBmp)
+        }
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            screensaverOverlay.updateMusic(snap, latestCoverBmp)
+        }
     }
 
     private fun formatTimeMs(ms: Long): String {
@@ -3751,14 +3691,61 @@ class MainActivity : Activity() {
         sendMusicServiceCmd("action", action)
     }
 
+    private fun openMusicPlayerSheet(initialTab: String? = null) {
+        if (!::musicPlayerSheet.isInitialized) return
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            screensaverOverlay.close(immediate = true)
+        }
+        if (appsDrawerOpen) closeAppsDrawer(immediate = true)
+        musicPlayerSheet.open(initialTab)
+        musicPlayerSheet.renderSnapshot(latestMusicSnap, cachedCoverBmp = latestCoverBmp)
+        syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = true)
+    }
+
+    private fun closeMusicPlayerSheet(immediate: Boolean = false) {
+        if (!::musicPlayerSheet.isInitialized) return
+        if (!musicPlayerSheet.isOpen && musicPlayerSheet.rootOverlay.visibility != View.VISIBLE) return
+        musicPlayerSheet.close(immediate = immediate)
+        syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = !immediate)
+        if (!isAnyOverlayActive()) {
+            focusPageControlDirect(currentPage)
+        }
+    }
+
+    private fun openScreensaver() {
+        if (!::screensaverOverlay.isInitialized || screensaverOverlay.isOpen) return
+        updateClock(force = true)
+        screensaverOverlay.updateMusic(latestMusicSnap, latestCoverBmp)
+        screensaverOverlay.open()
+        syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = true)
+    }
+
+    private fun closeScreensaver(immediate: Boolean = false) {
+        if (!::screensaverOverlay.isInitialized) return
+        if (!screensaverOverlay.isOpen && screensaverOverlay.rootOverlay.visibility != View.VISIBLE) return
+        screensaverOverlay.close(immediate = immediate)
+        syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = !immediate)
+        if (!isAnyOverlayActive()) {
+            focusPageControlDirect(currentPage)
+        }
+    }
+
     private fun launchYandexMusic(sourceView: View? = null) {
+        if (::musicPlayerSheet.isInitialized) {
+            openMusicPlayerSheet()
+            return
+        }
         launchWithGlassTransition(sourceView) {
             try {
                 val i = Intent(this, YandexMusicActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }
                 startActivity(i)
-                overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
+                overridePendingTransition(R.anim.spatial_sheet_in_up, R.anim.spatial_hold_fade_out)
             } catch (t: Throwable) {
                 Toast.makeText(this, "Не удалось открыть Яндекс Музыку: ${t.message}", Toast.LENGTH_SHORT).show()
             }
@@ -3781,7 +3768,7 @@ class MainActivity : Activity() {
 
     private val otaDialogPollRunnable = object : Runnable {
         override fun run() {
-            if (otaDialog?.isShowing != true) return
+            if (!otaModalOpen || !homeCustomOpen) return
             thread(isDaemon = true) {
                 try {
                     val conn = (URL("http://127.0.0.1:8080/api/ota/status").openConnection() as HttpURLConnection).apply {
@@ -3802,49 +3789,23 @@ class MainActivity : Activity() {
 
     private fun applyOtaUi(ota: JSONObject?) {
         if (ota != null) otaLatestJson = ota
-        val cur = ota ?: otaLatestJson ?: return
-        val avail = cur.optBoolean("updateAvailable", false)
-        val busy = cur.optBoolean("busy", false)
-        val latestVer = cur.optString("latestVersion", "")
-        val pct = cur.optInt("progressPct", 0)
-        val key = "$avail|$busy|$latestVer|${if (busy) pct else -1}"
-        if (key != lastOtaBtnKey && ::btnOtaUpdate.isInitialized) {
-            lastOtaBtnKey = key
-            when {
-                busy -> {
-                    btnOtaUpdate.text = "⏳ $pct%"
-                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill)
-                    btnOtaUpdate.setTextColor(Color.parseColor("#38BDF8"))
-                }
-                avail -> {
-                    btnOtaUpdate.text = if (latestVer.isNotBlank()) "⬇ v$latestVer" else "⬇ Обновить"
-                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill_gold)
-                    btnOtaUpdate.setTextColor(Color.parseColor("#0B0F17"))
-                }
-                else -> {
-                    btnOtaUpdate.text = "⬇ OTA"
-                    btnOtaUpdate.setBackgroundResource(R.drawable.bg_pill)
-                    btnOtaUpdate.setTextColor(Color.parseColor("#E2E8F0"))
-                }
-            }
-        }
+        updateControlCenterState()
         refreshOtaDialogViews()
     }
 
     private fun refreshOtaDialogViews() {
-        val dlg = otaDialog ?: return
-        if (!dlg.isShowing) return
+        if (!otaModalOpen || !homeCustomOpen) return
         val o = otaLatestJson
-        val tv = otaDialogStatusTv
-        val clTv = otaDialogChangelogTv
-        val instBtn = otaDialogInstallBtn
+        val tv = otaModalStatusTv
+        val clTv = otaModalChangelogTv
+        val instBtn = otaModalInstallBtn
         if (o == null) {
             tv?.text = "Проверка обновлений..."
             clTv?.visibility = View.GONE
             instBtn?.isEnabled = false
             return
         }
-        val instVer = o.optString("installedVersion", "1.2.3")
+        val instVer = o.optString("installedVersion", fwVer)
         val latVer = o.optString("latestVersion", "")
         val repo = o.optString("repo", "Olegu621/OPENSTATION")
         val st = o.optString("state", "idle")
@@ -3878,10 +3839,10 @@ class MainActivity : Activity() {
             }
             append('\n')
             when {
-                st == "error" -> append("✗ Ошибка: ").append(err.ifBlank { ptxt })
-                busy -> append("⏳ ").append(pct).append("% — ").append(ptxt)
-                avail -> append("✨ Доступно обновление! Ваши настройки, ключи и аккаунт сохранятся.")
-                st == "up_to_date" -> append("✓ ").append(ptxt.ifBlank { "Установлена актуальная версия" })
+                st == "error" -> append("Ошибка: ").append(err.ifBlank { ptxt })
+                busy -> append("Выполняется: ").append(pct).append("% — ").append(ptxt)
+                avail -> append("Доступно обновление! Ваши настройки, ключи и аккаунт сохранятся.")
+                st == "up_to_date" -> append(ptxt.ifBlank { "Установлена актуальная версия" })
                 else -> append("Нажмите «Проверить обновления» для поиска новой версии.")
             }
         }
@@ -3893,6 +3854,7 @@ class MainActivity : Activity() {
             clTv?.visibility = View.GONE
         }
         instBtn?.isEnabled = !busy && (avail || st == "up_to_date")
+        instBtn?.alpha = if (instBtn?.isEnabled == true) 1f else 0.45f
         instBtn?.text = when {
             busy -> "Обновление ($pct%)..."
             avail && latVer.isNotBlank() -> "Установить v$latVer"
@@ -3901,67 +3863,105 @@ class MainActivity : Activity() {
     }
 
     private fun openOtaDialog() {
-        try { otaDialog?.dismiss() } catch (_: Throwable) {}
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(16), dp(22), dp(8))
-        }
+        handler.removeCallbacks(otaDialogPollRunnable)
+        clearLensCleanups(customOverlayLensCleanups)
+        otaModalOpen = true
+
+        val panel = makeModalGlassPanel(620)
+        panel.addView(TextView(this).apply {
+            text = "Обновление прошивки (OTA)"
+            typeface = YandexFonts.displayBold(this@MainActivity)
+            textSize = 19f
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(10))
+        })
+
         val statusTv = TextView(this).apply {
+            typeface = YandexFonts.displayRegular(this@MainActivity)
             setTextColor(Color.parseColor("#E2E8F0"))
             textSize = 13.5f
             setLineSpacing(dp(3).toFloat(), 1.0f)
         }
         val changelogTv = TextView(this).apply {
-            setTextColor(Color.parseColor("#93C5FD"))
+            typeface = YandexFonts.displayRegular(this@MainActivity)
+            setTextColor(Color.parseColor("#BAE6FD"))
             textSize = 12.5f
             setPadding(0, dp(10), 0, 0)
             visibility = View.GONE
         }
-        body.addView(statusTv)
-        body.addView(changelogTv)
-        otaDialogStatusTv = statusTv
-        otaDialogChangelogTv = changelogTv
+        panel.addView(statusTv)
+        panel.addView(changelogTv)
 
-        val dlg = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("☁ Обновление прошивки")
-            .setView(body)
-            .setPositiveButton("Установить обновление", null)
-            .setNeutralButton("Проверить обновления", null)
-            .setNegativeButton("Закрыть") { d, _ -> d.dismiss() }
-            .create()
-        dlg.setOnDismissListener {
-            handler.removeCallbacks(otaDialogPollRunnable)
-            if (otaDialog === dlg) {
-                otaDialog = null
-                otaDialogStatusTv = null
-                otaDialogChangelogTv = null
-                otaDialogInstallBtn = null
+        val btnInstall = TextView(this).apply {
+            text = "Установить обновление"
+            typeface = YandexFonts.displayMedium(this@MainActivity)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            isFocusable = true
+            isClickable = true
+            bindGlassLens(
+                customOverlayLensCleanups,
+                this,
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#580284C7"),
+                    focusTint = Color.parseColor("#9238BDF8"),
+                    accentTint = Color.parseColor("#7DD3FC"),
+                    bevelDp = 12f,
+                    refractDp = 10f,
+                    chromaDp = 2.0f,
+                    shadowDp = 12f,
+                    rimAlpha = 0.45f,
+                    focusRimAlpha = 0.92f,
+                    blurMix = 0.88f
+                ),
+                fallbackTint = Color.parseColor("#660284C7")
+            )
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 210L)).setInterpolator(focusSpring).start()
+            }
+            setOnClickListener {
+                val cur = otaLatestJson
+                val force = !(cur?.optBoolean("updateAvailable", false) ?: false)
+                isEnabled = false
+                alpha = 0.45f
+                postAsync("http://127.0.0.1:8080/api/ota/install", JSONObject().put("force", force).toString())
+                Toast.makeText(this@MainActivity, "Запуск OTA с GitHub...", Toast.LENGTH_SHORT).show()
+                handler.removeCallbacks(otaDialogPollRunnable)
+                handler.postDelayed(otaDialogPollRunnable, 350L)
             }
         }
-        otaDialog = dlg
-        dlg.show()
-
-        val posBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
-        val neuBtn = dlg.getButton(AlertDialog.BUTTON_NEUTRAL)
-        otaDialogInstallBtn = posBtn
-        posBtn?.setOnClickListener {
-            val cur = otaLatestJson
-            val force = !(cur?.optBoolean("updateAvailable", false) ?: false)
-            posBtn.isEnabled = false
-            postAsync("http://127.0.0.1:8080/api/ota/install", JSONObject().put("force", force).toString())
-            Toast.makeText(this, "Запуск OTA с GitHub...", Toast.LENGTH_SHORT).show()
-            handler.removeCallbacks(otaDialogPollRunnable)
-            handler.postDelayed(otaDialogPollRunnable, 350L)
-        }
-        neuBtn?.setOnClickListener {
+        val btnCheck = makeTextIconPill(R.drawable.ic_refresh, "Проверить", accent = false, cleanupPool = customOverlayLensCleanups) {
             postAsync("http://127.0.0.1:8080/api/ota/check", "{}")
             Toast.makeText(this, "Проверка GitHub...", Toast.LENGTH_SHORT).show()
             handler.removeCallbacks(otaDialogPollRunnable)
             handler.postDelayed(otaDialogPollRunnable, 250L)
         }
+        val btnClose = makeTextIconPill(R.drawable.ic_home, "Закрыть", accent = false, cleanupPool = customOverlayLensCleanups) {
+            closeHomeCustomizationMenu()
+        }
 
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(18), 0, 0)
+            clipChildren = false
+            clipToPadding = false
+        }
+        btnRow.addView(btnCheck, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)).apply { rightMargin = dp(10) })
+        btnRow.addView(btnInstall, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)).apply { rightMargin = dp(10) })
+        btnRow.addView(btnClose, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)))
+        panel.addView(btnRow)
+
+        otaModalStatusTv = statusTv
+        otaModalChangelogTv = changelogTv
+        otaModalInstallBtn = btnInstall
+
+        presentOverlayModal(panel, btnInstall)
         refreshOtaDialogViews()
-        handler.removeCallbacks(otaDialogPollRunnable)
         handler.post(otaDialogPollRunnable)
     }
 
@@ -4041,12 +4041,11 @@ class MainActivity : Activity() {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
-    private var cecState = false
     private fun toggleCec() {
         cecState = !cecState
         val cmd = if (cecState) "standby" else "wake"
         sendCec(cmd)
-        tileCec.label.text = if (cecState) "ТВ: Выключен" else "ТВ: Включён"
+        syncPills()
     }
 
     private val visualizerStyles = listOf(
@@ -4068,7 +4067,7 @@ class MainActivity : Activity() {
         val (next, name) = visualizerStyles[(curIdx + 1) % visualizerStyles.size]
         LiveOrbState.visualizerStyle = next
         LiveOrbState.previewUntilMs = System.currentTimeMillis() + 8000L
-        tileVis.label.text = "Экран: $name"
+        syncPills()
         Toast.makeText(this, "Визуализация экранчика: $name", Toast.LENGTH_SHORT).show()
         val body = JSONObject()
             .put("ledScreen", JSONObject().put("visualizerStyle", next))
@@ -4078,25 +4077,32 @@ class MainActivity : Activity() {
 
     private fun makeGlassWidgetCard(accentHex: String, onClick: () -> Unit): LinearLayout {
         val accent = Color.parseColor(accentHex)
-        val normStroke = Color.argb(86, Color.red(accent), Color.green(accent), Color.blue(accent))
-        val focStroke = Color.argb(235, Color.red(accent), Color.green(accent), Color.blue(accent))
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                staticLensCleanups,
                 this,
-                radiusDp = 18f,
-                baseTint = Color.parseColor("#5C0B1324"),
-                focusTint = Color.parseColor("#86142542"),
-                normalStroke = normStroke,
-                focusStroke = focStroke,
-                refractStrength = 1.0f
+                SpatialLensSpec(
+                    radiusDp = 20f,
+                    baseTint = Color.parseColor("#320B1324"),
+                    focusTint = Color.parseColor("#54142542"),
+                    accentTint = accent,
+                    bevelDp = 13f,
+                    refractDp = 11f,
+                    chromaDp = 1.8f,
+                    shadowDp = 14f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.85f,
+                    blurMix = 0.88f
+                ),
+                fallbackTint = Color.parseColor("#5C0B1324")
             )
-            elevation = dp(10).toFloat()
             setPadding(dp(14), dp(10), dp(14), dp(10))
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(110).start()
+                v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 210L)).setInterpolator(focusSpring).start()
             }
             setOnClickListener { onClick() }
         }
@@ -4164,17 +4170,24 @@ class MainActivity : Activity() {
         }
         if (::tvWidgetRemoteState.isInitialized) {
             val st = StationAudioService.instance?.bleRemoteManager?.getRemoteStatus()
-            if (st != null && st.bonded) {
-                val bat = if (st.batteryPct >= 0) " · ${st.batteryPct}%" else ""
-                tvWidgetRemoteState.text = "${st.name}$bat · Нажмите (Зуммер)"
+            when {
+                st != null && st.connected -> {
+                    val bat = if (st.batteryPct >= 0) " · ${st.batteryPct}%" else ""
+                    tvWidgetRemoteState.text = "✓ ${st.name}$bat · Подключён"
+                }
+                st != null && st.bonded -> {
+                    tvWidgetRemoteState.text = "${st.name} · Не подключён"
+                }
+                else -> {
+                    tvWidgetRemoteState.text = "Пульт не подключён · Найти"
+                }
             }
         }
     }
 
     // -----------------------------------------------------------------------------------------
-    // SYNCHRONIZED BOOT REVEAL + BLURRED GLASS TRANSITIONS + WALLPAPER ENGINE
+    // SYNCHRONIZED BOOT REVEAL + SPATIAL BLUR TRANSITIONS + WALLPAPER ENGINE
     // -----------------------------------------------------------------------------------------
-    private var ivDrawerBlurBg: ImageView? = null
     private var launchTimeoutRunnable: Runnable? = null
 
     private fun startBootRevealFlow() {
@@ -4295,8 +4308,9 @@ class MainActivity : Activity() {
         }, 320L)
 
         if (::tvHeroState.isInitialized && ::tvHeroReply.isInitialized) {
-            tvHeroState.text = "OPENSTATION MAX · ДОБРО ПОЖАЛОВАТЬ"
+            tvHeroState.text = "OPENSTATION MAX"
             tvHeroReply.text = "Жидкое стекло, акустика и матричный дисплей активны."
+            renderOrbAssistantUi()
         }
         handler.postDelayed({
             startupShowActive = false
@@ -4309,45 +4323,41 @@ class MainActivity : Activity() {
     }
 
     private fun launchWithGlassTransition(anchorView: View?, launchBlock: () -> Unit) {
-        if (!::blurCurtainHost.isInitialized) {
-            launchBlock()
-            return
-        }
         launchTimeoutRunnable?.let { handler.removeCallbacks(it) }
-        LiquidGlassKit.blurredWallpaper?.let { ivBlurCurtain.setImageBitmap(it) }
-
         closeAllOverlays(immediate = false)
         returningFromExternalApp = true
 
-        blurCurtainHost.animate().cancel()
         shellCol.animate().cancel()
         heroOrbView.animate().cancel()
 
-        blurCurtainHost.visibility = View.VISIBLE
-        blurCurtainHost.alpha = 0f
-        blurCurtainHost.animate()
-            .alpha(1f)
-            .setDuration(200L)
-            .setInterpolator(easeOutCubic)
-            .start()
+        if (::spatialBackdrop.isInitialized) {
+            backdropBlurAnimator?.cancel()
+            spatialBackdrop.setSceneState(
+                backdropBlur = 1f,
+                backdropDim = 0.48f,
+                orbEnergy = 0.35f,
+                orbColor = 0,
+                musicAmbientAlpha = sceneCoverAlpha
+            )
+        }
 
         shellCol.animate()
-            .scaleX(0.94f)
-            .scaleY(0.94f)
+            .scaleX(0.95f)
+            .scaleY(0.95f)
             .alpha(0.32f)
-            .setDuration(200L)
+            .setDuration(MotionPrefs.dur(this, 360L))
             .setInterpolator(easeOutCubic)
             .start()
 
         heroOrbView.animate()
             .alpha(0.24f)
-            .setDuration(180L)
+            .setDuration(MotionPrefs.dur(this, 340L))
             .start()
 
         anchorView?.animate()
-            ?.scaleX(1.10f)
-            ?.scaleY(1.10f)
-            ?.setDuration(150L)
+            ?.scaleX(1.09f)
+            ?.scaleY(1.09f)
+            ?.setDuration(MotionPrefs.dur(this, 240L))
             ?.setInterpolator(easeOutCubic)
             ?.start()
 
@@ -4361,7 +4371,7 @@ class MainActivity : Activity() {
 
         handler.postDelayed({
             launchBlock()
-        }, 145L)
+        }, MotionPrefs.dur(this, 240L, 90L))
     }
 
     private fun settleFromExternalAppIfNeeded() {
@@ -4370,54 +4380,40 @@ class MainActivity : Activity() {
         launchTimeoutRunnable?.let { handler.removeCallbacks(it) }
         launchTimeoutRunnable = null
 
-        if (!::blurCurtainHost.isInitialized || !::shellCol.isInitialized) return
-        LiquidGlassKit.blurredWallpaper?.let { ivBlurCurtain.setImageBitmap(it) }
-
-        blurCurtainHost.animate().cancel()
+        if (!::shellCol.isInitialized) return
         shellCol.animate().cancel()
         heroOrbView.animate().cancel()
 
-        blurCurtainHost.visibility = View.VISIBLE
-        blurCurtainHost.alpha = 0.90f
-        shellCol.scaleX = 0.94f
-        shellCol.scaleY = 0.94f
+        shellCol.scaleX = 0.95f
+        shellCol.scaleY = 0.95f
         shellCol.alpha = 0.35f
 
         shellCol.animate()
             .scaleX(1f)
             .scaleY(1f)
             .alpha(1f)
-            .setDuration(300L)
+            .setDuration(MotionPrefs.dur(this, 480L))
             .setInterpolator(easeOutCubic)
             .start()
 
         heroOrbView.animate()
             .alpha(1f)
-            .setDuration(300L)
-            .setInterpolator(easeOutCubic)
-            .withEndAction { applyPageVisuals(currentPagePos) }
-            .start()
-
-        blurCurtainHost.animate()
-            .alpha(0f)
-            .setDuration(320L)
+            .setDuration(MotionPrefs.dur(this, 480L))
             .setInterpolator(easeOutCubic)
             .withEndAction {
-                blurCurtainHost.visibility = View.GONE
+                applyPageVisuals(currentScreenPos)
+                syncBackdropBlurForUiState(animate = true)
             }
             .start()
     }
 
     private fun applyWallpaperTheme(themeId: String, persist: Boolean = true) {
         LiquidGlassKit.setWallpaper(this, themeId, persist)
-        if (::ivBg.isInitialized) {
-            LiquidGlassKit.sharpWallpaper?.let { ivBg.setImageBitmap(it) }
+        if (::ivBgFallback.isInitialized) {
+            LiquidGlassKit.sharpWallpaper?.let { ivBgFallback.setImageBitmap(it) }
         }
-        if (::ivBlurCurtain.isInitialized) {
-            LiquidGlassKit.blurredWallpaper?.let { ivBlurCurtain.setImageBitmap(it) }
-        }
-        ivDrawerBlurBg?.let { iv ->
-            LiquidGlassKit.blurredWallpaper?.let { iv.setImageBitmap(it) }
+        if (::spatialBackdrop.isInitialized) {
+            spatialBackdrop.setWallpaperBitmap(LiquidGlassKit.sharpWallpaper)
         }
         if (::rootFrame.isInitialized) {
             LiquidGlassKit.refreshGlassTree(rootFrame)
@@ -4425,35 +4421,22 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // APPS DRAWER OVERLAY (DPAD_DOWN on Home -> Frosted Grid with OPENSTATION APPS #1)
+    // APPS DRAWER OVERLAY (DPAD_DOWN on Home -> Optical Spatial App Grid)
     // -----------------------------------------------------------------------------------------
     private fun buildAppsDrawerOverlay(): FrameLayout {
         val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#3802050E"))
             isClickable = true
             isFocusable = false
+            clipChildren = false
+            clipToPadding = false
         }
-        val blurBg = ImageView(this).apply {
-            LiquidGlassKit.blurredWallpaper?.let { setImageBitmap(it) }
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        ivDrawerBlurBg = blurBg
-        val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#BA040812"))
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-        overlay.addView(blurBg)
-        overlay.addView(scrim)
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(26), dp(22), dp(26), dp(20))
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(36), dp(24), dp(36), dp(22))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -4463,80 +4446,93 @@ class MainActivity : Activity() {
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = dp(14)
+                bottomMargin = dp(10)
             }
         }
-        val titleCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
         val tvTitle = TextView(this).apply {
-            text = "ПРИЛОЖЕНИЯ СТАНЦИИ"
+            text = "Приложения"
             setTextColor(Color.WHITE)
-            textSize = 20f
-            letterSpacing = 0.06f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 24f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+            setShadowLayer(12f, 0f, 3f, Color.parseColor("#55000000"))
         }
-        val tvSub = TextView(this).apply {
-            text = "OPENSTATION APPS закреплён первым  ·  Удерживайте OK на плитке для меню (переместить, скрыть, удалить, инфо)"
-            setTextColor(Color.parseColor("#94A3B8"))
-            textSize = 11.5f
-            setPadding(0, dp(2), 0, 0)
+        val spacer = View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         }
-        titleCol.addView(tvTitle)
-        titleCol.addView(tvSub)
 
         tvDrawerStatusPill = TextView(this).apply {
-            text = "Список приложений"
+            text = "Все приложения"
             setTextColor(Color.parseColor("#E2E8F0"))
             textSize = 11.5f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayMedium(this@MainActivity)
             setPadding(dp(14), dp(6), dp(14), dp(6))
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                staticLensCleanups,
                 this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#38090F1A"),
-                normalStroke = Color.parseColor("#24FFFFFF"),
-                refractStrength = 0.85f
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = Color.parseColor("#2A0C162A"),
+                    focusTint = Color.parseColor("#44142848"),
+                    bevelDp = 11f,
+                    refractDp = 9f,
+                    chromaDp = 1.6f,
+                    shadowDp = 10f,
+                    rimAlpha = 0.30f,
+                    focusRimAlpha = 0.80f,
+                    blurMix = 0.86f
+                ),
+                fallbackTint = Color.parseColor("#38090F1A")
             )
             isFocusable = false
         }
-        headerRow.addView(titleCol)
+        headerRow.addView(tvTitle)
+        headerRow.addView(spacer)
         headerRow.addView(tvDrawerStatusPill)
         panel.addView(headerRow)
 
         drawerScrollView = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
-            clipToPadding = false
+            isFillViewport = true
+            clipChildren = true
+            clipToPadding = true
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 0,
                 1f
             )
         }
-        drawerAppsGrid = GridLayout(this).apply {
-            columnCount = 5
-            useDefaultMargins = false
-            layoutParams = ViewGroup.LayoutParams(
+        drawerScrollContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
-        drawerScrollView.addView(drawerAppsGrid)
-        panel.addView(drawerScrollView)
-
-        val footerHint = TextView(this).apply {
-            text = "▲ или BACK — вернуться на рабочий стол (${LiveOrbState.effectiveName()})"
-            setTextColor(Color.parseColor("#64748B"))
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setPadding(0, dp(10), 0, 0)
+        drawerAppsGrid = GridLayout(this).apply {
+            columnCount = 5
+            useDefaultMargins = false
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(8), dp(12), dp(8), dp(18))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
         }
-        panel.addView(footerHint)
+        drawerScrollContent.addView(drawerAppsGrid)
+        drawerScrollView.addView(drawerScrollContent)
+        panel.addView(drawerScrollView)
 
         overlay.addView(panel)
         return overlay
@@ -4547,26 +4543,30 @@ class MainActivity : Activity() {
         reorderingPkg = null
         appsDrawerOpen = true
         loadAndRenderApps()
-        LiquidGlassKit.blurredWallpaper?.let { ivDrawerBlurBg?.setImageBitmap(it) }
+        syncBackdropBlurForUiState(animate = true)
 
         appsDrawerOverlay.animate().cancel()
         appsDrawerOverlay.visibility = View.VISIBLE
         syncLayerFocusability()
         appsDrawerOverlay.alpha = 0f
-        appsDrawerOverlay.translationY = dp(48).toFloat()
+        appsDrawerOverlay.translationY = dp(52).toFloat()
         appsDrawerOverlay.animate()
             .alpha(1f)
             .translationY(0f)
-            .setDuration(250L)
+            .setDuration(MotionPrefs.dur(this, 480L))
             .setInterpolator(easeOutCubic)
+            .withLayer()
             .start()
 
         drawerScrollView.scrollTo(0, 0)
-        val immediateTarget = drawerTileViews[focusPkg] ?: drawerTileViews[PKG_OPENSTATION_APPS]
+        val fallbackChild = if (drawerAppsGrid.childCount > 0) drawerAppsGrid.getChildAt(0) else null
+        val immediateTarget = drawerTileViews[focusPkg] ?: drawerTileViews[PKG_OPENSTATION_APPS] ?: fallbackChild
         immediateTarget?.requestFocus()
         handler.post {
             if (appsDrawerOpen && !appContextOpen && !appInfoOpen) {
-                val target = drawerTileViews[focusPkg] ?: drawerTileViews[PKG_OPENSTATION_APPS]
+                val target = drawerTileViews[focusPkg]
+                    ?: drawerTileViews[PKG_OPENSTATION_APPS]
+                    ?: if (drawerAppsGrid.childCount > 0) drawerAppsGrid.getChildAt(0) else null
                 target?.requestFocus()
             }
         }
@@ -4578,6 +4578,13 @@ class MainActivity : Activity() {
         reorderingPkg = null
         appsDrawerOpen = false
         syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = !immediate)
+
+        if (::heroOrbView.isInitialized && currentPage == 0 && !homeCustomOpen && (!::controlCenter.isInitialized || !controlCenter.isOpen)) {
+            heroOrbView.animate().alpha(1f)
+                .setDuration(MotionPrefs.dur(this, 440L)).setInterpolator(easeOutCubic).start()
+        }
+
         if (immediate) {
             appsDrawerOverlay.animate().cancel()
             appsDrawerOverlay.visibility = View.GONE
@@ -4589,15 +4596,16 @@ class MainActivity : Activity() {
         appsDrawerOverlay.animate().cancel()
         appsDrawerOverlay.animate()
             .alpha(0f)
-            .translationY(dp(42).toFloat())
-            .setDuration(200L)
+            .translationY(dp(48).toFloat())
+            .setDuration(MotionPrefs.dur(this, 400L))
             .setInterpolator(easeOutCubic)
+            .withLayer()
             .withEndAction {
                 if (!appsDrawerOpen) {
                     appsDrawerOverlay.visibility = View.GONE
                     appsDrawerOverlay.translationY = 0f
                     syncLayerFocusability()
-                    if (!homeCustomOpen && !appContextOpen && !appInfoOpen && currentPage == 0) {
+                    if (!isAnyOverlayActive() && currentPage == 0) {
                         focusPageControlDirect(0)
                     }
                 }
@@ -4606,15 +4614,17 @@ class MainActivity : Activity() {
     }
 
     // -----------------------------------------------------------------------------------------
-    // HOME CUSTOMIZATION OVERLAY (Long-Press OK on Home: Wallpapers + Widgets + Hidden Apps)
+    // HOME CUSTOMIZATION OVERLAY (Wallpapers + Widgets + Hidden Apps)
     // -----------------------------------------------------------------------------------------
     private fun showHomeCustomizationMenu() {
         if (!::homeCustomOverlay.isInitialized) return
         timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
         homeCustomOverlay.removeAllViews()
 
         val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#A6030711"))
+            setBackgroundColor(Color.parseColor("#3802050E"))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -4624,17 +4634,26 @@ class MainActivity : Activity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(18), dp(22), dp(18))
-            LiquidGlassKit.applyGlass(
+            clipChildren = true
+            clipToPadding = true
+            setPadding(dp(24), dp(18), dp(24), dp(18))
+            bindGlassLens(
+                customOverlayLensCleanups,
                 this,
-                radiusDp = 24f,
-                baseTint = Color.parseColor("#D4080D18"),
-                focusTint = Color.parseColor("#E010182C"),
-                normalStroke = Color.parseColor("#24FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
-                refractStrength = 1.05f
+                SpatialLensSpec(
+                    radiusDp = 24f,
+                    baseTint = Color.parseColor("#3E09101E"),
+                    focusTint = Color.parseColor("#4410182C"),
+                    bevelDp = 16f,
+                    refractDp = 14f,
+                    chromaDp = 2.6f,
+                    shadowDp = 24f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.72f,
+                    blurMix = 0.90f
+                ),
+                fallbackTint = Color.parseColor("#D4080D18")
             )
-            elevation = dp(28).toFloat()
             isClickable = true
             layoutParams = FrameLayout.LayoutParams(
                 dp(740),
@@ -4644,16 +4663,16 @@ class MainActivity : Activity() {
         }
 
         val tvHead = TextView(this).apply {
-            text = "НАСТРОЙКА ГЛАВНОГО ЭКРАНА"
+            text = "Оформление и виджеты"
             setTextColor(Color.WHITE)
-            textSize = 18f
-            letterSpacing = 0.05f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 19f
+            typeface = YandexFonts.displayBold(this@MainActivity)
         }
         val tvSub = TextView(this).apply {
-            text = "Обои с оптическим преломлением Liquid Glass · Модульные виджеты рабочего стола"
+            text = "Обои с оптическим преломлением Liquid Glass и модули рабочего стола"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 11.5f
+            typeface = YandexFonts.displayRegular(this@MainActivity)
             setPadding(0, dp(2), 0, dp(10))
         }
         panel.addView(tvHead)
@@ -4661,13 +4680,18 @@ class MainActivity : Activity() {
 
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
+            clipChildren = true
+            clipToPadding = true
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                dp(300)
             )
         }
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(4), dp(2), dp(4), dp(6))
         }
 
         body.addView(makeSectionTitle("Обои рабочего стола", R.drawable.ic_wave))
@@ -4675,6 +4699,9 @@ class MainActivity : Activity() {
         val wallGrid = GridLayout(this).apply {
             columnCount = 3
             useDefaultMargins = false
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(2), dp(2), dp(2), dp(4))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -4684,22 +4711,34 @@ class MainActivity : Activity() {
         }
 
         var firstWallpaperBtn: View? = null
-        val wallSwatches = ArrayList<Pair<String, TextView>>()
-        val tileW = dp(220)
+        val wallSwatches = ArrayList<Triple<String, View, TextView>>()
+        val tileW = dp(216)
         LiquidGlassKit.THEMES.forEachIndexed { idx, theme ->
+            val selectedTheme = theme.id == LiquidGlassKit.currentThemeId
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(10), dp(8), dp(10), dp(8))
                 isFocusable = true
                 isClickable = true
-                LiquidGlassKit.applyGlass(
+                bindGlassLens(
+                    customOverlayLensCleanups,
                     this,
-                    radiusDp = 14f,
-                    baseTint = Color.parseColor("#44090E18"),
-                    focusTint = Color.parseColor("#78162338"),
-                    normalStroke = if (theme.id == LiquidGlassKit.currentThemeId) Color.parseColor("#99FFFFFF") else Color.parseColor("#1AFFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
+                    SpatialLensSpec(
+                        radiusDp = 14f,
+                        baseTint = Color.parseColor("#2A0B1324"),
+                        focusTint = Color.parseColor("#54162844"),
+                        accentTint = if (selectedTheme) Color.parseColor("#38BDF8") else 0,
+                        bevelDp = 11f,
+                        refractDp = 10f,
+                        chromaDp = 1.8f,
+                        shadowDp = 10f,
+                        rimAlpha = 0.28f,
+                        focusRimAlpha = 0.85f,
+                        blurMix = 0.88f,
+                        clipParent = scroll
+                    ),
+                    fallbackTint = Color.parseColor("#44090E18")
                 )
                 layoutParams = GridLayout.LayoutParams().apply {
                     width = tileW
@@ -4707,25 +4746,49 @@ class MainActivity : Activity() {
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(90).start()
+                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f)
+                        .setDuration(MotionPrefs.dur(this@MainActivity, 210L)).setInterpolator(focusSpring).start()
                 }
             }
             if (idx == 0) firstWallpaperBtn = card
 
-            val swatch = View(this).apply {
-                background = GradientDrawable(
-                    GradientDrawable.Orientation.TL_BR,
-                    intArrayOf(
-                        Color.parseColor(theme.baseDarkHex),
-                        Color.parseColor(theme.secondaryHex),
-                        Color.parseColor(theme.primaryHex)
-                    )
-                ).apply {
-                    cornerRadius = dp(10).toFloat()
-                    setStroke(dp(1), Color.parseColor("#88FFFFFF"))
+            val swatch: View = if (theme.drawableRes != 0) {
+                FrameLayout(this).apply {
+                    clipToOutline = true
+                    outlineProvider = object : ViewOutlineProvider() {
+                        override fun getOutline(view: View, outline: Outline) {
+                            outline.setRoundRect(0, 0, view.width, view.height, dp(10).toFloat())
+                        }
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                        marginEnd = dp(9)
+                    }
+                    addView(ImageView(this@MainActivity).apply {
+                        val thumb = LiquidGlassKit.decodeSwatchBitmap(this@MainActivity, theme.drawableRes, dp(48))
+                        if (thumb != null) setImageBitmap(thumb) else setImageResource(theme.drawableRes)
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        layoutParams = FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    })
                 }
-                layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
-                    marginEnd = dp(9)
+            } else {
+                View(this).apply {
+                    background = GradientDrawable(
+                        GradientDrawable.Orientation.TL_BR,
+                        intArrayOf(
+                            Color.parseColor(theme.baseDarkHex),
+                            Color.parseColor(theme.secondaryHex),
+                            Color.parseColor(theme.primaryHex)
+                        )
+                    ).apply {
+                        cornerRadius = dp(10).toFloat()
+                        setStroke(dp(1), Color.parseColor("#48FFFFFF"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                        marginEnd = dp(9)
+                    }
                 }
             }
             val txtCol = LinearLayout(this).apply {
@@ -4736,7 +4799,7 @@ class MainActivity : Activity() {
                 text = theme.title
                 setTextColor(Color.WHITE)
                 textSize = 11.5f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = YandexFonts.displayBold(this@MainActivity)
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
             }
@@ -4744,28 +4807,34 @@ class MainActivity : Activity() {
                 text = theme.subtitle
                 setTextColor(Color.parseColor("#94A3B8"))
                 textSize = 9.5f
+                typeface = YandexFonts.textMedium(this@MainActivity)
                 maxLines = 1
             }
             txtCol.addView(tvT)
             txtCol.addView(tvS)
 
             val tvMark = TextView(this).apply {
-                text = if (theme.id == LiquidGlassKit.currentThemeId) "✓" else ""
-                setTextColor(Color.WHITE)
+                text = if (selectedTheme) "✓" else ""
+                setTextColor(Color.parseColor("#7DD3FC"))
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
             }
-            wallSwatches.add(theme.id to tvMark)
+            wallSwatches.add(Triple(theme.id, card, tvMark))
 
             card.addView(swatch)
             card.addView(txtCol)
             card.addView(tvMark)
             card.setOnClickListener {
                 applyWallpaperTheme(theme.id, persist = true)
-                wallSwatches.forEach { (id, badge) ->
-                    badge.text = if (id == theme.id) "✓" else ""
+                wallSwatches.forEach { (id, wCard, badge) ->
+                    val act = (id == theme.id)
+                    badge.text = if (act) "✓" else ""
+                    if (::spatialBackdrop.isInitialized) {
+                        spatialBackdrop.updateLensSpec(wCard) {
+                            it.copy(accentTint = if (act) Color.parseColor("#38BDF8") else 0)
+                        }
+                    }
                 }
-                LiquidGlassKit.refreshGlassTree(homeCustomOverlay)
                 Toast.makeText(this, "Обои: ${theme.title}", Toast.LENGTH_SHORT).show()
             }
             wallGrid.addView(card)
@@ -4785,6 +4854,9 @@ class MainActivity : Activity() {
         val widgetsGrid = GridLayout(this).apply {
             columnCount = 2
             useDefaultMargins = false
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(2), dp(2), dp(2), dp(4))
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -4792,7 +4864,7 @@ class MainActivity : Activity() {
                 bottomMargin = dp(14)
             }
         }
-        val wCardW = dp(336)
+        val wCardW = dp(330)
         for ((key, title, desc) in widgetDefs) {
             var enabled = prefs.getBoolean(key, false)
             val row = LinearLayout(this).apply {
@@ -4801,13 +4873,23 @@ class MainActivity : Activity() {
                 setPadding(dp(12), dp(8), dp(12), dp(8))
                 isFocusable = true
                 isClickable = true
-                LiquidGlassKit.applyGlass(
+                bindGlassLens(
+                    customOverlayLensCleanups,
                     this,
-                    radiusDp = 14f,
-                    baseTint = Color.parseColor("#44090E18"),
-                    focusTint = Color.parseColor("#78162338"),
-                    normalStroke = Color.parseColor("#1AFFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
+                    SpatialLensSpec(
+                        radiusDp = 14f,
+                        baseTint = Color.parseColor("#2A0B1324"),
+                        focusTint = Color.parseColor("#54162844"),
+                        bevelDp = 11f,
+                        refractDp = 10f,
+                        chromaDp = 1.8f,
+                        shadowDp = 10f,
+                        rimAlpha = 0.28f,
+                        focusRimAlpha = 0.85f,
+                        blurMix = 0.88f,
+                        clipParent = scroll
+                    ),
+                    fallbackTint = Color.parseColor("#44090E18")
                 )
                 layoutParams = GridLayout.LayoutParams().apply {
                     width = wCardW
@@ -4815,7 +4897,8 @@ class MainActivity : Activity() {
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(90).start()
+                    v.animate().scaleX(if (hasFocus) 1.02f else 1f).scaleY(if (hasFocus) 1.02f else 1f)
+                        .setDuration(MotionPrefs.dur(this@MainActivity, 200L)).setInterpolator(focusSpring).start()
                 }
             }
             val txtCol = LinearLayout(this).apply {
@@ -4826,7 +4909,7 @@ class MainActivity : Activity() {
                 text = title
                 setTextColor(Color.WHITE)
                 textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
+                typeface = YandexFonts.displayMedium(this@MainActivity)
                 maxLines = 1
             }
             val tvDesc = TextView(this).apply {
@@ -4848,7 +4931,7 @@ class MainActivity : Activity() {
                 pill.setTextColor(Color.parseColor(if (enabled) "#090D16" else "#94A3B8"))
                 pill.background = GradientDrawable().apply {
                     cornerRadius = dp(999).toFloat()
-                    setColor(Color.parseColor(if (enabled) "#F1F5F9" else "#1E293B"))
+                    setColor(Color.parseColor(if (enabled) "#E2E8F0" else "#1E293B"))
                     if (!enabled) setStroke(dp(1), Color.parseColor("#2AFFFFFF"))
                 }
             }
@@ -4877,33 +4960,35 @@ class MainActivity : Activity() {
         val actionsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(0, dp(4), 0, 0)
+            clipChildren = false
+            clipToPadding = false
+            setPadding(0, dp(12), 0, 0)
         }
 
         val hiddenCount = getHiddenAppPackages().size
         if (hiddenCount > 0) {
-            val btnHidden = makeTextIconPill(R.drawable.ic_yaos_apps, "Скрытые ($hiddenCount)", gold = false) {
+            val btnHidden = makeTextIconPill(R.drawable.ic_yaos_apps, "Скрытые ($hiddenCount)", accent = false, cleanupPool = customOverlayLensCleanups) {
                 showHiddenAppsMenu()
             }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                     marginEnd = dp(8)
                 }
             }
             actionsRow.addView(btnHidden)
         }
 
-        val btnOpenDrawer = makeTextIconPill(R.drawable.ic_yaos_apps, "Приложения", gold = false) {
+        val btnOpenDrawer = makeTextIconPill(R.drawable.ic_yaos_apps, "Приложения", accent = false, cleanupPool = customOverlayLensCleanups) {
             closeHomeCustomizationMenu(immediate = true)
             openAppsDrawer()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                 marginEnd = dp(8)
             }
         }
-        val btnDone = makeTextIconPill(R.drawable.ic_play, "Готово", gold = true) {
+        val btnDone = makeTextIconPill(R.drawable.ic_play, "Готово", accent = true, cleanupPool = customOverlayLensCleanups) {
             closeHomeCustomizationMenu()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
         }
         actionsRow.addView(btnOpenDrawer)
         actionsRow.addView(btnDone)
@@ -4911,6 +4996,7 @@ class MainActivity : Activity() {
 
         homeCustomOverlay.addView(panel)
         homeCustomOpen = true
+        syncBackdropBlurForUiState(animate = true)
         homeCustomOverlay.animate().cancel()
         homeCustomOverlay.visibility = View.VISIBLE
         syncLayerFocusability()
@@ -4919,13 +5005,13 @@ class MainActivity : Activity() {
         panel.scaleY = 0.94f
         homeCustomOverlay.animate()
             .alpha(1f)
-            .setDuration(200L)
+            .setDuration(MotionPrefs.dur(this, 400L))
             .setInterpolator(easeOutCubic)
             .start()
         panel.animate()
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(220L)
+            .setDuration(MotionPrefs.dur(this, 440L))
             .setInterpolator(easeOutCubic)
             .start()
 
@@ -4935,29 +5021,39 @@ class MainActivity : Activity() {
 
     private fun closeHomeCustomizationMenu(immediate: Boolean = false) {
         if (!::homeCustomOverlay.isInitialized) return
+        handler.removeCallbacks(otaDialogPollRunnable)
+        otaModalOpen = false
+        otaModalStatusTv = null
+        otaModalChangelogTv = null
+        otaModalInstallBtn = null
         timersScreenRef = null
         if (!homeCustomOpen && homeCustomOverlay.visibility != View.VISIBLE) return
         homeCustomOpen = false
         syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = !immediate)
         if (immediate) {
             homeCustomOverlay.animate().cancel()
             homeCustomOverlay.visibility = View.GONE
             homeCustomOverlay.alpha = 0f
+            clearLensCleanups(customOverlayLensCleanups)
             homeCustomOverlay.removeAllViews()
             return
         }
-        focusPageControlDirect(currentPage)
+        if (!isAnyOverlayActive()) {
+            focusPageControlDirect(currentPage)
+        }
         homeCustomOverlay.animate().cancel()
         homeCustomOverlay.animate()
             .alpha(0f)
-            .setDuration(170L)
+            .setDuration(MotionPrefs.dur(this, 340L))
             .setInterpolator(easeOutCubic)
             .withEndAction {
                 if (!homeCustomOpen) {
                     homeCustomOverlay.visibility = View.GONE
+                    clearLensCleanups(customOverlayLensCleanups)
                     homeCustomOverlay.removeAllViews()
                     syncLayerFocusability()
-                    if (!appsDrawerOpen && !appContextOpen && !appInfoOpen && currentPage == 0) {
+                    if (!isAnyOverlayActive() && currentPage == 0) {
                         focusPageControlDirect(0)
                     }
                 }
@@ -4966,50 +5062,31 @@ class MainActivity : Activity() {
     }
 
     private fun syncServiceChips() {
-        if (::tvServicePersona.isInitialized) {
-            val eff = LiveOrbState.effectiveName()
-            tvServicePersona.text = "🎙 Имя: $eff"
-        }
-        if (::btnServiceHwEq.isInitialized && ::tvServiceHwEq.isInitialized) {
-            btnServiceHwEq.visibility = if (hwEqSupportedState) View.VISIBLE else View.GONE
-            val profLbl = when (hwEqProfileState) {
-                "hifi" -> "Hi-Fi"
-                "night" -> "Ночь"
-                "bass" -> "Бас"
-                "club" -> "Клуб"
-                else -> "Оригинал"
-            }
-            tvServiceHwEq.text = "🎚 DSP · $profLbl"
-        }
-        if (::tvServiceTimers.isInitialized) {
-            val ringing = lastRingingAlarmJson
-            val tCount = lastTimersJson?.length() ?: 0
-            val aEnabled = (0 until (lastAlarmsJson?.length() ?: 0)).count {
-                lastAlarmsJson?.optJSONObject(it)?.optBoolean("enabled", false) == true
-            }
-            tvServiceTimers.text = when {
-                ringing != null -> "🔔 Звонит будильник!"
-                tCount > 0 -> "⏱ Таймеры ($tCount) · Буд: $aEnabled"
-                aEnabled > 0 -> "⏱ Будильники ($aEnabled)"
-                else -> "⏱ Таймеры и будильники"
-            }
-            tvServiceTimers.setTextColor(Color.parseColor(if (ringing != null) "#FCA5A5" else "#E2E8F0"))
-        }
+        updateControlCenterState()
     }
 
     private fun makeModalGlassPanel(widthDp: Int): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(22), dp(18), dp(22), dp(18))
-        LiquidGlassKit.applyGlass(
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(24), dp(18), dp(24), dp(18))
+        bindGlassLens(
+            customOverlayLensCleanups,
             this,
-            radiusDp = 24f,
-            baseTint = Color.parseColor("#D8080D18"),
-            focusTint = Color.parseColor("#E010182C"),
-            normalStroke = Color.parseColor("#2AFFFFFF"),
-            focusStroke = Color.parseColor("#AAFFFFFF"),
-            refractStrength = 1.05f
+            SpatialLensSpec(
+                radiusDp = 24f,
+                baseTint = Color.parseColor("#3E09101E"),
+                focusTint = Color.parseColor("#46121C30"),
+                bevelDp = 16f,
+                refractDp = 14f,
+                chromaDp = 2.6f,
+                shadowDp = 24f,
+                rimAlpha = 0.34f,
+                focusRimAlpha = 0.72f,
+                blurMix = 0.90f
+            ),
+            fallbackTint = Color.parseColor("#D8080D18")
         )
-        elevation = dp(28).toFloat()
         isClickable = true
         layoutParams = FrameLayout.LayoutParams(
             dp(widthDp),
@@ -5022,7 +5099,7 @@ class MainActivity : Activity() {
         if (!::homeCustomOverlay.isInitialized) return
         homeCustomOverlay.removeAllViews()
         val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#A6030711"))
+            setBackgroundColor(Color.parseColor("#3802050E"))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -5031,6 +5108,7 @@ class MainActivity : Activity() {
         homeCustomOverlay.addView(scrim)
         homeCustomOverlay.addView(panel)
         homeCustomOpen = true
+        syncBackdropBlurForUiState(animate = true)
         homeCustomOverlay.animate().cancel()
         homeCustomOverlay.visibility = View.VISIBLE
         syncLayerFocusability()
@@ -5039,13 +5117,13 @@ class MainActivity : Activity() {
         panel.scaleY = 0.94f
         homeCustomOverlay.animate()
             .alpha(1f)
-            .setDuration(200L)
+            .setDuration(MotionPrefs.dur(this, 400L))
             .setInterpolator(easeOutCubic)
             .start()
         panel.animate()
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(220L)
+            .setDuration(MotionPrefs.dur(this, 440L))
             .setInterpolator(easeOutCubic)
             .start()
         initialFocus?.requestFocus()
@@ -5061,14 +5139,36 @@ class MainActivity : Activity() {
         setPadding(0, dp(8), 0, dp(5))
     }
 
-    private fun makeModalChoicePill(label: String, selected: Boolean, onClick: () -> Unit): TextView =
+    private fun makeModalChoicePill(
+        label: String,
+        selected: Boolean,
+        cleanupPool: MutableList<() -> Unit> = customOverlayLensCleanups,
+        onClick: () -> Unit
+    ): TextView =
         TextView(this).apply {
             text = label
             textSize = 12f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setTextColor(Color.parseColor(if (selected) "#FFE8C686" else "#E2E8F0"))
+            typeface = YandexFonts.displayMedium(this@MainActivity)
+            setTextColor(Color.parseColor(if (selected) "#FDE68A" else "#E2E8F0"))
             setPadding(dp(12), dp(7), dp(12), dp(7))
-            setBackgroundResource(R.drawable.bg_tile)
+            bindGlassLens(
+                cleanupPool,
+                this,
+                SpatialLensSpec(
+                    radiusDp = 999f,
+                    baseTint = if (selected) Color.parseColor("#442B2210") else Color.parseColor("#2A0C1220"),
+                    focusTint = if (selected) Color.parseColor("#6A403014") else Color.parseColor("#541A2C4A"),
+                    accentTint = if (selected) Color.parseColor("#FBBF24") else 0,
+                    bevelDp = 10f,
+                    refractDp = 9f,
+                    chromaDp = 1.6f,
+                    shadowDp = 8f,
+                    rimAlpha = if (selected) 0.48f else 0.25f,
+                    focusRimAlpha = 0.88f,
+                    blurMix = 0.86f
+                ),
+                fallbackTint = Color.parseColor("#44141D2F")
+            )
             isSelected = selected
             isFocusable = true
             isClickable = true
@@ -5079,23 +5179,177 @@ class MainActivity : Activity() {
                 marginEnd = dp(6)
             }
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(90).start()
+                v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f)
+                    .setDuration(MotionPrefs.dur(this@MainActivity, 210L)).setInterpolator(focusSpring).start()
             }
             setOnClickListener { onClick() }
         }
 
-    private fun showAssistantPersonaModal() {
+    private fun showWebQrModal() {
         timersScreenRef = null
-        val panel = makeModalGlassPanel(690)
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
+        val panel = makeModalGlassPanel(520)
+
         panel.addView(TextView(this).apply {
-            text = "ИМЯ, ГОЛОС И ХАРАКТЕР АССИСТЕНТА"
+            text = "Веб-пульт на телефоне"
             setTextColor(Color.WHITE)
-            textSize = 17.5f
-            letterSpacing = 0.05f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 19f
+            typeface = YandexFonts.displayBold(this@MainActivity)
         })
         panel.addView(TextView(this).apply {
-            text = "Выберите имя для офлайн-распознавания (Wake Word), тембр голоса и стиль ответов"
+            text = "Наведите камеру смартфона, чтобы управлять музыкой, подсветкой и настройками станции по Wi-Fi"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 12f
+            setPadding(0, dp(4), 0, dp(14))
+        })
+
+        val ip = detectLocalIp(force = true)
+        val url = SetupAddress.webUrl(ip)
+        val qrSize = dp(210)
+
+        if (url != null) {
+            val qrCard = FrameLayout(this).apply {
+                background = GradientDrawable().apply {
+                    setColor(Color.WHITE)
+                    cornerRadius = dp(18).toFloat()
+                }
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
+                addView(ImageView(this@MainActivity).apply {
+                    setImageBitmap(QrGenerator.generateBitmap(url, qrSize))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    layoutParams = FrameLayout.LayoutParams(qrSize, qrSize)
+                })
+            }
+            panel.addView(qrCard)
+            panel.addView(TextView(this).apply {
+                text = url
+                setTextColor(Color.parseColor("#BAE6FD"))
+                textSize = 14f
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.CENTER
+                setPadding(0, dp(12), 0, dp(4))
+            })
+        } else {
+            panel.addView(TextView(this).apply {
+                text = "Подключите станцию к Wi-Fi, чтобы получить адрес веб-панели."
+                setTextColor(Color.parseColor("#FCA5A5"))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(18), 0, dp(18))
+            })
+        }
+
+        val btnClose = makeTextIconPill(R.drawable.ic_play, "Закрыть", accent = true, cleanupPool = customOverlayLensCleanups) {
+            closeHomeCustomizationMenu()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)).apply {
+                gravity = Gravity.END
+                topMargin = dp(14)
+            }
+        }
+        panel.addView(btnClose)
+        presentOverlayModal(panel, btnClose)
+    }
+
+    private fun showAndroidTvSettingsModal() {
+        timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
+        val panel = makeModalGlassPanel(680)
+
+        panel.addView(TextView(this).apply {
+            text = "Настройки Android TV"
+            setTextColor(Color.WHITE)
+            textSize = 19f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+        })
+        panel.addView(TextView(this).apply {
+            text = "Системные разделы приставки и беспроводные параметры"
+            setTextColor(Color.parseColor("#94A3B8"))
+            textSize = 11.5f
+            setPadding(0, dp(2), 0, dp(14))
+        })
+
+        val sysGrid = GridLayout(this).apply {
+            columnCount = 3
+            useDefaultMargins = false
+            clipChildren = false
+            clipToPadding = false
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val sysItems = listOf(
+            SysItem(R.drawable.sprite_sys_wifi, true, "Wi-Fi и сеть") {
+                closeHomeCustomizationMenu(immediate = true)
+                openSettingsActions(Settings.ACTION_WIFI_SETTINGS)
+            },
+            SysItem(R.drawable.sprite_remote_hero, true, "Bluetooth и пульт") {
+                closeHomeCustomizationMenu(immediate = true)
+                openTvAccessories()
+            },
+            SysItem(R.drawable.ic_settings, false, "Звук и аудио") {
+                closeHomeCustomizationMenu(immediate = true)
+                openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
+            },
+            SysItem(R.drawable.ic_settings, false, "Дата и время") {
+                closeHomeCustomizationMenu(immediate = true)
+                openSettingsActions(Settings.ACTION_DATE_SETTINGS)
+            },
+            SysItem(R.drawable.ic_yaos_apps, false, "Приложения TV") {
+                closeHomeCustomizationMenu(immediate = true)
+                openSettingsActions(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS)
+            },
+            SysItem(R.drawable.ic_settings, false, "Все настройки TV") {
+                closeHomeCustomizationMenu(immediate = true)
+                launchPackageName("com.android.tv.settings")
+            }
+        )
+        var firstTile: View? = null
+        sysItems.forEachIndexed { idx, item ->
+            val tile = makeSysTile(item.iconRes, item.isSprite, item.label, cleanupPool = customOverlayLensCleanups, onClick = item.onClick)
+            if (idx == 0) firstTile = tile
+            sysGrid.addView(tile, GridLayout.LayoutParams().apply {
+                width = dp(200)
+                height = dp(92)
+                setMargins(dp(5), dp(5), dp(5), dp(5))
+            })
+        }
+        panel.addView(sysGrid)
+
+        val btnClose = makeTextIconPill(R.drawable.ic_home, "Назад", accent = true, cleanupPool = customOverlayLensCleanups) {
+            closeHomeCustomizationMenu()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
+                gravity = Gravity.END
+                topMargin = dp(14)
+            }
+        }
+        panel.addView(btnClose)
+        presentOverlayModal(panel, firstTile ?: btnClose)
+    }
+
+    private fun showAssistantPersonaModal() {
+        timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
+        val panel = makeModalGlassPanel(690)
+        panel.addView(TextView(this).apply {
+            text = "Имя, голос и характер ассистента"
+            setTextColor(Color.WHITE)
+            textSize = 18.5f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+        })
+        panel.addView(TextView(this).apply {
+            text = "Выберите ключевое слово отклика (Wake Word), тембр голоса и стиль ответов"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 11.5f
             setPadding(0, dp(2), 0, dp(8))
@@ -5106,25 +5360,28 @@ class MainActivity : Activity() {
         val promptMap = LinkedHashMap<String, TextView>()
         var curPromptKey = AssistantPersonalities.keyForPrompt(assistantPromptState)
 
+        fun updateChoiceVisual(tv: TextView, sel: Boolean) {
+            tv.isSelected = sel
+            tv.setTextColor(Color.parseColor(if (sel) "#FDE68A" else "#E2E8F0"))
+            if (::spatialBackdrop.isInitialized) {
+                spatialBackdrop.updateLensSpec(tv) {
+                    it.copy(
+                        baseTint = if (sel) Color.parseColor("#442B2210") else Color.parseColor("#2A0C1220"),
+                        focusTint = if (sel) Color.parseColor("#6A403014") else Color.parseColor("#541A2C4A"),
+                        accentTint = if (sel) Color.parseColor("#FBBF24") else 0,
+                        rimAlpha = if (sel) 0.48f else 0.25f
+                    )
+                }
+            }
+        }
+
         fun refreshHighlights() {
             val preset = listOf("Алиса", "Джарвис", "Пятница", "Макс")
                 .firstOrNull { it.equals(assistantNameState, ignoreCase = true) }
-            nameMap["custom"]?.text = if (preset == null) "✏ $assistantNameState" else "✏ Своё имя"
-            nameMap.forEach { (k, tv) ->
-                val sel = (k == (preset ?: "custom"))
-                tv.isSelected = sel
-                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
-            }
-            voiceMap.forEach { (k, tv) ->
-                val sel = (k == assistantVoiceState)
-                tv.isSelected = sel
-                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
-            }
-            promptMap.forEach { (k, tv) ->
-                val sel = (k == curPromptKey)
-                tv.isSelected = sel
-                tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
-            }
+            nameMap["custom"]?.text = if (preset == null) "Своё: $assistantNameState" else "Своё имя"
+            nameMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == (preset ?: "custom")) }
+            voiceMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == assistantVoiceState) }
+            promptMap.forEach { (k, tv) -> updateChoiceVisual(tv, k == curPromptKey) }
         }
 
         fun applyName(newName: String) {
@@ -5146,7 +5403,11 @@ class MainActivity : Activity() {
         }
 
         panel.addView(makeModalSubHeading("Ключевое слово отклика (Wake Word)"))
-        val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val nameRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
         var firstFocusView: View? = null
         listOf("Алиса", "Джарвис", "Пятница", "Макс").forEachIndexed { idx, n ->
             val pill = makeModalChoicePill(n, n.equals(assistantNameState, ignoreCase = true)) {
@@ -5156,7 +5417,7 @@ class MainActivity : Activity() {
             nameMap[n] = pill
             nameRow.addView(pill)
         }
-        val customBtn = makeModalChoicePill("✏ Своё имя", false) {
+        val customBtn = makeModalChoicePill("Своё имя", false) {
             val et = EditText(this).apply {
                 hint = "Например: Алиса, Джарвис, Ника..."
                 setText(assistantNameState)
@@ -5178,7 +5439,11 @@ class MainActivity : Activity() {
         panel.addView(nameRow)
 
         panel.addView(makeModalSubHeading("Голос ассистента (Gemini Live TTS)"))
-        val voiceRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val voiceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
         listOf(
             "Aoede" to "Aoede (жен.)",
             "Kore" to "Kore (жен.)",
@@ -5204,7 +5469,11 @@ class MainActivity : Activity() {
         panel.addView(voiceRow)
 
         panel.addView(makeModalSubHeading("Характер ответов"))
-        val promptRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val promptRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
         AssistantPersonalities.presets.forEach { (key, label, fullPrompt) ->
             val pill = makeModalChoicePill(label, key == curPromptKey) {
                 curPromptKey = key
@@ -5231,10 +5500,10 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(16) }
         }
-        val btnDone = makeTextIconPill(R.drawable.ic_play, "Готово", gold = true) {
+        val btnDone = makeTextIconPill(R.drawable.ic_play, "Готово", accent = true, cleanupPool = customOverlayLensCleanups) {
             closeHomeCustomizationMenu()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
         }
         footer.addView(btnDone)
         panel.addView(footer)
@@ -5247,13 +5516,14 @@ class MainActivity : Activity() {
             return
         }
         timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
         val panel = makeModalGlassPanel(650)
         panel.addView(TextView(this).apply {
-            text = "АППАРАТНЫЙ DSP УСИЛИТЕЛЯ (SY6045S)"
+            text = "Аппаратный DSP усилителя (SY6045S)"
             setTextColor(Color.WHITE)
-            textSize = 17.5f
-            letterSpacing = 0.05f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 18.5f
+            typeface = YandexFonts.displayBold(this@MainActivity)
         })
         panel.addView(TextView(this).apply {
             text = "24-битные I2C-фильтры усилителя Яндекс Станции Макс"
@@ -5264,7 +5534,11 @@ class MainActivity : Activity() {
 
         panel.addView(makeModalSubHeading("Профиль звучания"))
         val profMap = LinkedHashMap<String, TextView>()
-        val profRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val profRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+        }
         var firstFocus: View? = null
         listOf(
             "original" to "Оригинал (Яндекс)",
@@ -5280,7 +5554,17 @@ class MainActivity : Activity() {
                 profMap.forEach { (k, tv) ->
                     val sel = (k == hwEqProfileState)
                     tv.isSelected = sel
-                    tv.setTextColor(Color.parseColor(if (sel) "#FFE8C686" else "#E2E8F0"))
+                    tv.setTextColor(Color.parseColor(if (sel) "#FDE68A" else "#E2E8F0"))
+                    if (::spatialBackdrop.isInitialized) {
+                        spatialBackdrop.updateLensSpec(tv) {
+                            it.copy(
+                                baseTint = if (sel) Color.parseColor("#442B2210") else Color.parseColor("#2A0C1220"),
+                                focusTint = if (sel) Color.parseColor("#6A403014") else Color.parseColor("#541A2C4A"),
+                                accentTint = if (sel) Color.parseColor("#FBBF24") else 0,
+                                rimAlpha = if (sel) 0.48f else 0.25f
+                            )
+                        }
+                    }
                 }
                 postAsync("http://127.0.0.1:8080/api/audio/hardware_eq", JSONObject().put("profile", id).toString())
                 Toast.makeText(this, "DSP профиль: $lbl", Toast.LENGTH_SHORT).show()
@@ -5303,11 +5587,11 @@ class MainActivity : Activity() {
         lateinit var btnDrc: TextView
         fun renderDrcBtn() {
             if (hwEqDrcBypassedState) {
-                tvDrcInfo.text = "⚠ Защита динамиков (DRC): ОТКЛЮЧЕНА (Bypass) — берегите громкость!"
+                tvDrcInfo.text = "Защита динамиков (DRC): ОТКЛЮЧЕНА (Bypass) — берегите громкость!"
                 tvDrcInfo.setTextColor(Color.parseColor("#FCA5A5"))
                 btnDrc.text = "Включить защиту DRC"
             } else {
-                tvDrcInfo.text = "✓ Защита динамиков (DRC): АКТИВНА (рекомендуется)"
+                tvDrcInfo.text = "Защита динамиков (DRC): АКТИВНА (рекомендуется)"
                 tvDrcInfo.setTextColor(Color.parseColor("#6EE7B7"))
                 btnDrc.text = "Отключить защиту DRC (опасно)"
             }
@@ -5367,10 +5651,10 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(16) }
         }
-        val btnDone = makeTextIconPill(R.drawable.ic_play, "Закрыть", gold = true) {
+        val btnDone = makeTextIconPill(R.drawable.ic_play, "Закрыть", accent = true, cleanupPool = customOverlayLensCleanups) {
             closeHomeCustomizationMenu()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
         }
         footer.addView(btnDone)
         panel.addView(footer)
@@ -5378,6 +5662,8 @@ class MainActivity : Activity() {
     }
 
     private fun showTimersModal() {
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
         val screen = TimersScreen(
             this,
             post = { path, body ->
@@ -5406,11 +5692,12 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     private fun showAnchoredAppMenu(app: AppEntry, anchor: View) {
         if (!::appContextOverlay.isInitialized || !::rootFrame.isInitialized) return
+        clearLensCleanups(ctxOverlayLensCleanups)
         appContextOverlay.removeAllViews()
         appContextOverlay.tag = app.pkg
 
         val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#6602050E"))
+            setBackgroundColor(Color.parseColor("#4802050E"))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -5426,7 +5713,7 @@ class MainActivity : Activity() {
             false
         }
 
-        val menuW = dp(258)
+        val menuW = dp(262)
         val itemCountEst = 2 + (if (!isPinnedApps) 2 else 0) + (if (!app.isVirtual) 1 else 0)
         val menuEstH = dp(66 + itemCountEst * 42)
 
@@ -5450,17 +5737,26 @@ class MainActivity : Activity() {
 
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             setPadding(dp(12), dp(12), dp(12), dp(10))
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                ctxOverlayLensCleanups,
                 this,
-                radiusDp = 18f,
-                baseTint = Color.parseColor("#D8090E1A"),
-                focusTint = Color.parseColor("#E4121D32"),
-                normalStroke = Color.parseColor("#28FFFFFF"),
-                focusStroke = Color.parseColor("#CCFFFFFF"),
-                refractStrength = 1.05f
+                SpatialLensSpec(
+                    radiusDp = 18f,
+                    baseTint = Color.parseColor("#4409101E"),
+                    focusTint = Color.parseColor("#54121D32"),
+                    bevelDp = 14f,
+                    refractDp = 12f,
+                    chromaDp = 2.2f,
+                    shadowDp = 20f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.72f,
+                    blurMix = 0.90f
+                ),
+                fallbackTint = Color.parseColor("#D8090E1A")
             )
-            elevation = dp(32).toFloat()
             isClickable = true
             layoutParams = FrameLayout.LayoutParams(
                 menuW,
@@ -5489,7 +5785,7 @@ class MainActivity : Activity() {
             text = app.label
             setTextColor(Color.WHITE)
             textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@MainActivity)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
@@ -5512,7 +5808,7 @@ class MainActivity : Activity() {
         panel.addView(headRow)
 
         val div = View(this).apply {
-            setBackgroundColor(Color.parseColor("#33FFFFFF"))
+            setBackgroundColor(Color.parseColor("#24FFFFFF"))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
                 bottomMargin = dp(6)
             }
@@ -5525,18 +5821,26 @@ class MainActivity : Activity() {
                 text = label
                 setTextColor(Color.parseColor(accentHex))
                 textSize = 12.5f
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                typeface = YandexFonts.textMedium(this@MainActivity)
                 setPadding(dp(12), dp(8), dp(12), dp(8))
                 isFocusable = true
                 isClickable = true
-                LiquidGlassKit.applyGlass(
+                bindGlassLens(
+                    ctxOverlayLensCleanups,
                     this,
-                    radiusDp = 12f,
-                    baseTint = Color.parseColor("#320E1526"),
-                    focusTint = Color.parseColor("#90223452"),
-                    normalStroke = Color.parseColor("#18FFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF"),
-                    refractStrength = 0.75f
+                    SpatialLensSpec(
+                        radiusDp = 12f,
+                        baseTint = Color.parseColor("#240E1526"),
+                        focusTint = Color.parseColor("#66223452"),
+                        bevelDp = 10f,
+                        refractDp = 8f,
+                        chromaDp = 1.6f,
+                        shadowDp = 8f,
+                        rimAlpha = 0.22f,
+                        focusRimAlpha = 0.85f,
+                        blurMix = 0.85f
+                    ),
+                    fallbackTint = Color.parseColor("#440E1526")
                 )
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -5545,7 +5849,8 @@ class MainActivity : Activity() {
                     bottomMargin = dp(4)
                 }
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(80).start()
+                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f)
+                        .setDuration(MotionPrefs.dur(this@MainActivity, 210L)).setInterpolator(focusSpring).start()
                 }
                 setOnClickListener {
                     closeAnchoredAppMenu(immediate = true, restoreFocus = false)
@@ -5597,13 +5902,13 @@ class MainActivity : Activity() {
         panel.scaleY = 0.90f
         appContextOverlay.animate()
             .alpha(1f)
-            .setDuration(150L)
+            .setDuration(MotionPrefs.dur(this, 320L))
             .setInterpolator(easeOutCubic)
             .start()
         panel.animate()
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(170L)
+            .setDuration(MotionPrefs.dur(this, 360L))
             .setInterpolator(easeOutCubic)
             .start()
 
@@ -5621,6 +5926,7 @@ class MainActivity : Activity() {
             appContextOverlay.animate().cancel()
             appContextOverlay.visibility = View.GONE
             appContextOverlay.alpha = 0f
+            clearLensCleanups(ctxOverlayLensCleanups)
             appContextOverlay.removeAllViews()
             if (restoreFocus && prevPkg != null) focusAppTileByPkg(prevPkg)
             return
@@ -5629,11 +5935,12 @@ class MainActivity : Activity() {
         appContextOverlay.animate().cancel()
         appContextOverlay.animate()
             .alpha(0f)
-            .setDuration(140L)
+            .setDuration(MotionPrefs.dur(this, 290L))
             .setInterpolator(easeOutCubic)
             .withEndAction {
                 if (!appContextOpen) {
                     appContextOverlay.visibility = View.GONE
+                    clearLensCleanups(ctxOverlayLensCleanups)
                     appContextOverlay.removeAllViews()
                     syncLayerFocusability()
                     if (restoreFocus && prevPkg != null && !appInfoOpen) focusAppTileByPkg(prevPkg)
@@ -5647,12 +5954,12 @@ class MainActivity : Activity() {
             if (appsDrawerOpen) {
                 drawerTileViews[pkg] ?: drawerTileViews[PKG_OPENSTATION_APPS]
             } else {
-                screen1TileViews[pkg] ?: screen1TileViews[PKG_OPENSTATION_APPS]
+                null
             }
         }
         findView()?.requestFocus()
         handler.post {
-            if (!appContextOpen && !appInfoOpen) {
+            if (!appContextOpen && !appInfoOpen && appsDrawerOpen) {
                 findView()?.requestFocus()
             }
         }
@@ -5685,7 +5992,7 @@ class MainActivity : Activity() {
             val tile = if (::appsDrawerOverlay.isInitialized && appsDrawerOverlay.visibility == View.VISIBLE) {
                 drawerTileViews[targetPkg]
             } else {
-                screen1TileViews[targetPkg]
+                null
             }
             tile?.requestFocus()
             tile?.parent?.requestChildFocus(tile, tile)
@@ -5710,7 +6017,7 @@ class MainActivity : Activity() {
         saveHiddenAppPackages(hidden)
         loadAndRenderApps()
         focusAppTileByPkg(PKG_OPENSTATION_APPS)
-        Toast.makeText(this, "«${app.label}» скрыто (вернуть можно через удерж. OK на главном экране)", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "«${app.label}» скрыто (вернуть можно в Оформлении)", Toast.LENGTH_SHORT).show()
     }
 
     private fun unhideAppPackage(pkg: String) {
@@ -5736,10 +6043,11 @@ class MainActivity : Activity() {
 
     private fun showHiddenAppsMenu() {
         if (!::appInfoOverlay.isInitialized) return
+        clearLensCleanups(infoOverlayLensCleanups)
         appInfoOverlay.removeAllViews()
 
         val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#A6030711"))
+            setBackgroundColor(Color.parseColor("#3E02050E"))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -5750,22 +6058,31 @@ class MainActivity : Activity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(18), dp(22), dp(18))
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                infoOverlayLensCleanups,
                 this,
-                radiusDp = 22f,
-                baseTint = Color.parseColor("#D8080D18"),
-                normalStroke = Color.parseColor("#28FFFFFF"),
-                refractStrength = 1.05f
+                SpatialLensSpec(
+                    radiusDp = 22f,
+                    baseTint = Color.parseColor("#3E09101E"),
+                    focusTint = Color.parseColor("#46121C30"),
+                    bevelDp = 15f,
+                    refractDp = 13f,
+                    chromaDp = 2.4f,
+                    shadowDp = 22f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.72f,
+                    blurMix = 0.90f
+                ),
+                fallbackTint = Color.parseColor("#D8080D18")
             )
-            elevation = dp(34).toFloat()
             isClickable = true
             layoutParams = FrameLayout.LayoutParams(dp(480), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
         }
         val tvT = TextView(this).apply {
-            text = "СКРЫТЫЕ ПРИЛОЖЕНИЯ"
+            text = "Скрытые приложения"
             setTextColor(Color.WHITE)
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 18f
+            typeface = YandexFonts.displayBold(this@MainActivity)
         }
         val tvS = TextView(this).apply {
             text = "Нажмите на приложение, чтобы вернуть его в список"
@@ -5784,7 +6101,7 @@ class MainActivity : Activity() {
                 PKG_YANDEX_MUSIC -> "Яндекс Музыка"
                 else -> try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (_: Throwable) { pkg }
             }
-            val row = makeTextIconPill(R.drawable.ic_yaos_apps, "Вернуть: $lbl", gold = false) {
+            val row = makeTextIconPill(R.drawable.ic_yaos_apps, "Вернуть: $lbl", accent = false, cleanupPool = infoOverlayLensCleanups) {
                 unhideAppPackage(pkg)
                 Toast.makeText(this, "«$lbl» возвращено в список", Toast.LENGTH_SHORT).show()
                 closeAppInfoModal()
@@ -5800,10 +6117,10 @@ class MainActivity : Activity() {
             panel.addView(row)
         }
 
-        val btnClose = makeTextIconPill(R.drawable.ic_play, "Закрыть", gold = true) {
+        val btnClose = makeTextIconPill(R.drawable.ic_play, "Закрыть", accent = true, cleanupPool = infoOverlayLensCleanups) {
             closeAppInfoModal()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                 gravity = Gravity.END
                 topMargin = dp(8)
             }
@@ -5821,11 +6138,12 @@ class MainActivity : Activity() {
 
     private fun showAppInfoModal(app: AppEntry) {
         if (!::appInfoOverlay.isInitialized) return
+        clearLensCleanups(infoOverlayLensCleanups)
         appInfoOverlay.removeAllViews()
         appInfoOverlay.tag = app.pkg
 
         val scrim = View(this).apply {
-            setBackgroundColor(Color.parseColor("#A6030711"))
+            setBackgroundColor(Color.parseColor("#3E02050E"))
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -5836,14 +6154,23 @@ class MainActivity : Activity() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(18), dp(22), dp(18))
-            LiquidGlassKit.applyGlass(
+            bindGlassLens(
+                infoOverlayLensCleanups,
                 this,
-                radiusDp = 22f,
-                baseTint = Color.parseColor("#D8080D18"),
-                normalStroke = Color.parseColor("#28FFFFFF"),
-                refractStrength = 1.05f
+                SpatialLensSpec(
+                    radiusDp = 22f,
+                    baseTint = Color.parseColor("#3E09101E"),
+                    focusTint = Color.parseColor("#46121C30"),
+                    bevelDp = 15f,
+                    refractDp = 13f,
+                    chromaDp = 2.4f,
+                    shadowDp = 22f,
+                    rimAlpha = 0.34f,
+                    focusRimAlpha = 0.72f,
+                    blurMix = 0.90f
+                ),
+                fallbackTint = Color.parseColor("#D8080D18")
             )
-            elevation = dp(34).toFloat()
             isClickable = true
             layoutParams = FrameLayout.LayoutParams(dp(500), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
         }
@@ -5855,6 +6182,7 @@ class MainActivity : Activity() {
         }
         val iv = ImageView(this).apply {
             setImageDrawable(app.icon)
+            (app.icon as? Animatable)?.start()
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { marginEnd = dp(14) }
         }
@@ -5866,7 +6194,7 @@ class MainActivity : Activity() {
             text = app.label
             setTextColor(Color.WHITE)
             textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = YandexFonts.displayBold(this@MainActivity)
         }
         val tvPkg = TextView(this).apply {
             text = if (app.isVirtual) "Встроенный модуль OpenStation Max" else app.pkg
@@ -5922,7 +6250,7 @@ class MainActivity : Activity() {
                 text = v
                 setTextColor(Color.parseColor("#F1F5F9"))
                 textSize = 12f
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                typeface = YandexFonts.textMedium(this@MainActivity)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
             row.addView(tk)
@@ -5936,7 +6264,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(14), 0, 0)
         }
         if (!app.isVirtual) {
-            val btnSys = makeTextIconPill(R.drawable.ic_settings, "В системе", gold = false) {
+            val btnSys = makeTextIconPill(R.drawable.ic_settings, "В системе", accent = false, cleanupPool = infoOverlayLensCleanups) {
                 closeAppInfoModal()
                 try {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -5945,16 +6273,16 @@ class MainActivity : Activity() {
                     })
                 } catch (_: Throwable) {}
             }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38)).apply {
                     marginEnd = dp(8)
                 }
             }
             btnRow.addView(btnSys)
         }
-        val btnClose = makeTextIconPill(R.drawable.ic_play, "Закрыть", gold = true) {
+        val btnClose = makeTextIconPill(R.drawable.ic_play, "Закрыть", accent = true, cleanupPool = infoOverlayLensCleanups) {
             closeAppInfoModal()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(38))
         }
         btnRow.addView(btnClose)
         panel.addView(btnRow)
@@ -5967,8 +6295,8 @@ class MainActivity : Activity() {
         appInfoOverlay.alpha = 0f
         panel.scaleX = 0.93f
         panel.scaleY = 0.93f
-        appInfoOverlay.animate().alpha(1f).setDuration(170L).setInterpolator(easeOutCubic).start()
-        panel.animate().scaleX(1f).scaleY(1f).setDuration(190L).setInterpolator(easeOutCubic).start()
+        appInfoOverlay.animate().alpha(1f).setDuration(MotionPrefs.dur(this, 360L)).setInterpolator(easeOutCubic).start()
+        panel.animate().scaleX(1f).scaleY(1f).setDuration(MotionPrefs.dur(this, 400L)).setInterpolator(easeOutCubic).start()
         btnClose.requestFocus()
         handler.post { if (appInfoOpen) btnClose.requestFocus() }
     }
@@ -5982,7 +6310,7 @@ class MainActivity : Activity() {
         fun restoreFocusAfterInfo() {
             if (homeCustomOpen) {
                 homeCustomOverlay.requestFocus(View.FOCUS_DOWN)
-            } else if (prevPkg != null && (appsDrawerOpen || currentPage == 1)) {
+            } else if (prevPkg != null && appsDrawerOpen) {
                 focusAppTileByPkg(prevPkg)
             }
         }
@@ -5990,6 +6318,7 @@ class MainActivity : Activity() {
             appInfoOverlay.animate().cancel()
             appInfoOverlay.visibility = View.GONE
             appInfoOverlay.alpha = 0f
+            clearLensCleanups(infoOverlayLensCleanups)
             appInfoOverlay.removeAllViews()
             restoreFocusAfterInfo()
             return
@@ -5998,11 +6327,12 @@ class MainActivity : Activity() {
         appInfoOverlay.animate().cancel()
         appInfoOverlay.animate()
             .alpha(0f)
-            .setDuration(150L)
+            .setDuration(MotionPrefs.dur(this, 320L))
             .setInterpolator(easeOutCubic)
             .withEndAction {
                 if (!appInfoOpen) {
                     appInfoOverlay.visibility = View.GONE
+                    clearLensCleanups(infoOverlayLensCleanups)
                     appInfoOverlay.removeAllViews()
                     syncLayerFocusability()
                     restoreFocusAfterInfo()
@@ -6015,28 +6345,47 @@ class MainActivity : Activity() {
         val infoActive = appInfoOpen
         val ctxActive = appContextOpen
         val customActive = homeCustomOpen
+        val ccActive = ::controlCenter.isInitialized && controlCenter.isOpen
+        val musicActive = ::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen
+        val saverActive = ::screensaverOverlay.isInitialized && screensaverOverlay.isOpen
         val drawerActive = appsDrawerOpen
-        val anyOverlay = infoActive || ctxActive || customActive || drawerActive
+        val anyOverlay = infoActive || ctxActive || customActive || ccActive || musicActive || saverActive || drawerActive
 
         if (::shellCol.isInitialized) {
             shellCol.descendantFocusability =
                 if (anyOverlay) ViewGroup.FOCUS_BLOCK_DESCENDANTS else ViewGroup.FOCUS_AFTER_DESCENDANTS
         }
-        if (::bottomDockBar.isInitialized) {
-            bottomDockBar.descendantFocusability =
-                if (anyOverlay || currentPage == 0) ViewGroup.FOCUS_BLOCK_DESCENDANTS else ViewGroup.FOCUS_AFTER_DESCENDANTS
-        }
         if (::appsDrawerOverlay.isInitialized) {
             appsDrawerOverlay.descendantFocusability =
-                if (drawerActive && !infoActive && !ctxActive && !customActive) {
+                if (drawerActive && !infoActive && !ctxActive && !customActive && !ccActive && !musicActive && !saverActive) {
                     ViewGroup.FOCUS_AFTER_DESCENDANTS
                 } else {
                     ViewGroup.FOCUS_BLOCK_DESCENDANTS
                 }
         }
+        if (::controlCenter.isInitialized) {
+            controlCenter.rootOverlay.descendantFocusability =
+                if (ccActive && !infoActive && !ctxActive && !customActive && !saverActive) {
+                    ViewGroup.FOCUS_AFTER_DESCENDANTS
+                } else {
+                    ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                }
+        }
+        if (::musicPlayerSheet.isInitialized) {
+            musicPlayerSheet.rootOverlay.descendantFocusability =
+                if (musicActive && !infoActive && !ctxActive && !customActive && !saverActive) {
+                    ViewGroup.FOCUS_AFTER_DESCENDANTS
+                } else {
+                    ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                }
+        }
+        if (::screensaverOverlay.isInitialized) {
+            screensaverOverlay.rootOverlay.descendantFocusability =
+                if (saverActive) ViewGroup.FOCUS_AFTER_DESCENDANTS else ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        }
         if (::homeCustomOverlay.isInitialized) {
             homeCustomOverlay.descendantFocusability =
-                if (customActive && !infoActive && !ctxActive) {
+                if (customActive && !infoActive && !ctxActive && !saverActive) {
                     ViewGroup.FOCUS_AFTER_DESCENDANTS
                 } else {
                     ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -6044,7 +6393,7 @@ class MainActivity : Activity() {
         }
         if (::appContextOverlay.isInitialized) {
             appContextOverlay.descendantFocusability =
-                if (ctxActive && !infoActive) {
+                if (ctxActive && !infoActive && !saverActive) {
                     ViewGroup.FOCUS_AFTER_DESCENDANTS
                 } else {
                     ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -6052,7 +6401,7 @@ class MainActivity : Activity() {
         }
         if (::appInfoOverlay.isInitialized) {
             appInfoOverlay.descendantFocusability =
-                if (infoActive) {
+                if (infoActive && !saverActive) {
                     ViewGroup.FOCUS_AFTER_DESCENDANTS
                 } else {
                     ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -6061,14 +6410,22 @@ class MainActivity : Activity() {
     }
 
     private fun closeAllOverlays(immediate: Boolean = false) {
+        if (::screensaverOverlay.isInitialized) screensaverOverlay.close(immediate = immediate)
         closeAppInfoModal(immediate = immediate)
         closeAnchoredAppMenu(immediate = immediate, restoreFocus = false)
         closeHomeCustomizationMenu(immediate = immediate)
+        if (::musicPlayerSheet.isInitialized) musicPlayerSheet.close(immediate = immediate)
+        if (::controlCenter.isInitialized) controlCenter.close(immediate = immediate)
         closeAppsDrawer(immediate = immediate)
         syncLayerFocusability()
+        syncBackdropBlurForUiState(animate = !immediate)
     }
 
     private fun handleOverlayBackPressed(): Boolean {
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            closeScreensaver()
+            return true
+        }
         if (appInfoOpen || (::appInfoOverlay.isInitialized && appInfoOverlay.visibility == View.VISIBLE)) {
             closeAppInfoModal()
             return true
@@ -6079,6 +6436,14 @@ class MainActivity : Activity() {
         }
         if (homeCustomOpen) {
             closeHomeCustomizationMenu()
+            return true
+        }
+        if (::musicPlayerSheet.isInitialized && musicPlayerSheet.isOpen) {
+            closeMusicPlayerSheet()
+            return true
+        }
+        if (::controlCenter.isInitialized && controlCenter.isOpen) {
+            controlCenter.close()
             return true
         }
         if (reorderingPkg != null) {
@@ -6095,6 +6460,7 @@ class MainActivity : Activity() {
     private fun shouldArmOkLongPress(focused: View?): Boolean {
         if (reorderingPkg != null) return false
         if (appInfoOpen || appContextOpen || homeCustomOpen) return false
+        if (::controlCenter.isInitialized && controlCenter.isOpen) return false
         if (appsDrawerOpen) {
             return findAppForView(focused) != null
         }
@@ -6102,7 +6468,6 @@ class MainActivity : Activity() {
             if (::eqWidgetController.isInitialized && eqWidgetController.isAdjusting()) return false
             return true
         }
-        if (currentPage == 1 && findAppForView(focused) != null) return true
         return false
     }
 
@@ -6114,14 +6479,7 @@ class MainActivity : Activity() {
             showAnchoredAppMenu(app, anchor ?: currentFocus ?: return)
             return
         }
-        if (currentPage == 1) {
-            val app = findAppForView(anchor ?: currentFocus)
-            if (app != null) {
-                showAnchoredAppMenu(app, anchor ?: currentFocus ?: return)
-                return
-            }
-        }
-        if (currentPage == 0 && !homeCustomOpen) {
+        if (currentPage == 0 && !homeCustomOpen && (!::controlCenter.isInitialized || !controlCenter.isOpen)) {
             showHomeCustomizationMenu()
         }
     }
@@ -6157,17 +6515,147 @@ class MainActivity : Activity() {
         v.animate()
             .translationXBy(dx)
             .translationYBy(dy)
-            .setDuration(90L)
+            .setDuration(MotionPrefs.dur(this, 160L))
             .setInterpolator(easeOutCubic)
             .withEndAction {
                 v.animate()
                     .translationXBy(-dx)
                     .translationYBy(-dy)
-                    .setDuration(160L)
+                    .setDuration(MotionPrefs.dur(this, 260L))
                     .setInterpolator(easeOutCubic)
                     .start()
             }
             .start()
+    }
+
+    private fun showShellResetModal() {
+        timersScreenRef = null
+        otaModalOpen = false
+        clearLensCleanups(customOverlayLensCleanups)
+        val panel = makeModalGlassPanel(540)
+
+        panel.addView(TextView(this).apply {
+            text = "Сброс оболочки OpenStation"
+            setTextColor(Color.WHITE)
+            textSize = 18.5f
+            typeface = YandexFonts.displayBold(this@MainActivity)
+        })
+        panel.addView(TextView(this).apply {
+            text = "Затрагивает только оболочку OpenStation Max и демон openstationd. Система Android TV, Wi-Fi, Bluetooth и установленные приложения не удаляются."
+            setTextColor(Color.parseColor("#CBD5E1"))
+            textSize = 12f
+            typeface = YandexFonts.displayRegular(this@MainActivity)
+            setPadding(0, dp(6), 0, dp(14))
+        })
+
+        var clearAuthAccounts = false
+        lateinit var btnClearAuthToggle: TextView
+        btnClearAuthToggle = makeModalChoicePill("Аккаунты Яндекс и ключи API: Сохранить", selected = false) {
+            clearAuthAccounts = !clearAuthAccounts
+            btnClearAuthToggle.isSelected = clearAuthAccounts
+            btnClearAuthToggle.text = if (clearAuthAccounts) {
+                "Аккаунты Яндекс и ключи API: Очистить"
+            } else {
+                "Аккаунты Яндекс и ключи API: Сохранить"
+            }
+            btnClearAuthToggle.setTextColor(Color.parseColor(if (clearAuthAccounts) "#FDE68A" else "#E2E8F0"))
+        }
+        (btnClearAuthToggle.layoutParams as LinearLayout.LayoutParams).apply {
+            width = ViewGroup.LayoutParams.MATCH_PARENT
+            marginEnd = 0
+            bottomMargin = dp(12)
+        }
+        panel.addView(btnClearAuthToggle)
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+
+        val btnRestartOnly = makeModalChoicePill("Перезапустить оболочку", selected = false) {
+            closeHomeCustomizationMenu()
+            performSoftShellRestart()
+        }.apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+        }
+
+        val btnFullReset = makeModalChoicePill("Сбросить к исходным", selected = true) {
+            closeHomeCustomizationMenu()
+            performOpenStationShellReset(clearAuthAccounts)
+        }.apply {
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#FDA4AF"))
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(8) }
+        }
+
+        val btnCancel = makeModalChoicePill("Отмена", selected = false) {
+            closeHomeCustomizationMenu()
+        }.apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42))
+        }
+
+        btnRow.addView(btnRestartOnly)
+        btnRow.addView(btnFullReset)
+        btnRow.addView(btnCancel)
+        panel.addView(btnRow)
+
+        presentOverlayModal(panel, btnRestartOnly)
+    }
+
+    private fun performSoftShellRestart() {
+        Toast.makeText(this, "Перезапуск оболочки OpenStation...", Toast.LENGTH_SHORT).show()
+        thread(isDaemon = true) {
+            httpPostJson("http://127.0.0.1:8080/api/system/restart_daemon", "{}")
+            Thread.sleep(600L)
+            handler.post {
+                val i = Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                }
+                startActivity(i)
+                overridePendingTransition(R.anim.spatial_hold_fade_in, R.anim.spatial_hold_fade_out)
+                finish()
+            }
+        }
+    }
+
+    private fun performOpenStationShellReset(clearAuth: Boolean) {
+        Toast.makeText(this, "Сброс оболочки OpenStation...", Toast.LENGTH_LONG).show()
+        thread(isDaemon = true) {
+            val payload = JSONObject().put("clearAuth", clearAuth).toString()
+            httpPostJson("http://127.0.0.1:8080/api/system/reset_shell", payload)
+
+            val prefNames = arrayListOf(
+                "openstation_ui",
+                "openstation_apps_prefs",
+                "openstation_widgets",
+                "openstation_ble_remote",
+                SetupWizardActivity.PREFS_NAME
+            )
+            if (clearAuth) {
+                prefNames.add("ym_mod")
+                StationAudioService.instance?.musicPlayer?.api?.clearAuth()
+            }
+            prefNames.forEach { name ->
+                try {
+                    getSharedPreferences(name, MODE_PRIVATE).edit().clear().commit()
+                } catch (_: Throwable) {}
+            }
+            MotionPrefs.setSpeed(this@MainActivity, MotionPrefs.Speed.SMOOTH)
+            Thread.sleep(700L)
+            handler.post {
+                val wizardIntent = Intent(this@MainActivity, SetupWizardActivity::class.java).apply {
+                    putExtra(SetupWizardActivity.EXTRA_MANUAL, false)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                }
+                startActivity(wizardIntent)
+                overridePendingTransition(R.anim.spatial_sheet_in_up, R.anim.spatial_hold_fade_out)
+                finish()
+            }
+        }
     }
 
     private fun postAsync(url: String, jsonBody: String) {

@@ -1,4 +1,5 @@
 #include "hw/audio_engine.hpp"
+#include "hw/audio_mix.hpp"
 #include "utils/logger.hpp"
 
 #include <aaudio/AAudio.h>
@@ -8,6 +9,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <fstream>
 #include <sound/asound.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -215,6 +217,44 @@ void write_le16(uint8_t* p, uint16_t v) {
     p[1] = (v >> 8) & 0xFF;
 }
 
+uint16_t read_le16(const uint8_t* p) {
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+uint32_t read_le32(const uint8_t* p) {
+    return static_cast<uint32_t>(p[0]) |
+           (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) |
+           (static_cast<uint32_t>(p[3]) << 24);
+}
+
+void play_two_tone_fallback(AudioEngine& engine,
+                            double f1, double f2,
+                            int ms1, int ms2,
+                            double amp, int fade_out_samples = 480) {
+    const int sr = 48000;
+    const int n1 = sr * ms1 / 1000;
+    const int n2 = sr * ms2 / 1000;
+    const int total = n1 + n2;
+    std::vector<int16_t> pcm(static_cast<size_t>(total) * 2);
+    double phase = 0.0;
+    for (int i = 0; i < total; ++i) {
+        double f = (i < n1) ? f1 : f2;
+        phase += 2.0 * kPi * f / sr;
+        int local = (i < n1) ? i : (i - n1);
+        int seg_len = (i < n1) ? n1 : n2;
+        double env = 1.0;
+        if (local < 240) env = local / 240.0;
+        else if (local > seg_len - fade_out_samples) {
+            env = std::max(0.0, static_cast<double>(seg_len - local) / fade_out_samples);
+        }
+        int16_t v = static_cast<int16_t>(std::sin(phase) * env * amp);
+        pcm[i * 2] = v;
+        pcm[i * 2 + 1] = v;
+    }
+    engine.play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
+}
+
 } // namespace
 
 AudioEngine::~AudioEngine() {
@@ -278,6 +318,10 @@ void AudioEngine::stop() {
     play_cv_.notify_all();
     if (cap_thread_.joinable()) cap_thread_.join();
     if (play_thread_.joinable()) play_thread_.join();
+    {
+        std::lock_guard<std::mutex> lk(remote_pcm_mu_);
+        remote_pcm_q_.clear();
+    }
 }
 
 void AudioEngine::update_config(const AudioConfig& cfg) {
@@ -314,6 +358,52 @@ void AudioEngine::set_ws_audio_sink(WsAudioCallback cb) {
 void AudioEngine::set_spectrum_needed_cb(SpectrumNeededCallback cb) {
     std::lock_guard<std::mutex> lk(spec_needed_mu_);
     spec_needed_cb_ = std::move(cb);
+}
+
+void AudioEngine::set_realtime_fx_callback(RealtimeFxCallback cb) {
+    std::lock_guard<std::mutex> lk(fx_cb_mu_);
+    realtime_fx_cb_ = std::move(cb);
+}
+
+void AudioEngine::set_keep_stream_warm(bool warm) {
+    bool prev = keep_stream_warm_.exchange(warm);
+    if (warm != prev) {
+        if (warm) fx_wake_.store(true);
+        play_cv_.notify_one();
+    }
+}
+
+void AudioEngine::wake_playback() {
+    fx_wake_.store(true);
+    play_cv_.notify_one();
+}
+
+void AudioEngine::push_remote_audio_16k(const int16_t* samples, size_t count) {
+    if (!samples || count == 0) return;
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    {
+        std::lock_guard<std::mutex> lk(remote_pcm_mu_);
+        // Cap queued remote audio at ~400 ms (6400 samples @ 16 kHz) to prevent lag accumulation.
+        constexpr size_t kMaxRemoteQueue = 6400;
+        if (remote_pcm_q_.size() + count > kMaxRemoteQueue) {
+            size_t target = kMaxRemoteQueue > count ? (kMaxRemoteQueue - count) : 0;
+            while (remote_pcm_q_.size() > target) {
+                remote_pcm_q_.pop_front();
+            }
+        }
+        remote_pcm_q_.insert(remote_pcm_q_.end(), samples, samples + count);
+    }
+    last_remote_pcm_ms_.store(now_ms, std::memory_order_relaxed);
+    remote_pcm_samples_.fetch_add(static_cast<uint64_t>(count), std::memory_order_relaxed);
+}
+
+bool AudioEngine::is_remote_mic_streaming() const {
+    const int64_t last_ms = last_remote_pcm_ms_.load(std::memory_order_relaxed);
+    if (last_ms <= 0) return false;
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return (now_ms - last_ms) <= 1200;
 }
 
 void AudioEngine::push_external_spectrum(const std::array<float, 24>& bands) {
@@ -562,7 +652,28 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
     }
 
     while (out16k_acc_.size() - out16k_head_ >= 320) {
-        const int16_t* frame16 = out16k_acc_.data() + out16k_head_;
+        int16_t* frame16 = out16k_acc_.data() + out16k_head_;
+        {
+            std::array<int16_t, 320> rmt_buf{};
+            size_t got = 0;
+            {
+                std::lock_guard<std::mutex> lk(remote_pcm_mu_);
+                if (!remote_pcm_q_.empty()) {
+                    if (remote_pcm_q_.size() > 4800) {
+                        size_t drop = remote_pcm_q_.size() - 3200;
+                        for (size_t d = 0; d < drop; ++d) remote_pcm_q_.pop_front();
+                    }
+                    got = std::min<size_t>(320, remote_pcm_q_.size());
+                    for (size_t i = 0; i < got; ++i) {
+                        rmt_buf[i] = remote_pcm_q_.front();
+                        remote_pcm_q_.pop_front();
+                    }
+                }
+            }
+            if (got > 0) {
+                mix_remote_and_station_pcm(frame16, rmt_buf.data(), 320);
+            }
+        }
         double sq = 0.0;
         for (size_t i = 0; i < 320; ++i) {
             double v = frame16[i];
@@ -1030,53 +1141,161 @@ bool AudioEngine::is_playback_or_tail_active(int tail_ms) const {
     return (steady_now_ms() - end_ms) < static_cast<int64_t>(tail_ms);
 }
 
-void AudioEngine::play_wake_chime() {
-    // Crisp 2-note ascending tone (~180 ms @ 48 kHz)
-    const int sr = 48000;
-    const int n1 = sr * 75 / 1000;
-    const int n2 = sr * 105 / 1000;
-    const int total = n1 + n2;
-    std::vector<int16_t> pcm(static_cast<size_t>(total) * 2);
-    double phase = 0.0;
-    for (int i = 0; i < total; ++i) {
-        double f = (i < n1) ? 659.25 : 987.77; // E5 -> B5
-        phase += 2.0 * kPi * f / sr;
-        int local = (i < n1) ? i : (i - n1);
-        int seg_len = (i < n1) ? n1 : n2;
-        double env = 1.0;
-        if (local < 240) env = local / 240.0;
-        else if (local > seg_len - 480) env = std::max(0.0, (seg_len - local) / 480.0);
-        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 5000.0);
-        pcm[i * 2] = v;
-        pcm[i * 2 + 1] = v;
+bool AudioEngine::parse_wav_pcm16(const uint8_t* data, size_t size, CachedSound& out) {
+    if (!data || size < 44) return false;
+    if (std::memcmp(data, "RIFF", 4) != 0 || std::memcmp(data + 8, "WAVE", 4) != 0) {
+        return false;
     }
-    play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
+
+    static constexpr uint8_t kPcmSubFormatGuid[16] = {
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+        0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71
+    };
+
+    bool has_fmt = false;
+    bool has_data = false;
+    int channels = 0;
+    int sample_rate = 0;
+    size_t data_off = 0;
+    size_t data_len = 0;
+
+    size_t pos = 12;
+    while (pos + 8 <= size) {
+        const uint8_t* hdr = data + pos;
+        uint32_t chunk_sz = read_le32(hdr + 4);
+        pos += 8;
+        size_t avail = std::min<size_t>(chunk_sz, size - pos);
+
+        if (std::memcmp(hdr, "fmt ", 4) == 0) {
+            if (avail < 16) return false;
+            const uint8_t* f = data + pos;
+            uint16_t audio_fmt = read_le16(f);
+            uint16_t ch = read_le16(f + 2);
+            uint32_t sr = read_le32(f + 4);
+            uint16_t bps = read_le16(f + 14);
+            bool pcm_ok = (audio_fmt == 1);
+            if (audio_fmt == 0xFFFE && avail >= 40) {
+                pcm_ok = (std::memcmp(f + 24, kPcmSubFormatGuid, 16) == 0);
+            }
+            if (!pcm_ok || bps != 16 || ch < 1 || ch > 8 || sr < 8000 || sr > 192000) {
+                return false;
+            }
+            channels = static_cast<int>(ch);
+            sample_rate = static_cast<int>(sr);
+            has_fmt = true;
+        } else if (std::memcmp(hdr, "data", 4) == 0) {
+            data_off = pos;
+            data_len = avail;
+            has_data = true;
+        }
+
+        size_t step = static_cast<size_t>(chunk_sz) + (chunk_sz & 1u);
+        if (step > size - pos) break;
+        pos += step;
+    }
+
+    if (!has_fmt || !has_data || channels <= 0 || sample_rate <= 0) return false;
+    const size_t frame_bytes = static_cast<size_t>(channels) * 2;
+    const size_t frames = data_len / frame_bytes;
+    if (frames == 0) return false;
+
+    const size_t sample_count = frames * static_cast<size_t>(channels);
+    out.sample_rate = sample_rate;
+    out.channels = channels;
+    out.samples.resize(sample_count);
+    const uint8_t* p = data + data_off;
+    for (size_t i = 0; i < sample_count; ++i) {
+        out.samples[i] = static_cast<int16_t>(read_le16(p + i * 2));
+    }
+    return true;
+}
+
+size_t AudioEngine::load_sound_pack(const std::string& dir) {
+    static const char* kSoundNames[] = {
+        "wake", "cancel", "mute", "pop", "error",
+        "bt_on", "bt_off", "timer", "alarm", "startup"
+    };
+    std::unordered_map<std::string, CachedSound> loaded;
+    for (const char* name : kSoundNames) {
+        std::string path = dir + "/" + name + ".wav";
+        std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+        if (!ifs.is_open()) continue;
+        std::streamoff sz = ifs.tellg();
+        if (sz < 44 || sz > 16 * 1024 * 1024) continue;
+        std::vector<uint8_t> raw(static_cast<size_t>(sz));
+        ifs.seekg(0, std::ios::beg);
+        if (!ifs.read(reinterpret_cast<char*>(raw.data()), sz)) continue;
+        CachedSound snd;
+        if (parse_wav_pcm16(raw.data(), raw.size(), snd)) {
+            loaded.emplace(name, std::move(snd));
+        } else {
+            LOGW("AudioEngine", "Ignoring invalid sound pack WAV: %s", path.c_str());
+        }
+    }
+    const size_t count = loaded.size();
+    {
+        std::lock_guard<std::mutex> lk(sounds_mu_);
+        sounds_ = std::move(loaded);
+    }
+    LOGI("AudioEngine", "Loaded %zu WAV sound effects from %s", count, dir.c_str());
+    return count;
+}
+
+bool AudioEngine::play_sound_name(const std::string& name, float gain) {
+    CachedSound snd;
+    {
+        std::lock_guard<std::mutex> lk(sounds_mu_);
+        auto it = sounds_.find(name);
+        if (it == sounds_.end() || it->second.samples.empty() || it->second.channels <= 0) {
+            return false;
+        }
+        snd = it->second;
+    }
+    const size_t frames = snd.samples.size() / static_cast<size_t>(snd.channels);
+    if (frames == 0) return false;
+    if (std::abs(gain - 1.0f) < 0.01f) {
+        play_pcm(snd.samples.data(), frames, snd.sample_rate, snd.channels);
+        return true;
+    }
+    const float g = std::clamp(gain, 0.0f, 2.0f);
+    std::vector<int16_t> scaled(snd.samples.size());
+    for (size_t i = 0; i < snd.samples.size(); ++i) {
+        long v = std::lround(static_cast<float>(snd.samples[i]) * g);
+        scaled[i] = static_cast<int16_t>(std::clamp(v, -32768L, 32767L));
+    }
+    play_pcm(scaled.data(), frames, snd.sample_rate, snd.channels);
+    return true;
+}
+
+void AudioEngine::play_wake_chime() {
+    if (play_sound_name("wake", 0.90f)) return;
+    // Crisp 2-note ascending tone (~180 ms @ 48 kHz)
+    play_two_tone_fallback(*this, 659.25, 987.77, 75, 105, 5000.0, 480);
+}
+
+void AudioEngine::play_cancel_chime() {
+    if (play_sound_name("cancel", 0.90f)) return;
+    play_two_tone_fallback(*this, 523.25, 392.00, 70, 110, 4000.0, 480);
+}
+
+void AudioEngine::play_mute_chime(bool muted) {
+    if (play_sound_name(muted ? "mute" : "pop", 0.88f)) return;
+    if (muted) {
+        play_two_tone_fallback(*this, 420.0, 310.0, 45, 70, 3800.0, 360);
+    } else {
+        play_two_tone_fallback(*this, 520.0, 700.0, 45, 65, 3800.0, 360);
+    }
 }
 
 void AudioEngine::play_error_chime() {
+    if (play_sound_name("error", 0.90f)) return;
     // Soft descending tone (~220 ms @ 48 kHz)
-    const int sr = 48000;
-    const int n1 = sr * 95 / 1000;
-    const int n2 = sr * 125 / 1000;
-    const int total = n1 + n2;
-    std::vector<int16_t> pcm(static_cast<size_t>(total) * 2);
-    double phase = 0.0;
-    for (int i = 0; i < total; ++i) {
-        double f = (i < n1) ? 440.0 : 311.13; // A4 -> D#4
-        phase += 2.0 * kPi * f / sr;
-        int local = (i < n1) ? i : (i - n1);
-        int seg_len = (i < n1) ? n1 : n2;
-        double env = 1.0;
-        if (local < 240) env = local / 240.0;
-        else if (local > seg_len - 560) env = std::max(0.0, (seg_len - local) / 560.0);
-        int16_t v = static_cast<int16_t>(std::sin(phase) * env * 4500.0);
-        pcm[i * 2] = v;
-        pcm[i * 2 + 1] = v;
-    }
-    play_pcm(pcm.data(), static_cast<size_t>(total), sr, 2);
+    play_two_tone_fallback(*this, 440.0, 311.13, 95, 125, 4500.0, 560);
 }
 
-void AudioEngine::play_timer_alarm() {
+void AudioEngine::play_timer_alarm(bool is_alarm) {
+    if (is_alarm && play_sound_name("alarm", 0.92f)) return;
+    if (play_sound_name("timer", 0.92f)) return;
     // Cheerful 3-cycle C5-E5-G5 alarm (~1.2s @ 48 kHz)
     const int sr = 48000;
     const double freqs[4] = {523.25, 659.25, 783.99, 1046.50};
@@ -1107,6 +1326,7 @@ void AudioEngine::play_timer_alarm() {
 }
 
 void AudioEngine::play_startup_chime() {
+    if (play_sound_name("startup", 0.85f)) return;
     // Rich Station Max boot signature: 52->65 Hz woofer bloom + Liquid Glass major-9 arpeggio (~2.4s @ 48 kHz)
     const int sr = 48000;
     const int total = sr * 24 / 10; // 2.4s
@@ -1156,6 +1376,8 @@ void AudioEngine::play_startup_chime() {
 }
 
 void AudioEngine::play_bt_chime(const std::string& kind) {
+    const bool is_off = (kind == "off" || kind == "disconnected");
+    if (play_sound_name(is_off ? "bt_off" : "bt_on", 0.90f)) return;
     const int sr = 48000;
     struct BtTone { double freq; double start_s; double dur_s; double amp; };
     std::vector<BtTone> tones;
@@ -1167,7 +1389,7 @@ void AudioEngine::play_bt_chime(const std::string& kind) {
             {1174.66,0.23, 0.30, 4200.0},
         };
         dur_s = 0.56;
-    } else if (kind == "off" || kind == "disconnected") {
+    } else if (is_off) {
         tones = {
             {783.99, 0.00, 0.13, 4500.0},
             {523.25, 0.11, 0.16, 4500.0},
@@ -1224,66 +1446,159 @@ void AudioEngine::play_test_tone(int freq_hz, int duration_ms, bool sweep) {
 }
 
 void AudioEngine::playback_loop() {
+    constexpr size_t kBlockFrames = 256; // 5.33 ms @ 48 kHz for sub-10ms scratch response
+    std::vector<int16_t> fx_buf(kBlockFrames * 2, 0);
+    std::vector<int16_t> mix_buf(kBlockFrames * 2, 0);
+    std::vector<int16_t> mono16k;
+    mono16k.reserve(128);
+
     while (running_.load()) {
+        bool warm_req = false;
         PlayChunk chunk;
+        bool has_chunk = false;
         {
             std::unique_lock<std::mutex> lk(play_mu_);
-            play_cv_.wait(lk, [&] { return !running_.load() || !play_q_.empty(); });
+            play_cv_.wait(lk, [&] {
+                return !running_.load() || !play_q_.empty() || keep_stream_warm_.load() || fx_wake_.load();
+            });
             if (!running_.load()) break;
-            chunk = std::move(play_q_.front());
-            play_q_.pop();
+            fx_wake_.store(false);
+            warm_req = keep_stream_warm_.load();
+            if (!play_q_.empty()) {
+                chunk = std::move(play_q_.front());
+                play_q_.pop();
+                has_chunk = true;
+            }
         }
 
-        uint64_t active_epoch = chunk.epoch;
-        if (active_epoch != playback_epoch_.load()) {
+        if (has_chunk && chunk.epoch != playback_epoch_.load()) {
             continue;
         }
 
-        AAudioStreamBuilder* b = nullptr;
-        if (g_aa.createStreamBuilder(&b) != AAUDIO_OK || !b) continue;
-        g_aa.builder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
-        g_aa.builder_setSampleRate(b, 48000);
-        g_aa.builder_setChannelCount(b, 2);
-        g_aa.builder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
-        g_aa.builder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
-        g_aa.builder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_NONE);
+        auto open_out_stream = [&](bool low_latency) -> AAudioStream* {
+            AAudioStreamBuilder* b = nullptr;
+            if (g_aa.createStreamBuilder(&b) != AAUDIO_OK || !b) return nullptr;
+            g_aa.builder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
+            g_aa.builder_setSampleRate(b, 48000);
+            g_aa.builder_setChannelCount(b, 2);
+            g_aa.builder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
+            g_aa.builder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
+            g_aa.builder_setPerformanceMode(b, low_latency ? AAUDIO_PERFORMANCE_MODE_LOW_LATENCY
+                                                           : AAUDIO_PERFORMANCE_MODE_NONE);
+            AAudioStream* s = nullptr;
+            aaudio_result_t res = g_aa.builder_openStream(b, &s);
+            g_aa.builder_delete(b);
+            if (res != AAUDIO_OK || !s) return nullptr;
+            return s;
+        };
 
-        AAudioStream* out_s = nullptr;
-        aaudio_result_t r = g_aa.builder_openStream(b, &out_s);
-        g_aa.builder_delete(b);
-        if (r != AAUDIO_OK || !out_s) {
-            LOGW("AudioEngine", "Failed to open playback AAudio stream: %s", g_aa.err_str(r));
+        AAudioStream* out_s = open_out_stream(warm_req);
+        if (!out_s && warm_req) {
+            out_s = open_out_stream(false);
+        }
+        if (!out_s) {
+            LOGW("AudioEngine", "Failed to open playback AAudio stream");
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
             continue;
         }
         if (g_aa.stream_requestStart(out_s) != AAUDIO_OK) {
             g_aa.stream_close(out_s);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
             continue;
         }
 
-        playing_active_.store(true);
-        std::vector<int16_t> mono16k;
-        mono16k.reserve(512);
-        auto write_chunk = [&](const std::vector<int16_t>& buf, uint64_t ep) -> bool {
-            size_t total_frames = buf.size() / 2;
-            size_t off = 0;
-            bool need_spec = static_cast<bool>(spec_cb_);
-            if (need_spec) {
-                std::lock_guard<std::mutex> lk(spec_needed_mu_);
-                if (spec_needed_cb_) need_spec = spec_needed_cb_();
+        size_t chunk_off = 0;
+        uint64_t chunk_epoch = has_chunk ? chunk.epoch : playback_epoch_.load();
+        size_t chunk_frames = has_chunk ? (chunk.samples_48k_stereo.size() / 2) : 0;
+        auto idle_since = std::chrono::steady_clock::now();
+
+        while (running_.load()) {
+            uint64_t cur_ep = playback_epoch_.load();
+            if (has_chunk && (chunk_epoch != cur_ep || chunk_off >= chunk_frames)) {
+                has_chunk = false;
+                chunk_off = 0;
+                chunk_frames = 0;
             }
-            while (off < total_frames && running_.load() && playback_epoch_.load() == ep) {
-                int32_t to_write = static_cast<int32_t>(std::min<size_t>(1024, total_frames - off));
+            if (!has_chunk) {
+                std::lock_guard<std::mutex> lk(play_mu_);
+                while (!play_q_.empty() && play_q_.front().epoch != playback_epoch_.load()) {
+                    play_q_.pop();
+                }
+                if (!play_q_.empty()) {
+                    chunk = std::move(play_q_.front());
+                    play_q_.pop();
+                    chunk_off = 0;
+                    chunk_epoch = chunk.epoch;
+                    chunk_frames = chunk.samples_48k_stereo.size() / 2;
+                    has_chunk = (chunk_frames > 0);
+                }
+            }
+
+            size_t take_chunk = has_chunk ? std::min(kBlockFrames, chunk_frames - chunk_off) : 0;
+            bool fx_active = false;
+            {
+                RealtimeFxCallback fx_cb;
+                {
+                    std::lock_guard<std::mutex> lk(fx_cb_mu_);
+                    fx_cb = realtime_fx_cb_;
+                }
+                if (fx_cb) {
+                    fx_active = fx_cb(fx_buf.data(), kBlockFrames);
+                }
+            }
+
+            bool any_audio = (take_chunk > 0) || fx_active;
+            if (!any_audio) {
+                playing_active_.store(false);
+                playback_rms_.store(0.0f);
+                if (!keep_stream_warm_.load()) {
+                    if (std::chrono::steady_clock::now() - idle_since >= std::chrono::milliseconds(80)) {
+                        break;
+                    }
+                    // Briefly wait on queue before writing another silent block
+                    std::unique_lock<std::mutex> lk(play_mu_);
+                    play_cv_.wait_for(lk, std::chrono::milliseconds(12), [&] {
+                        return !running_.load() || !play_q_.empty() || keep_stream_warm_.load() || fx_wake_.load();
+                    });
+                    if (!running_.load()) break;
+                    if (!play_q_.empty() || fx_wake_.exchange(false)) continue;
+                    if (!keep_stream_warm_.load()) continue;
+                }
+                std::fill(mix_buf.begin(), mix_buf.end(), 0);
+            } else {
+                idle_since = std::chrono::steady_clock::now();
+                playing_active_.store(true);
+                bool need_spec = static_cast<bool>(spec_cb_);
+                if (need_spec) {
+                    std::lock_guard<std::mutex> lk(spec_needed_mu_);
+                    if (spec_needed_cb_) need_spec = spec_needed_cb_();
+                }
+
                 double sq = 0.0;
                 mono16k.clear();
-                for (int32_t k = 0; k < to_write; ++k) {
-                    int32_t m = (static_cast<int32_t>(buf[(off + k) * 2]) + buf[(off + k) * 2 + 1]) / 2;
+                for (size_t k = 0; k < kBlockFrames; ++k) {
+                    int32_t l = (k < take_chunk) ? chunk.samples_48k_stereo[(chunk_off + k) * 2] : 0;
+                    int32_t r = (k < take_chunk) ? chunk.samples_48k_stereo[(chunk_off + k) * 2 + 1] : 0;
+                    if (fx_active) {
+                        l += fx_buf[k * 2];
+                        r += fx_buf[k * 2 + 1];
+                    }
+                    l = std::clamp<int32_t>(l, -32767, 32767);
+                    r = std::clamp<int32_t>(r, -32767, 32767);
+                    mix_buf[k * 2] = static_cast<int16_t>(l);
+                    mix_buf[k * 2 + 1] = static_cast<int16_t>(r);
+
+                    int32_t m = (l + r) / 2;
                     sq += static_cast<double>(m) * m;
                     if (need_spec && (k % 3) == 0) {
                         mono16k.push_back(static_cast<int16_t>(m));
                     }
                 }
-                float rms = static_cast<float>(std::sqrt(sq / std::max(1, to_write)));
+                chunk_off += take_chunk;
+
+                float rms = static_cast<float>(std::sqrt(sq / static_cast<double>(kBlockFrames)));
                 playback_rms_.store(std::clamp(rms / 9000.0f, 0.0f, 1.0f));
+                last_playback_end_ms_.store(steady_now_ms());
                 if (need_spec && mono16k.size() >= 64) {
                     bool ext_fresh = false;
                     {
@@ -1294,40 +1609,16 @@ void AudioEngine::playback_loop() {
                         spec_cb_(compute_spectrum_16k(mono16k.data(), mono16k.size()));
                     }
                 }
-
-                aaudio_result_t wr = g_aa.stream_write(out_s, buf.data() + off * 2, to_write, 1000000000LL);
-                if (wr <= 0) break;
-                off += static_cast<size_t>(wr);
-                last_playback_end_ms_.store(steady_now_ms());
             }
-            return running_.load() && playback_epoch_.load() == ep;
-        };
 
-        bool ok_stream = write_chunk(chunk.samples_48k_stereo, active_epoch);
-        // Drain contiguous queued TTS chunks without reopening stream
-        while (ok_stream && running_.load() && playback_epoch_.load() == active_epoch) {
-            PlayChunk next_c;
-            {
-                std::unique_lock<std::mutex> lk(play_mu_);
-                if (play_q_.empty()) {
-                    play_cv_.wait_for(lk, std::chrono::milliseconds(80),
-                                      [&] {
-                                          return !running_.load() ||
-                                                 !play_q_.empty() ||
-                                                 playback_epoch_.load() != active_epoch;
-                                      });
-                }
-                if (play_q_.empty() || !running_.load() || playback_epoch_.load() != active_epoch) break;
-                next_c = std::move(play_q_.front());
-                play_q_.pop();
-            }
-            if (next_c.epoch != active_epoch) break;
-            ok_stream = write_chunk(next_c.samples_48k_stereo, active_epoch);
+            aaudio_result_t wr = g_aa.stream_write(out_s, mix_buf.data(), static_cast<int32_t>(kBlockFrames), 500000000LL);
+            if (wr <= 0) break;
         }
 
         playback_rms_.store(0.0f);
-        last_playback_end_ms_.store(steady_now_ms());
-        playing_active_.store(false);
+        if (playing_active_.exchange(false)) {
+            last_playback_end_ms_.store(steady_now_ms());
+        }
         g_aa.stream_requestStop(out_s);
         g_aa.stream_close(out_s);
     }
@@ -1377,6 +1668,8 @@ json::Value AudioEngine::get_status_json() {
     obj["playingTts"] = Value::make_bool(playing_active_.load());
     obj["agcGain"] = Value::make_num(std::round(last_agc_gain_.load() * 100.0) / 100.0);
     obj["noiseFloor"] = Value::make_num(std::round(last_noise_floor_.load()));
+    obj["remoteMicActive"] = Value::make_bool(is_remote_mic_streaming());
+    obj["remoteMicSamples"] = Value::make_int(static_cast<int64_t>(remote_pcm_samples_.load(std::memory_order_relaxed)));
 
     Value meters = Value::make_arr();
     {

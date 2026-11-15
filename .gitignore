@@ -10,9 +10,11 @@ build/
 *.apk
 !firmware/OpenStationLauncher.apk
 !firmware/OpenStationIME.apk
+!firmware/OpenStationWebViewOverlay.apk
 *.aab
 *.ap_
 *.dex
+*.idsig
 local.properties
 */local.properties
 

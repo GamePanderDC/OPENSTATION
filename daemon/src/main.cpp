@@ -4,7 +4,9 @@
 #include "assistant/tls_ws_client.hpp"
 #include "config.hpp"
 #include "hw/alsa_mixer.hpp"
+#include "hw/android_optimizer.hpp"
 #include "hw/audio_engine.hpp"
+#include "hw/track_scrub.hpp"
 #include "hw/sy6045s_eq.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "hw/input_monitor.hpp"
@@ -29,11 +31,13 @@
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <condition_variable>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <dirent.h>
 #include <fcntl.h>
 #include <malloc.h>
@@ -52,7 +56,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.3";
+constexpr const char* kFirmwareVersion = "1.6.4";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -64,6 +68,36 @@ void on_signal(int) {
 }
 
 bool is_udp_port_bound(int port) {
+    if (port == 8086) {
+        static std::atomic<int64_t> s_cached_8086_ms{0};
+        const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count();
+        const int64_t cached = s_cached_8086_ms.load(std::memory_order_relaxed);
+        if (cached > 0 && (now_ms - cached) < 900) {
+            return true;
+        }
+        char needle[16];
+        snprintf(needle, sizeof(needle), ":%04X ", static_cast<unsigned int>(port) & 0xFFFF);
+        const char* files[] = {"/proc/net/udp", "/proc/net/udp6"};
+        for (const char* path : files) {
+            FILE* f = fopen(path, "r");
+            if (!f) continue;
+            char line[512];
+            if (fgets(line, sizeof(line), f)) {
+                while (fgets(line, sizeof(line), f)) {
+                    if (strstr(line, needle) != nullptr) {
+                        fclose(f);
+                        s_cached_8086_ms.store(now_ms, std::memory_order_relaxed);
+                        return true;
+                    }
+                }
+            }
+            fclose(f);
+        }
+        s_cached_8086_ms.store(0, std::memory_order_relaxed);
+        return false;
+    }
     char needle[16];
     snprintf(needle, sizeof(needle), ":%04X ", static_cast<unsigned int>(port) & 0xFFFF);
     const char* files[] = {"/proc/net/udp", "/proc/net/udp6"};
@@ -120,6 +154,14 @@ bool ensure_launcher_service_udp(int port = 8086) {
     }
     LOGW("Main", "Timed out waiting for StationAudioService UDP %d", port);
     return is_udp_port_bound(port);
+}
+
+void push_remote_mic_control(bool active) {
+    if (!is_udp_port_bound(8086)) return;
+    openstation::json::Value cmd = openstation::json::Value::make_obj();
+    cmd["cmd"] = openstation::json::Value::make_str("remote_mic");
+    cmd["active"] = openstation::json::Value::make_bool(active);
+    send_udp_json(8086, cmd.dump(-1));
 }
 
 struct MusicPlaybackState {
@@ -212,6 +254,32 @@ bool write_cec_hex(const std::string& bytes_hex) {
     return ok;
 }
 
+bool write_sysfs_value(const char* path, const char* value) {
+    if (!path || !value) return false;
+    FILE* f = fopen(path, "w");
+    if (!f) return false;
+    bool ok = (fputs(value, f) >= 0);
+    if (fflush(f) != 0) ok = false;
+    if (fclose(f) != 0) ok = false;
+    return ok;
+}
+
+std::atomic<bool> g_hdmi_screen_blanked{false};
+
+bool set_hdmi_screen_blank(bool blank) {
+    if (blank) {
+        bool v = write_sysfs_value("/sys/class/amhdmitx/amhdmitx0/vid_mute", "1");
+        bool b = write_sysfs_value("/sys/class/graphics/fb0/blank", "1");
+        g_hdmi_screen_blanked.store(true);
+        return v || b;
+    } else {
+        bool b = write_sysfs_value("/sys/class/graphics/fb0/blank", "0");
+        bool v = write_sysfs_value("/sys/class/amhdmitx/amhdmitx0/vid_mute", "0");
+        g_hdmi_screen_blanked.store(false);
+        return b || v;
+    }
+}
+
 bool is_valid_output_route(const std::string& r) {
     return r == "auto" || r == "speakers" || r == "headphones" || r == "both" || r == "hdmi";
 }
@@ -225,14 +293,50 @@ bool is_valid_screen_mode(const std::string& m) {
     return m == "off" || m == "clock" || m == "text" || m == "spectrum" || m == "snake";
 }
 
+std::string to_lower_utf8(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80u) {
+            out.push_back(static_cast<char>(std::tolower(c)));
+            ++i;
+        } else if (i + 1 < s.size() && c == 0xD0u) {
+            unsigned char c2 = static_cast<unsigned char>(s[i + 1]);
+            if (c2 >= 0x90u && c2 <= 0x9Fu) {
+                // А..П -> а..п (D0 B0..BF)
+                out.push_back(static_cast<char>(0xD0u));
+                out.push_back(static_cast<char>(c2 + 0x20u));
+                i += 2;
+                continue;
+            }
+            if (c2 >= 0xA0u && c2 <= 0xAFu) {
+                // Р..Я -> р..я (D1 80..8F)
+                out.push_back(static_cast<char>(0xD1u));
+                out.push_back(static_cast<char>(c2 - 0x20u));
+                i += 2;
+                continue;
+            }
+            if (c2 == 0x81u) {
+                // Ё -> ё (D1 91)
+                out.push_back(static_cast<char>(0xD1u));
+                out.push_back(static_cast<char>(0x91u));
+                i += 2;
+                continue;
+            }
+            out.push_back(static_cast<char>(c));
+            ++i;
+        } else {
+            out.push_back(static_cast<char>(c));
+            ++i;
+        }
+    }
+    return out;
+}
+
 bool contains_case_insensitive(const std::string& hay, const std::string& needle) {
     if (needle.empty()) return false;
-    auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
-                          [](char a, char b) {
-                              return std::tolower(static_cast<unsigned char>(a)) ==
-                                     std::tolower(static_cast<unsigned char>(b));
-                          });
-    return it != hay.end();
+    return to_lower_utf8(hay).find(to_lower_utf8(needle)) != std::string::npos;
 }
 
 bool is_valid_package_name(const std::string& pkg) {
@@ -364,8 +468,30 @@ void repair_wireless_hardware_if_needed() {
     const bool had_btlinux = (svc_state("init.svc.btlinux-1.0") == "running");
     if (had_wlan0 && had_hci0 && had_btlinux) return;
 
+    // On normal cold boot wlan0 & hci0 come up first while Android init takes several
+    // seconds to bring init.svc.btlinux-1.0 to "running". Give init a quiet grace window
+    // before assuming the Intel BT HAL is wedged and bouncing the Bluetooth stack.
+    if (had_wlan0 && had_hci0 && !had_btlinux) {
+        std::string st = svc_state("init.svc.btlinux-1.0");
+        bool kicked = false;
+        for (int i = 0; i < 40; ++i) {
+            if (st == "running") {
+                if (i > 0) {
+                    LOGI("Hardware", "Intel BT HAL (btlinux-1.0) became running after %dms boot wait", i * 200);
+                }
+                return;
+            }
+            if (!kicked && i >= 15 && (st.empty() || st == "stopped")) {
+                kicked = true;
+                std::system("start btlinux-1.0 2>/dev/null || true");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            st = svc_state("init.svc.btlinux-1.0");
+        }
+    }
+
     LOGW("Hardware", "Detected Intel PCIe card without active Wi-Fi/BT (wlan0=%d hci0=%d btlinux=%d); repairing",
-         had_wlan0 ? 1 : 0, had_hci0 ? 1 : 0, had_btlinux ? 1 : 0);
+         had_wlan0 ? 1 : 0, had_hci0 ? 1 : 0, (svc_state("init.svc.btlinux-1.0") == "running") ? 1 : 0);
 
     const char* repair_sh =
         "for g in 482 493; do "
@@ -394,6 +520,118 @@ void repair_wireless_hardware_if_needed() {
         std::system("/system/bin/svc bluetooth disable >/dev/null 2>&1; sleep 0.6; /system/bin/svc bluetooth enable >/dev/null 2>&1");
         LOGI("Hardware", "Intel BT HAL (btlinux-1.0) restored and Bluetooth service refreshed");
     }
+}
+
+struct RemoteActionResult {
+    std::string req_id;
+    std::string kind;
+    bool ok = false;
+    std::string message;
+};
+
+struct BleRemoteUiState {
+    std::mutex mu;
+    std::condition_variable cv;
+    openstation::json::Value snapshot = openstation::json::Value::make_obj();
+    bool initialized = false;
+    std::atomic<uint64_t> req_seq{1};
+    std::deque<RemoteActionResult> action_results;
+};
+
+BleRemoteUiState g_remote_state;
+
+std::string next_remote_req_id() {
+    const uint64_t id = g_remote_state.req_seq.fetch_add(1, std::memory_order_relaxed);
+    return "rem_" + std::to_string(id);
+}
+
+void update_remote_state_from_json(const openstation::json::Value& body) {
+    using openstation::json::Value;
+    if (!body.is_obj()) return;
+    std::lock_guard<std::mutex> lk(g_remote_state.mu);
+
+    Value snap = Value::make_obj();
+    auto copy_field = [&](const char* key) {
+        if (const auto* v = body.get(key)) {
+            snap[key] = *v;
+        }
+    };
+    copy_field("bonded");
+    copy_field("connected");
+    copy_field("name");
+    copy_field("address");
+    copy_field("batteryPct");
+    copy_field("scanState");
+    copy_field("scanDetail");
+    copy_field("scanning");
+    copy_field("candidates");
+
+    const auto* act_kind = body.get("actionKind");
+    if (act_kind && act_kind->is_str() && !act_kind->as_str().empty()) {
+        const bool act_ok = body.get("actionOk") ? body.get("actionOk")->as_bool(false) : false;
+        const std::string act_msg = body.get("actionMessage") ? body.get("actionMessage")->as_str() : "";
+        const std::string req_id = body.get("reqId") ? body.get("reqId")->as_str() : "";
+
+        Value act_obj = Value::make_obj();
+        act_obj["kind"] = Value::make_str(act_kind->as_str());
+        act_obj["ok"] = Value::make_bool(act_ok);
+        act_obj["message"] = Value::make_str(act_msg);
+        if (!req_id.empty()) act_obj["reqId"] = Value::make_str(req_id);
+        snap["lastAction"] = std::move(act_obj);
+
+        if (!req_id.empty()) {
+            g_remote_state.action_results.push_back(
+                RemoteActionResult{req_id, act_kind->as_str(), act_ok, act_msg});
+            while (g_remote_state.action_results.size() > 24) {
+                g_remote_state.action_results.pop_front();
+            }
+        }
+    } else if (const auto* prev_act = g_remote_state.snapshot.get("lastAction")) {
+        snap["lastAction"] = *prev_act;
+    }
+
+    g_remote_state.snapshot = std::move(snap);
+    g_remote_state.initialized = true;
+    g_remote_state.cv.notify_all();
+}
+
+openstation::json::Value build_remote_status_json() {
+    using openstation::json::Value;
+    std::lock_guard<std::mutex> lk(g_remote_state.mu);
+    if (g_remote_state.initialized && g_remote_state.snapshot.is_obj()) {
+        return g_remote_state.snapshot;
+    }
+    Value def = Value::make_obj();
+    def["bonded"] = Value::make_bool(false);
+    def["connected"] = Value::make_bool(false);
+    def["name"] = Value::make_str("");
+    def["address"] = Value::make_str("");
+    def["batteryPct"] = Value::make_int(-1);
+    def["scanState"] = Value::make_str("idle");
+    def["scanDetail"] = Value::make_str("Ожидание ответа службы BLE-пульта...");
+    def["scanning"] = Value::make_bool(false);
+    def["candidates"] = Value::make_arr();
+    return def;
+}
+
+bool wait_remote_action_result(const std::string& req_id, int timeout_ms, RemoteActionResult& out) {
+    if (req_id.empty() || timeout_ms <= 0) return false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    std::unique_lock<std::mutex> lk(g_remote_state.mu);
+    while (!g_stop.load()) {
+        for (auto it = g_remote_state.action_results.begin(); it != g_remote_state.action_results.end(); ++it) {
+            if (it->req_id == req_id) {
+                out = *it;
+                g_remote_state.action_results.erase(it);
+                return true;
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) break;
+        const auto step = std::min(deadline, now + std::chrono::milliseconds(250));
+        g_remote_state.cv.wait_until(lk, step);
+    }
+    return false;
 }
 
 struct MiscRepairUiState {
@@ -1439,6 +1677,11 @@ int main(int argc, char** argv) {
 
     auto trigger_go_home = [&]() {
         LOGI("Main", "Returning to Home screen (Alice orb)...");
+        if (g_hdmi_screen_blanked.load()) {
+            uinput.send_key(143); // KEY_WAKEUP
+            set_hdmi_screen_blank(false);
+            exec_hdmi_cec_action("wake");
+        }
         if (is_udp_port_bound(8086)) {
             json::Value hcmd = json::Value::make_obj();
             hcmd["cmd"] = json::Value::make_str("go_home");
@@ -1474,7 +1717,14 @@ int main(int argc, char** argv) {
     uinput.init();
     leds.start(cfg.led_ring, cfg.led_screen);
 
+    std::mutex config_apply_mu;
     std::mutex vol_apply_mu;
+    std::mutex vol_state_mu;
+    std::mutex vol_hw_q_mu;
+    std::condition_variable vol_hw_q_cv;
+    bool vol_hw_pending = false;
+    int vol_hw_target_pct = volume_osd_pct.load();
+    bool vol_hw_force = false;
     int last_applied_woo = -1;
     int last_applied_twe = -1;
     int last_applied_hp = -1;
@@ -1625,6 +1875,34 @@ int main(int argc, char** argv) {
         reconcile_unlocked();
     };
 
+    auto schedule_async_hw_vol = [&](int pct, bool force) {
+        {
+            std::lock_guard<std::mutex> qlk(vol_hw_q_mu);
+            vol_hw_target_pct = std::clamp(pct, 0, 100);
+            vol_hw_force = vol_hw_force || force;
+            vol_hw_pending = true;
+        }
+        vol_hw_q_cv.notify_one();
+    };
+
+    std::thread vol_hw_thread([&]() {
+        while (true) {
+            int tgt = 0;
+            bool force = false;
+            {
+                std::unique_lock<std::mutex> qlk(vol_hw_q_mu);
+                vol_hw_q_cv.wait(qlk, [&]() { return vol_hw_pending || g_stop.load(); });
+                if (g_stop.load() && !vol_hw_pending) break;
+                tgt = vol_hw_target_pct;
+                force = vol_hw_force;
+                vol_hw_pending = false;
+                vol_hw_force = false;
+            }
+            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            apply_curve_unlocked(tgt, force, true, false);
+        }
+    });
+
     std::atomic<bool> ext_music_playing{false};
     auto update_led_music_playing = [&]() {
         bool ym_playing = false;
@@ -1650,6 +1928,35 @@ int main(int argc, char** argv) {
     };
 
     Sy6045sEq hardware_eq;
+    TrackScrubEngine scrub;
+    std::atomic<bool> scrub_duck_emitted{false};
+
+    auto push_scrub_duck_to_launcher = [&](bool duck) {
+        if (!is_udp_port_bound(8086)) return;
+        json::Value dcmd = json::Value::make_obj();
+        dcmd["cmd"] = json::Value::make_str("scrub_duck");
+        dcmd["duck"] = json::Value::make_bool(duck);
+        send_udp_json(8086, dcmd.dump(-1));
+    };
+
+    auto set_scrub_hold = [&](bool held) {
+        auto out = scrub.set_hold_active(held);
+        audio.set_keep_stream_warm(held);
+        if (!held) {
+            if (scrub_duck_emitted.exchange(false) || out.duck_changed) {
+                push_scrub_duck_to_launcher(false);
+            }
+            if (out.commit_seek && out.commit_seek_ms != 0 && is_udp_port_bound(8086)) {
+                json::Value scmd = json::Value::make_obj();
+                scmd["cmd"] = json::Value::make_str("music_seek_delta");
+                scmd["deltaMs"] = json::Value::make_int(out.commit_seek_ms);
+                send_udp_json(8086, scmd.dump(-1));
+            }
+        }
+        audio.wake_playback();
+        leds.set_scrub_visual(out.visual);
+    };
+
     auto push_style_sync_to_launcher = [&](const DaemonConfig& c) {
         if (!is_udp_port_bound(8086)) return;
         json::Value scmd = json::Value::make_obj();
@@ -1729,7 +2036,6 @@ int main(int argc, char** argv) {
         }
     };
 
-    std::mutex config_apply_mu;
     auto apply_hw_config = [&](const DaemonConfig& c, bool /*hp_plugged*/) {
         leds.update_config(c.led_ring, c.led_screen);
         leds.set_mic_muted(c.audio.mic_muted);
@@ -1745,6 +2051,7 @@ int main(int argc, char** argv) {
 
         audio.update_config(c.audio);
         audio.set_mic_muted(c.audio.mic_muted);
+        inputs.set_hold_scrub_enabled(c.input.action_long == "scrub");
         assistant.update_config(c.assistant);
         assistant.set_mic_muted(c.audio.mic_muted);
         assistant.set_mic_sensitivity(c.audio.mic_sensitivity);
@@ -1767,22 +2074,33 @@ int main(int argc, char** argv) {
         int prev = clamped;
         bool sent_udp = false;
         {
-            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            std::lock_guard<std::mutex> slk(vol_state_mu);
             last_daemon_vol_cmd_ms.store(steady_ms_now());
             prev = volume_osd_pct.exchange(clamped);
-            apply_curve_unlocked(clamped, true, true, false, out_woo, out_twe, out_hp);
-            if (is_udp_port_bound(8086)) {
-                json::Value vcmd = json::Value::make_obj();
-                vcmd["cmd"] = json::Value::make_str("volume_set");
-                vcmd["percent"] = json::Value::make_int(clamped);
-                vcmd["showUi"] = json::Value::make_bool(false);
-                vcmd["showOsd"] = json::Value::make_bool(show_osd);
-                sent_udp = send_udp_json(8086, vcmd.dump(-1));
-                last_daemon_vol_cmd_ms.store(steady_ms_now());
-            }
         }
         if (show_osd) {
             leds.trigger_volume_osd(clamped);
+        }
+        if (is_udp_port_bound(8086)) {
+            json::Value vcmd = json::Value::make_obj();
+            vcmd["cmd"] = json::Value::make_str("volume_set");
+            vcmd["percent"] = json::Value::make_int(clamped);
+            vcmd["muted"] = json::Value::make_bool(clamped <= 0);
+            vcmd["showUi"] = json::Value::make_bool(false);
+            vcmd["showOsd"] = json::Value::make_bool(show_osd);
+            sent_udp = send_udp_json(8086, vcmd.dump(-1));
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
+        }
+        schedule_async_hw_vol(clamped, true);
+        if (out_woo || out_twe || out_hp) {
+            int w = 3, t = 3, h = 0;
+            {
+                std::lock_guard<std::mutex> clk(cfg_mu);
+                compute_amp_curve(clamped, cfg.audio, w, t, h);
+            }
+            if (out_woo) *out_woo = w;
+            if (out_twe) *out_twe = t;
+            if (out_hp) *out_hp = h;
         }
         if (!sent_udp) {
             int max_s = std::max(1, android_vol_max.load());
@@ -1806,24 +2124,35 @@ int main(int argc, char** argv) {
         int prev = 0;
         bool sent_udp = false;
         {
-            std::lock_guard<std::mutex> lk(vol_apply_mu);
+            std::lock_guard<std::mutex> slk(vol_state_mu);
             last_daemon_vol_cmd_ms.store(steady_ms_now());
             prev = volume_osd_pct.load();
             clamped = std::clamp(prev + delta_pct, 0, 100);
             volume_osd_pct.store(clamped);
-            apply_curve_unlocked(clamped, true, true, false, out_woo, out_twe, out_hp);
-            if (is_udp_port_bound(8086)) {
-                json::Value vcmd = json::Value::make_obj();
-                vcmd["cmd"] = json::Value::make_str("volume_set");
-                vcmd["percent"] = json::Value::make_int(clamped);
-                vcmd["showUi"] = json::Value::make_bool(false);
-                vcmd["showOsd"] = json::Value::make_bool(show_osd);
-                sent_udp = send_udp_json(8086, vcmd.dump(-1));
-                last_daemon_vol_cmd_ms.store(steady_ms_now());
-            }
         }
         if (show_osd) {
             leds.trigger_volume_osd(clamped);
+        }
+        if (is_udp_port_bound(8086)) {
+            json::Value vcmd = json::Value::make_obj();
+            vcmd["cmd"] = json::Value::make_str("volume_set");
+            vcmd["percent"] = json::Value::make_int(clamped);
+            vcmd["muted"] = json::Value::make_bool(clamped <= 0);
+            vcmd["showUi"] = json::Value::make_bool(false);
+            vcmd["showOsd"] = json::Value::make_bool(show_osd);
+            sent_udp = send_udp_json(8086, vcmd.dump(-1));
+            last_daemon_vol_cmd_ms.store(steady_ms_now());
+        }
+        schedule_async_hw_vol(clamped, true);
+        if (out_woo || out_twe || out_hp) {
+            int w = 3, t = 3, h = 0;
+            {
+                std::lock_guard<std::mutex> clk(cfg_mu);
+                compute_amp_curve(clamped, cfg.audio, w, t, h);
+            }
+            if (out_woo) *out_woo = w;
+            if (out_twe) *out_twe = t;
+            if (out_hp) *out_hp = h;
         }
         if (!sent_udp) {
             int max_s = std::max(1, android_vol_max.load());
@@ -1838,6 +2167,10 @@ int main(int argc, char** argv) {
         return clamped;
     };
 
+    {
+        std::lock_guard<std::mutex> lk(cfg_mu);
+        inputs.set_hold_scrub_enabled(cfg.input.action_long == "scrub");
+    }
     inputs.start([&](HwEventType ev) {
         DaemonConfig c;
         {
@@ -1850,28 +2183,39 @@ int main(int argc, char** argv) {
                 bool up = (ev == HwEventType::RotaryUp);
                 if (c.input.rotary_invert) up = !up;
                 int steps = std::max(1, std::min(5, c.input.rotary_step));
+                if (scrub.active()) {
+                    scrub.on_rotary_detent(up ? 1 : -1, steps);
+                    if (scrub.is_ducking() && !scrub_duck_emitted.exchange(true)) {
+                        push_scrub_duck_to_launcher(true);
+                    }
+                    audio.wake_playback();
+                    leds.set_scrub_visual(scrub.visual_snapshot());
+                    break;
+                }
                 int max_steps = std::max(1, android_vol_max.load());
                 int delta_pct = std::max(1, (100 * steps + max_steps / 2) / max_steps);
                 int v = 0;
                 bool sent_udp = false;
                 {
-                    std::lock_guard<std::mutex> lk(vol_apply_mu);
+                    std::lock_guard<std::mutex> slk(vol_state_mu);
                     last_daemon_vol_cmd_ms.store(steady_ms_now());
                     v = std::clamp(volume_osd_pct.load() + (up ? delta_pct : -delta_pct), 0, 100);
                     volume_osd_pct.store(v);
-                    apply_curve_unlocked(v, false, true, false);
-                    if (is_udp_port_bound(8086)) {
-                        json::Value vcmd = json::Value::make_obj();
-                        vcmd["cmd"] = json::Value::make_str("volume_step");
-                        vcmd["dir"] = json::Value::make_int(up ? 1 : -1);
-                        vcmd["steps"] = json::Value::make_int(steps);
-                        vcmd["showUi"] = json::Value::make_bool(false);
-                        vcmd["showOsd"] = json::Value::make_bool(true);
-                        sent_udp = send_udp_json(8086, vcmd.dump(-1));
-                        last_daemon_vol_cmd_ms.store(steady_ms_now());
-                    }
                 }
                 leds.trigger_volume_osd(v);
+                if (is_udp_port_bound(8086)) {
+                    json::Value vcmd = json::Value::make_obj();
+                    vcmd["cmd"] = json::Value::make_str("volume_step");
+                    vcmd["dir"] = json::Value::make_int(up ? 1 : -1);
+                    vcmd["steps"] = json::Value::make_int(steps);
+                    vcmd["percent"] = json::Value::make_int(v);
+                    vcmd["muted"] = json::Value::make_bool(v <= 0);
+                    vcmd["showUi"] = json::Value::make_bool(false);
+                    vcmd["showOsd"] = json::Value::make_bool(true);
+                    sent_udp = send_udp_json(8086, vcmd.dump(-1));
+                    last_daemon_vol_cmd_ms.store(steady_ms_now());
+                }
+                schedule_async_hw_vol(v, false);
                 if (!sent_udp) {
                     for (int s = 0; s < steps; ++s) {
                         uinput.send_key(up ? 115 : 114); // KEY_VOLUMEUP / KEY_VOLUMEDOWN
@@ -1890,6 +2234,7 @@ int main(int argc, char** argv) {
                 audio.set_mic_muted(next_c.audio.mic_muted);
                 assistant.set_mic_muted(next_c.audio.mic_muted);
                 leds.set_mic_muted(next_c.audio.mic_muted);
+                audio.play_mute_chime(next_c.audio.mic_muted);
                 save_cfg(next_c);
                 LOGI("Main", "Mic mute toggled -> %s", next_c.audio.mic_muted ? "MUTED" : "LIVE");
                 break;
@@ -1899,12 +2244,24 @@ int main(int argc, char** argv) {
                 toggle_bluetooth_mode();
                 break;
             }
+            case HwEventType::ActionHoldStart: {
+                if (c.input.action_long == "scrub") {
+                    set_scrub_hold(true);
+                }
+                break;
+            }
+            case HwEventType::ActionHoldEnd: {
+                set_scrub_hold(false);
+                break;
+            }
             case HwEventType::ActionShort:
             case HwEventType::ActionLong: {
                 const std::string& act = (ev == HwEventType::ActionShort)
                                              ? c.input.action_short
                                              : c.input.action_long;
-                if (act == "assistant") {
+                if (act == "scrub") {
+                    set_scrub_hold(!scrub.active());
+                } else if (act == "assistant") {
                     if (c.assistant.enabled && c.assistant.mode == "gemini") {
                         assistant.toggle_session();
                     } else if (c.wyoming.enabled) {
@@ -1951,10 +2308,17 @@ int main(int argc, char** argv) {
             }
             case HwEventType::RemoteAssistant: {
                 if (c.assistant.enabled && c.assistant.mode == "gemini") {
+                    const bool stopping = assistant.is_active();
+                    push_remote_mic_control(!stopping);
                     assistant.toggle_session();
                 } else if (c.wyoming.enabled) {
-                    if (wyoming.is_streaming()) wyoming.stop_session();
-                    else wyoming.trigger_button_session(6000);
+                    if (wyoming.is_streaming()) {
+                        push_remote_mic_control(false);
+                        wyoming.stop_session();
+                    } else {
+                        push_remote_mic_control(true);
+                        wyoming.trigger_button_session(6000);
+                    }
                 }
                 break;
             }
@@ -1987,6 +2351,19 @@ int main(int argc, char** argv) {
                      boot_cfg.audio.hardware_eq_profile.c_str());
             }
         }
+    }
+
+    openstation::hw::AndroidOptimizer android_optimizer;
+    {
+        openstation::hw::OptimizerHooks opt_hooks;
+        opt_hooks.abort_flag = &g_stop;
+        opt_hooks.log = [](const std::string& msg) {
+            LOGI("AndroidOpt", "%s", msg.c_str());
+        };
+        android_optimizer.start(
+            std::string(kFirmwareVersion) + ":opt1",
+            openstation::hw::OptimizerPaths{},
+            opt_hooks);
     }
 
     std::thread geo_thread([&]() {
@@ -2131,7 +2508,7 @@ int main(int argc, char** argv) {
         LOGI("Alarm", "Alarm %d (%s) fired: %s", a.id, a.time.c_str(), a.label.c_str());
         leds.trigger_flash(255, 140, 0, 2200);
         leds.trigger_screen_text("БУДИЛЬНИК " + a.time + (a.label.empty() ? "" : " " + a.label), 255, 165, 0, 8000);
-        audio.play_timer_alarm();
+        audio.play_timer_alarm(true);
         if (a.sound == "wave" || a.sound == "calm") {
             json::Value p = json::Value::make_obj();
             p["cmd"] = json::Value::make_str("play_my_wave");
@@ -2186,7 +2563,9 @@ int main(int argc, char** argv) {
                     alarm_ringing = false;
                 } else if (ringing_alarm.sound == "chime" && steady_now >= ringing_alarm.next_beep) {
                     ringing_alarm.next_beep = steady_now + std::chrono::seconds(4);
-                    audio.play_timer_alarm();
+                    if (!audio.is_playback_or_tail_active(350)) {
+                        audio.play_timer_alarm(true);
+                    }
                 }
                 return;
             }
@@ -2396,6 +2775,14 @@ int main(int argc, char** argv) {
                             vst == VoiceVisualState::Thinking ||
                             vst == VoiceVisualState::Speaking);
         set_music_duck(should_duck);
+        static std::atomic<int> last_vst{static_cast<int>(VoiceVisualState::Idle)};
+        int cur_v = static_cast<int>(vst);
+        int prev_v = last_vst.exchange(cur_v);
+        if (vst == VoiceVisualState::Listening && prev_v != cur_v) {
+            push_remote_mic_control(true);
+        } else if (vst == VoiceVisualState::Idle && prev_v != cur_v) {
+            push_remote_mic_control(false);
+        }
     };
     acb.show_screen_text = [&](const std::string& txt, uint8_t r, uint8_t g, uint8_t b, int dur) {
         leds.trigger_screen_text(txt, r, g, b, dur);
@@ -2766,20 +3153,44 @@ int main(int argc, char** argv) {
         }
 
         if (name == "device_power") {
+            static std::atomic<int64_t> last_power_sleep_ms{0};
+            static std::atomic<int64_t> last_power_wake_ms{0};
+            const int64_t now_ms = steady_ms_now();
             std::string act = normalize_device_power_action(
                 args.get("action") ? args.get("action")->as_str() : "");
             if (act == "screen_wake") {
+                const bool debounced = (!g_hdmi_screen_blanked.load()) && ((now_ms - last_power_wake_ms.load()) < 2200);
+                last_power_wake_ms.store(now_ms);
                 uinput.send_key(143); // KEY_WAKEUP
-                exec_hdmi_cec_action("wake");
+                bool sysfs_ok = set_hdmi_screen_blank(false);
+                if (!debounced) {
+                    exec_hdmi_cec_action("wake");
+                }
+                if (is_udp_port_bound(8086)) {
+                    json::Value payload = json::Value::make_obj();
+                    payload["cmd"] = Value::make_str("cec");
+                    payload["action"] = Value::make_str("wake");
+                    send_udp_json(8086, payload.dump(-1));
+                }
                 res["ok"] = Value::make_bool(true);
                 res["action"] = Value::make_str(act);
+                res["sysfsOk"] = Value::make_bool(sysfs_ok);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             if (act == "screen_sleep") {
-                uinput.send_key(142); // KEY_SLEEP
-                exec_hdmi_cec_action("standby");
+                const bool debounced = g_hdmi_screen_blanked.load() && ((now_ms - last_power_sleep_ms.load()) < 2200);
+                last_power_sleep_ms.store(now_ms);
+                bool sysfs_ok = set_hdmi_screen_blank(true);
+                if (!debounced) {
+                    uinput.send_key(142); // KEY_SLEEP
+                    exec_hdmi_cec_action("standby");
+                }
+                leds.trigger_task_icon("tv", 110, 210, 255, 3200);
                 res["ok"] = Value::make_bool(true);
                 res["action"] = Value::make_str(act);
+                res["sysfsOk"] = Value::make_bool(sysfs_ok);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
             if (act == "restart_daemon") {
@@ -3461,8 +3872,14 @@ int main(int argc, char** argv) {
                 res["error"] = Value::make_str("unknown CEC action");
                 return res;
             }
+            if (act == "wake") {
+                uinput.send_key(143); // KEY_WAKEUP
+                set_hdmi_screen_blank(false);
+            } else if (act == "standby") {
+                set_hdmi_screen_blank(true);
+                uinput.send_key(142); // KEY_SLEEP
+            }
             exec_hdmi_cec_action(act);
-            if (act == "wake") uinput.send_key(143); // KEY_WAKEUP
             leds.trigger_task_icon("tv", 110, 210, 255, 4500);
             json::Value payload = json::Value::make_obj();
             payload["cmd"] = Value::make_str("cec");
@@ -3519,14 +3936,22 @@ int main(int argc, char** argv) {
         }
 
         if (name == "find_remote") {
+            const std::string req_id = next_remote_req_id();
             json::Value payload = Value::make_obj();
             payload["cmd"] = Value::make_str("find_remote");
-            bool sent = send_udp_json(8086, payload.dump(-1));
+            payload["reqId"] = Value::make_str(req_id);
+            bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
             leds.trigger_flash(232, 198, 134, 2400);
             leds.trigger_screen_text("ПУЛЬТ!", 232, 198, 134, 4500);
-            res["ok"] = Value::make_bool(sent);
-            res["message"] = Value::make_str(sent ? "Отправила сигнал поиска на BLE-пульт — он зазвенит."
-                                                  : "Не удалось связаться с BLE-сервисом пульта.");
+            RemoteActionResult act;
+            if (sent && wait_remote_action_result(req_id, 4000, act)) {
+                res["ok"] = Value::make_bool(act.ok);
+                res["message"] = Value::make_str(act.message);
+            } else {
+                res["ok"] = Value::make_bool(sent);
+                res["message"] = Value::make_str(sent ? "Отправила сигнал поиска на BLE-пульт — он зазвенит."
+                                                      : "Не удалось связаться с BLE-сервисом пульта.");
+            }
             res["stopSession"] = Value::make_bool(true);
             return res;
         }
@@ -3976,11 +4401,19 @@ int main(int argc, char** argv) {
                 else if (st == "tts") leds.set_voice_state(VoiceVisualState::Speaking);
                 else leds.set_voice_state(VoiceVisualState::Idle);
                 set_music_duck(st == "streaming" || st == "thinking" || st == "tts");
+                static std::atomic<bool> last_wyoming_rmt{false};
+                bool want = (st == "streaming" || st == "thinking" || st == "tts");
+                if (want != last_wyoming_rmt.exchange(want)) {
+                    push_remote_mic_control(want);
+                }
             }
         });
 
     audio.set_spectrum_needed_cb([&]() {
         return leds.needs_spectrum();
+    });
+    audio.set_realtime_fx_callback([&](int16_t* stereo_48k, size_t frames) {
+        return scrub.render_scrub_audio(stereo_48k, frames);
     });
 
     audio.start(
@@ -4001,6 +4434,7 @@ int main(int argc, char** argv) {
         [&](const std::array<float, 24>& bands) {
             leds.set_spectrum(bands);
         });
+    audio.load_sound_pack("/data/local/openstation/assets/sounds");
 
     audio.set_ws_audio_sink([&](const int16_t* pcm, size_t samples) {
         http.broadcast_ws_audio(pcm, samples);
@@ -4131,6 +4565,7 @@ int main(int argc, char** argv) {
         );
         bt["deviceName"] = Value::make_str("OpenStation Max");
         root["bluetooth"] = std::move(bt);
+        root["remote"] = build_remote_status_json();
         root["miscRepair"] = build_misc_repair_json(up);
 
         {
@@ -4883,6 +5318,50 @@ int main(int argc, char** argv) {
                 }
                 return HttpResponse::json(out);
             }
+            if (req.method == "POST" && req.path == "/api/system/reset_shell") {
+                bool clear_auth = false;
+                if (!req.body.empty()) {
+                    json::Value body;
+                    if (json::Parser::parse(req.body, body) && body.is_obj()) {
+                        if (const auto* ca = body.get("clearAuth"); ca && ca->is_bool()) {
+                            clear_auth = ca->as_bool(false);
+                        }
+                    }
+                }
+                DaemonConfig fresh;
+                {
+                    std::lock_guard<std::mutex> lk(cfg_mu);
+                    fresh.path = cfg.path;
+                    fresh.ota.repo = cfg.ota.repo;
+                    fresh.ota.branch = cfg.ota.branch;
+                    fresh.network.wifi_adb_enabled = cfg.network.wifi_adb_enabled;
+                    fresh.network.wifi_adb_port = cfg.network.wifi_adb_port;
+                    fresh.network.wifi_power_save_off = cfg.network.wifi_power_save_off;
+                    if (!clear_auth) {
+                        fresh.assistant.gemini_api_key = cfg.assistant.gemini_api_key;
+                        fresh.home_assistant = cfg.home_assistant;
+                    }
+                    fresh.assistant.agent_mode = true;
+                    fresh.setup_completed = false;
+                    cfg = fresh;
+                }
+                save_cfg(fresh);
+                unlink(kPostOtaWizardPath);
+                LOGI("Main", "OpenStation shell reset to defaults (clear_auth=%d); restarting daemon",
+                     clear_auth ? 1 : 0);
+                json::Value st = build_status_json();
+                if (http.ws_client_count() > 0) {
+                    json::Value msg = json::Value::make_obj();
+                    msg["type"] = json::Value::make_str("telemetry");
+                    msg["data"] = std::move(st);
+                    http.broadcast_ws_text(msg.dump(-1));
+                }
+                bool spawned = schedule_daemon_restart(450);
+                json::Value out = json::Value::make_obj();
+                out["ok"] = json::Value::make_bool(true);
+                out["restarting"] = json::Value::make_bool(spawned);
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/system/dns") {
                 json::Value v;
                 if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
@@ -5308,21 +5787,100 @@ int main(int argc, char** argv) {
                 }
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}");
             }
+            if (req.method == "POST" && req.path == "/api/remote/state") {
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                update_remote_state_from_json(v);
+                return HttpResponse::json("{\"ok\":true}");
+            }
             if (req.method == "POST" && req.path == "/api/remote/find") {
+                const std::string req_id = next_remote_req_id();
                 json::Value payload = json::Value::make_obj();
                 payload["cmd"] = json::Value::make_str("find_remote");
+                payload["reqId"] = json::Value::make_str(req_id);
                 bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
                 leds.trigger_flash(232, 198, 134, 2200);
                 leds.trigger_screen_text("ПУЛЬТ!", 232, 198, 134, 4000);
-                return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+                if (!sent) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+                }
+                json::Value resp = json::Value::make_obj();
+                RemoteActionResult act;
+                if (wait_remote_action_result(req_id, 5500, act)) {
+                    resp["ok"] = json::Value::make_bool(act.ok);
+                    resp["message"] = json::Value::make_str(act.message);
+                    if (!act.ok) resp["error"] = json::Value::make_str(act.message);
+                } else {
+                    resp["ok"] = json::Value::make_bool(true);
+                    resp["pending"] = json::Value::make_bool(true);
+                    resp["message"] = json::Value::make_str("BLE-сигнал отправлен на пульт, проверяем отклик...");
+                }
+                resp["reqId"] = json::Value::make_str(req_id);
+                resp["remote"] = build_remote_status_json();
+                return HttpResponse::json(resp.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/remote/pair") {
+                openstation::hw::ensure_ble_scan_location_ready({}, &g_stop);
+                const std::string req_id = next_remote_req_id();
                 json::Value payload = json::Value::make_obj();
                 payload["cmd"] = json::Value::make_str("pair_remote");
+                payload["reqId"] = json::Value::make_str(req_id);
+                json::Value req_v;
+                if (!req.body.empty() && json::Parser::parse(req.body, req_v) && req_v.is_obj()) {
+                    if (const auto* addr = req_v.get("address"); addr && addr->is_str() && !addr->as_str().empty()) {
+                        payload["address"] = *addr;
+                    }
+                    if (const auto* fr = req_v.get("forceRescan")) {
+                        payload["forceRescan"] = json::Value::make_bool(fr->as_bool(false));
+                    }
+                }
                 bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
                 leds.trigger_flash(0, 212, 255, 1800);
                 leds.trigger_screen_text("BLE ПУЛЬТ", 0, 212, 255, 4000);
-                return HttpResponse::json(sent ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+                if (!sent) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+                }
+                json::Value resp = json::Value::make_obj();
+                RemoteActionResult act;
+                if (wait_remote_action_result(req_id, 1200, act)) {
+                    resp["ok"] = json::Value::make_bool(act.ok);
+                    resp["message"] = json::Value::make_str(act.message);
+                    if (!act.ok) resp["error"] = json::Value::make_str(act.message);
+                } else {
+                    resp["ok"] = json::Value::make_bool(true);
+                    resp["pending"] = json::Value::make_bool(true);
+                    resp["scanning"] = json::Value::make_bool(true);
+                    resp["message"] = json::Value::make_str("Запущен BLE-поиск пульта YNDX — зажмите ОК + Громкость−");
+                }
+                resp["reqId"] = json::Value::make_str(req_id);
+                resp["remote"] = build_remote_status_json();
+                return HttpResponse::json(resp.dump(-1));
+            }
+            if (req.method == "POST" && req.path == "/api/remote/forget") {
+                const std::string req_id = next_remote_req_id();
+                json::Value payload = json::Value::make_obj();
+                payload["cmd"] = json::Value::make_str("forget_remote");
+                payload["reqId"] = json::Value::make_str(req_id);
+                bool sent = ensure_launcher_service_udp(8086) && send_udp_json(8086, payload.dump(-1));
+                if (!sent) {
+                    return HttpResponse::json("{\"ok\":false,\"error\":\"launcher service unavailable\"}");
+                }
+                json::Value resp = json::Value::make_obj();
+                RemoteActionResult act;
+                if (wait_remote_action_result(req_id, 2500, act)) {
+                    resp["ok"] = json::Value::make_bool(act.ok);
+                    resp["message"] = json::Value::make_str(act.message);
+                    if (!act.ok) resp["error"] = json::Value::make_str(act.message);
+                } else {
+                    resp["ok"] = json::Value::make_bool(true);
+                    resp["pending"] = json::Value::make_bool(true);
+                    resp["message"] = json::Value::make_str("Удаление привязки пульта...");
+                }
+                resp["reqId"] = json::Value::make_str(req_id);
+                resp["remote"] = build_remote_status_json();
+                return HttpResponse::json(resp.dump(-1));
             }
             if (req.method == "POST" && req.path == "/api/remote/text") {
                 json::Value v;
@@ -5338,10 +5896,14 @@ int main(int argc, char** argv) {
                     return HttpResponse::json("{\"error\":\"missing cmd\"}", 400);
                 }
                 std::string act = normalize_cec_action(v.get("cmd")->as_str());
-                exec_hdmi_cec_action(act);
                 if (act == "wake") {
                     uinput.send_key(143); // KEY_WAKEUP
+                    set_hdmi_screen_blank(false);
+                } else if (act == "standby") {
+                    set_hdmi_screen_blank(true);
+                    uinput.send_key(142); // KEY_SLEEP
                 }
+                exec_hdmi_cec_action(act);
                 json::Value payload = json::Value::make_obj();
                 payload["cmd"] = json::Value::make_str("cec");
                 payload["action"] = json::Value::make_str(act);
@@ -5850,6 +6412,51 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Dedicated low-latency loopback UDP 8088 receiver for BLE remote 16 kHz mono PCM ("RMC1" + PCM16 LE)
+    int rmc_udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    std::thread rmc_udp_thread;
+    if (rmc_udp_fd >= 0) {
+        int opt = 1;
+        setsockopt(rmc_udp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        int rcvbuf = 131072;
+        setsockopt(rmc_udp_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+        int fl = fcntl(rmc_udp_fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(rmc_udp_fd, F_SETFL, fl | O_NONBLOCK);
+        struct sockaddr_in raddr {};
+        raddr.sin_family = AF_INET;
+        raddr.sin_port = htons(8088);
+        raddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (bind(rmc_udp_fd, reinterpret_cast<struct sockaddr*>(&raddr), sizeof(raddr)) < 0) {
+            LOGW("Main", "UDP 8088 remote-mic bind failed: %s", strerror(errno));
+            ::close(rmc_udp_fd);
+            rmc_udp_fd = -1;
+        } else {
+            rmc_udp_thread = std::thread([&]() {
+                std::vector<uint8_t> rbuf(4096);
+                while (!g_stop.load()) {
+                    struct pollfd pfd {};
+                    pfd.fd = rmc_udp_fd;
+                    pfd.events = POLLIN;
+                    int pr = poll(&pfd, 1, 150);
+                    if (pr <= 0) continue;
+                    for (int iter = 0; iter < 64 && !g_stop.load(); ++iter) {
+                        ssize_t n = recvfrom(rmc_udp_fd, rbuf.data(), rbuf.size(), 0, nullptr, nullptr);
+                        if (n <= 0) break;
+                        if (n >= 6 && std::memcmp(rbuf.data(), "RMC1", 4) == 0) {
+                            size_t pcm_bytes = static_cast<size_t>(n - 4);
+                            size_t sample_cnt = pcm_bytes / sizeof(int16_t);
+                            if (sample_cnt > 0) {
+                                audio.push_remote_audio_16k(
+                                    reinterpret_cast<const int16_t*>(rbuf.data() + 4),
+                                    sample_cnt);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     // Main telemetry, spectrum & MQTT periodic sync loop (adaptive cadence: 50ms voice / 100ms WS / 250ms idle)
     bool prev_voice_active = false;
     bool initial_udp_synced = false;
@@ -5857,6 +6464,24 @@ int main(int argc, char** argv) {
     auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_ws_tp = std::chrono::steady_clock::now();
     auto last_mqtt_tp = std::chrono::steady_clock::now();
+    auto maybe_play_initial_startup_show = [&](bool send_udp_now) {
+        if (initial_startup_show_played) return;
+        bool setup_done = false;
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu);
+            setup_done = cfg.setup_completed;
+        }
+        initial_startup_show_played = true;
+        if (setup_done || is_startup_shown_flag()) return;
+        mark_startup_shown_flag();
+        leds.trigger_startup_show(5800);
+        audio.play_startup_chime();
+        if (send_udp_now || is_udp_port_bound(8086)) {
+            json::Value scmd = json::Value::make_obj();
+            scmd["cmd"] = json::Value::make_str("startup_show");
+            send_udp_json(8086, scmd.dump(-1));
+        }
+    };
 
     while (!g_stop.load()) {
         if (!initial_udp_synced && is_udp_port_bound(8086)) {
@@ -5867,37 +6492,19 @@ int main(int argc, char** argv) {
             }
             push_eq_to_launcher(c_init);
             push_style_sync_to_launcher(c_init);
-            if (!c_init.setup_completed && !initial_startup_show_played && !is_startup_shown_flag()) {
-                initial_startup_show_played = true;
-                mark_startup_shown_flag();
-                leds.trigger_startup_show(5800);
-                audio.play_startup_chime();
-                json::Value scmd = json::Value::make_obj();
-                scmd["cmd"] = json::Value::make_str("startup_show");
-                send_udp_json(8086, scmd.dump(-1));
-            }
+            maybe_play_initial_startup_show(true);
             initial_udp_synced = true;
         } else if (!initial_startup_show_played &&
                    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start_tp).count() >= 6) {
-            initial_startup_show_played = true;
-            if (!is_startup_shown_flag()) {
-                mark_startup_shown_flag();
-                leds.trigger_startup_show(5800);
-                audio.play_startup_chime();
-                if (is_udp_port_bound(8086)) {
-                    json::Value scmd = json::Value::make_obj();
-                    scmd["cmd"] = json::Value::make_str("startup_show");
-                    send_udp_json(8086, scmd.dump(-1));
-                }
-            }
+            maybe_play_initial_startup_show(false);
         }
 
-        // Drain any incoming UDP 8087 spectrum & music_active datagrams
+        // Drain any incoming UDP 8087 spectrum, track waveform & music_active datagrams
         if (spec_udp_fd >= 0) {
             std::array<float, 24> latest_bands{};
             bool has_latest = false;
-            char ubuf[512];
-            for (int iter = 0; iter < 32; ++iter) {
+            char ubuf[2048];
+            for (int iter = 0; iter < 48; ++iter) {
                 ssize_t n = recvfrom(spec_udp_fd, ubuf, sizeof(ubuf) - 1, 0, nullptr, nullptr);
                 if (n <= 0) break;
                 if (n == static_cast<ssize_t>(24 * sizeof(float))) {
@@ -5907,6 +6514,17 @@ int main(int argc, char** argv) {
                         latest_bands[b] = std::isfinite(fv) ? std::clamp(fv, 0.0f, 1.0f) : 0.0f;
                     }
                     has_latest = true;
+                } else if (n >= 28 && std::memcmp(ubuf, "ASW2", 4) == 0) {
+                    float peak_lin = -1.0f;
+                    float rms_lin = -1.0f;
+                    std::memcpy(&peak_lin, ubuf + 4, sizeof(float));
+                    std::memcpy(&rms_lin, ubuf + 8, sizeof(float));
+                    scrub.ingest_wave_u8_block(reinterpret_cast<const uint8_t*>(ubuf + 12),
+                                               static_cast<size_t>(n - 12),
+                                               peak_lin, rms_lin);
+                } else if (n >= 20 && std::memcmp(ubuf, "DJW1", 4) == 0) {
+                    scrub.ingest_wave_u8(reinterpret_cast<const uint8_t*>(ubuf + 4),
+                                         static_cast<size_t>(n - 4));
                 } else if (ubuf[0] == '{') {
                     ubuf[n] = '\0';
                     json::Value v;
@@ -5935,6 +6553,20 @@ int main(int argc, char** argv) {
         }
 
         auto now = std::chrono::steady_clock::now();
+        if (scrub.active() || scrub_duck_emitted.load()) {
+            ScrubTickOutput st = scrub.tick(now);
+            leds.set_scrub_visual(st.visual);
+            if (st.duck_changed) {
+                scrub_duck_emitted.store(st.duck_active);
+                push_scrub_duck_to_launcher(st.duck_active);
+            }
+            if (st.commit_seek && st.commit_seek_ms != 0 && is_udp_port_bound(8086)) {
+                json::Value scmd = json::Value::make_obj();
+                scmd["cmd"] = json::Value::make_str("music_seek_delta");
+                scmd["deltaMs"] = json::Value::make_int(st.commit_seek_ms);
+                send_udp_json(8086, scmd.dump(-1));
+            }
+        }
         bool v_act = assistant.is_active() || audio.is_playback_or_tail_active(250);
         if ((v_act && (now - last_voice_udp_tp) >= std::chrono::milliseconds(45)) ||
             (!v_act && prev_voice_active)) {
@@ -5998,7 +6630,8 @@ int main(int argc, char** argv) {
 
         alarm_tick();
 
-        int sleep_ms = v_act ? 50 : (ws_cnt > 0 ? 100 : 250);
+        int sleep_ms = scrub.active() ? 18
+                     : (v_act ? 50 : (ws_cnt > 0 ? 100 : (!initial_udp_synced ? 250 : 500)));
         if (spec_udp_fd >= 0) {
             struct pollfd pfd {};
             pfd.fd = spec_udp_fd;
@@ -6010,7 +6643,13 @@ int main(int argc, char** argv) {
     }
 
     LOGI("Main", "Shutting down...");
+    if (scrub.active()) {
+        set_scrub_hold(false);
+    }
     if (spec_udp_fd >= 0) ::close(spec_udp_fd);
+    if (rmc_udp_thread.joinable()) rmc_udp_thread.join();
+    if (rmc_udp_fd >= 0) ::close(rmc_udp_fd);
+    android_optimizer.stop();
     Logger::instance().set_sink(nullptr);
     ota.stop();
     if (geo_thread.joinable()) geo_thread.join();
@@ -6024,6 +6663,8 @@ int main(int argc, char** argv) {
     wyoming.stop();
     audio.stop();
     inputs.stop();
+    vol_hw_q_cv.notify_all();
+    if (vol_hw_thread.joinable()) vol_hw_thread.join();
     leds.stop();
     uinput.close();
     mixer.close();

@@ -25,7 +25,14 @@ import java.util.concurrent.Executors
 object MarketImageLoader {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(4)
-    private val memCache = object : LruCache<String, Bitmap>(64) {}
+    private val memCache = object : LruCache<String, Bitmap>(4096) {
+        override fun sizeOf(key: String, value: Bitmap): Int =
+            (value.allocationByteCount / 1024).coerceAtLeast(1)
+    }
+
+    fun trimMemory(maxSizeKb: Int = 0) {
+        if (maxSizeKb <= 0) memCache.evictAll() else memCache.trimToSize(maxSizeKb)
+    }
 
     fun createMonogramDrawable(title: String, accentColor: Int, density: Float): Drawable {
         val sizePx = (96f * density).toInt().coerceIn(64, 192)

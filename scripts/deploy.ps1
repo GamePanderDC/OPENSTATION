@@ -418,6 +418,9 @@ if (-not $SkipBuild) {
     Push-Location "$RootDir\launcher"
     try { & $gradle assembleDebug --no-daemon --console=plain } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "OpenStationLauncher Gradle build failed" }
+    if (Test-Path "$RootDir\scripts\build_webview_rro.ps1") {
+        & "$RootDir\scripts\build_webview_rro.ps1" -RootDir $RootDir -SdkRoot $sdkRoot -JavaHome $javaHome -OutApk "$RootDir\firmware\OpenStationWebViewOverlay.apk"
+    }
 }
 
 foreach ($f in @($DaemonBin, $ImeApk, $LauncherApk)) {
@@ -588,9 +591,15 @@ $assetSpecs = @(
     @{ Local = "$RootDir\assets\alice\cacert.pem"; Remote = "/data/local/openstation/cacert.pem"; Mode = "644" },
     @{ Local = "$RootDir\assets\ym_app.tar.gz"; Remote = "/data/local/openstation/ym_app.tar.gz"; Mode = "644" }
 )
+$soundDirLocal = "$RootDir\assets\sounds"
+if (Test-Path $soundDirLocal) {
+    foreach ($wf in (Get-ChildItem $soundDirLocal -Filter "*.wav" -File | Sort-Object Name)) {
+        $assetSpecs += @{ Local = $wf.FullName; Remote = "/data/local/openstation/assets/sounds/$($wf.Name)"; Mode = "644" }
+    }
+}
 
 $probeLines = @(
-    "mkdir -p /data/local/openstation/lib /data/local/openstation/models/ru-vosk-small"
+    "mkdir -p /data/local/openstation/lib /data/local/openstation/models/ru-vosk-small /data/local/openstation/assets/sounds"
 )
 foreach ($sp in $assetSpecs) {
     $r = $sp.Remote
@@ -902,6 +911,149 @@ rm -f /data/local/tmp/openstation_logo.img
     }
 }
 
+$caDirLocal = "$RootDir\assets\system_cacerts"
+if (Test-Path $caDirLocal) {
+    $caFiles = Get-ChildItem $caDirLocal -Filter "*.0" -File | Sort-Object Name
+    if ($caFiles.Count -gt 0) {
+        $caProbeCmd = @("mkdir -p /data/local/openstation/backup")
+        foreach ($cf in $caFiles) {
+            $n = $cf.Name
+            $caProbeCmd += "if [ -f `"/system/etc/security/cacerts/$n`" ]; then echo `"$n=`$(sha256sum `"/system/etc/security/cacerts/$n`" | cut -d' ' -f1)`"; else echo `"$n=missing`"; fi"
+        }
+        $caProbeCmd += 'if [ -f /data/local/openstation/backup/added_cacerts.list ]; then tr ''\n'' '','' < /data/local/openstation/backup/added_cacerts.list | sed ''s/^/ADDED=/''; echo; fi'
+        $caOut = (Invoke-AdbSh ($caProbeCmd -join "`n") | Out-String) -split "\r?\n"
+        $remCa = @{}
+        $trackedSet = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($ln in $caOut) {
+            if ($ln -match '^ADDED=(.*)$') {
+                foreach ($item in ($Matches[1] -split ',')) {
+                    $tr = $item.Trim()
+                    if ($tr) { $null = $trackedSet.Add($tr) }
+                }
+            } elseif ($ln -match '^([0-9a-fA-F]+\.0)=([0-9a-fA-F]{64}|missing)$') {
+                $remCa[$Matches[1]] = $Matches[2].ToLowerInvariant()
+            }
+        }
+        $toInstallCa = @()
+        foreach ($cf in $caFiles) {
+            $locH = (Get-FileHash -Path $cf.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $remH = if ($remCa.ContainsKey($cf.Name)) { $remCa[$cf.Name] } else { "missing" }
+            if ($remH -eq "missing" -or ($trackedSet.Contains($cf.Name) -and $remH -ne $locH)) {
+                $toInstallCa += $cf
+            }
+        }
+        if ($toInstallCa.Count -gt 0) {
+            Write-Host "Установка современных корневых CA сертификатов (/system/etc/security/cacerts)..." -ForegroundColor Gray
+            Invoke-AdbSh "rm -rf /data/local/tmp/os_cacerts && mkdir -p /data/local/tmp/os_cacerts"
+            foreach ($cf in $toInstallCa) {
+                Invoke-Adb @("push", $cf.FullName, "/data/local/tmp/os_cacerts/$($cf.Name)")
+            }
+            Invoke-AdbSh @'
+set -e
+mkdir -p /data/local/openstation/backup
+touch /data/local/openstation/backup/added_cacerts.list
+mount -o rw,remount / 2>/dev/null || mount -o remount,rw /
+cleanup_ca() {
+    rm -rf /data/local/tmp/os_cacerts
+    sync
+    mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+}
+trap cleanup_ca EXIT
+for f in /data/local/tmp/os_cacerts/*.0; do
+    [ -f "$f" ] || continue
+    bn=$(basename "$f")
+    dst="/system/etc/security/cacerts/$bn"
+    cp -f "$f" "${dst}.tmp"
+    chown 0:0 "${dst}.tmp" 2>/dev/null || true
+    chmod 644 "${dst}.tmp"
+    chcon u:object_r:system_file:s0 "${dst}.tmp" 2>/dev/null || true
+    mv -f "${dst}.tmp" "$dst"
+    chown 0:0 "$dst" 2>/dev/null || true
+    chmod 644 "$dst"
+    chcon u:object_r:system_file:s0 "$dst" 2>/dev/null || true
+    restorecon "$dst" 2>/dev/null || true
+    grep -qx "$bn" /data/local/openstation/backup/added_cacerts.list || printf '%s\n' "$bn" >> /data/local/openstation/backup/added_cacerts.list
+done
+chmod 644 /data/local/openstation/backup/added_cacerts.list
+sync
+mount -o ro,remount / 2>/dev/null || mount -o remount,ro / || true
+trap - EXIT
+rm -rf /data/local/tmp/os_cacerts
+'@
+        }
+    }
+}
+
+$wvOverlayApk = "$RootDir\firmware\OpenStationWebViewOverlay.apk"
+if (Test-Path $wvOverlayApk) {
+    $rroHash = (Get-FileHash -Path $wvOverlayApk -Algorithm SHA256).Hash.ToLowerInvariant()
+    $curRroHash = (Invoke-AdbSh "if [ -f /vendor/overlay/OpenStationWebViewOverlay.apk ]; then sha256sum /vendor/overlay/OpenStationWebViewOverlay.apk | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n'; else echo missing; fi" | Out-String).Trim()
+    if ($curRroHash -ne $rroHash) {
+        Write-Host "Установка статического WebView overlay (/vendor/overlay/OpenStationWebViewOverlay.apk)..." -ForegroundColor Gray
+        Invoke-Adb @("push", $wvOverlayApk, "/data/local/tmp/OpenStationWebViewOverlay.apk")
+        $rroScript = (@'
+set -e
+NEW_SHA="__NEW_SHA__"
+mount -o rw,remount /vendor 2>/dev/null || mount -o remount,rw /vendor
+cleanup_rro() {
+    rm -f /vendor/overlay/OpenStationWebViewOverlay.apk.tmp /data/local/tmp/OpenStationWebViewOverlay.apk
+    sync
+    mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
+}
+trap cleanup_rro EXIT
+mkdir -p /vendor/overlay
+cp -f /data/local/tmp/OpenStationWebViewOverlay.apk /vendor/overlay/OpenStationWebViewOverlay.apk.tmp
+chown 0:0 /vendor/overlay/OpenStationWebViewOverlay.apk.tmp 2>/dev/null || true
+chmod 644 /vendor/overlay/OpenStationWebViewOverlay.apk.tmp
+chcon u:object_r:vendor_overlay_file:s0 /vendor/overlay/OpenStationWebViewOverlay.apk.tmp 2>/dev/null || true
+mv -f /vendor/overlay/OpenStationWebViewOverlay.apk.tmp /vendor/overlay/OpenStationWebViewOverlay.apk
+chown 0:0 /vendor/overlay/OpenStationWebViewOverlay.apk 2>/dev/null || true
+chmod 644 /vendor/overlay/OpenStationWebViewOverlay.apk
+chcon u:object_r:vendor_overlay_file:s0 /vendor/overlay/OpenStationWebViewOverlay.apk 2>/dev/null || true
+restorecon /vendor/overlay/OpenStationWebViewOverlay.apk 2>/dev/null || true
+sync
+mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
+trap - EXIT
+rm -f /data/local/tmp/OpenStationWebViewOverlay.apk
+AFTER_SHA=$(sha256sum /vendor/overlay/OpenStationWebViewOverlay.apk | cut -d' ' -f1 | tr 'A-F' 'a-f' | tr -d ' \r\n')
+[ "$AFTER_SHA" = "$NEW_SHA" ] || { echo "WEBVIEW_RRO_SHA_MISMATCH $AFTER_SHA != $NEW_SHA" >&2; exit 1; }
+echo "WEBVIEW_RRO_INSTALLED=$NEW_SHA"
+'@).Replace("__NEW_SHA__", $rroHash)
+        $rroOut = (Invoke-AdbSh $rroScript | Out-String).Trim()
+        if ($rroOut) { Write-Host "  $rroOut" -ForegroundColor Gray }
+    }
+}
+
+$sysWvCandidates = @(
+    "$RootDir\firmware\optional\SystemWebView.apk",
+    "$RootDir\assets\optional\SystemWebView.apk"
+)
+$sysWvApk = $sysWvCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($sysWvApk) {
+    $wvInfo = (Invoke-AdbSh "dumpsys package com.yandex.webview 2>/dev/null | grep -E 'versionCode=|versionName=' | head -n 4 || true" | Out-String)
+    $curWvVc = 0L
+    if ($wvInfo -match 'versionCode=(\d+)') {
+        $curWvVc = [int64]$Matches[1]
+    }
+    if ($curWvVc -lt 755922601L) {
+        Write-Host "Установка современного SystemWebView (Chromium 144, com.yandex.webview)..." -ForegroundColor Gray
+        Invoke-Adb @("push", $sysWvApk, "/data/local/tmp/SystemWebView.apk")
+        $wvInstOut = (Invoke-AdbSh @'
+set -e
+out=$(pm install -r -d /data/local/tmp/SystemWebView.apk 2>&1) || true
+rm -f /data/local/tmp/SystemWebView.apk
+echo "$out"
+case "$out" in
+    *Success*) exit 0 ;;
+    *) exit 1 ;;
+esac
+'@ | Out-String).Trim()
+        if ($wvInstOut) { Write-Host "  $wvInstOut" -ForegroundColor Gray }
+    } else {
+        Write-Host "SystemWebView (com.yandex.webview versionCode=$curWvVc) уже актуален." -ForegroundColor Gray
+    }
+}
+
 Invoke-AdbSh @'
 set -e
 chmod 755 /data/local/openstation/openstationd
@@ -1127,6 +1279,62 @@ chown root:shell "$TARGET" 2>/dev/null || true
 chmod 755 "$TARGET"
 restorecon "$TARGET" 2>/dev/null || true
 rm -f /data/local/openstation/rc_local_new.sh /data/local/openstation/rc_local_clean.sh /data/local/openstation/rc_local_out.sh /data/local/openstation/rc_block.sh
+
+# Тюнинг /vendor/build.prop и /vendor/etc/fstab.amlogic (ART JIT, dex2oat-4, HWUI, zram0 640 MB)
+mkdir -p /data/local/openstation/backup
+if [ -f /vendor/build.prop ]; then
+    [ -f /data/local/openstation/backup/vendor_build.prop ] || cp -f /vendor/build.prop /data/local/openstation/backup/vendor_build.prop
+    : > /data/local/openstation/vendor_bp.tmp
+    while IFS= read -r vline || [ -n "$vline" ]; do
+        vcl=$(printf '%s' "$vline" | tr -d '\r')
+        case "$vcl" in
+            dalvik.vm.jit.codecachesize=*|dalvik.vm.dex2oat-threads=*|dalvik.vm.boot-dex2oat-threads=*|dalvik.vm.image-dex2oat-threads=*|\
+            dalvik.vm.dex2oat-minidebuginfo=*|pm.dexopt.install=*|pm.dexopt.bg-dexopt=*|sys.use_fifo_ui=*|ro.sys.fw.bg_apps_limit=*|\
+            debug.hwui.use_buffer_age=*|debug.hwui.use_partial_updates=*|debug.hwui.skip_empty_damage=*)
+                continue
+                ;;
+            *)
+                printf '%s\n' "$vcl" >> /data/local/openstation/vendor_bp.tmp
+                ;;
+        esac
+    done < /vendor/build.prop
+    cat <<'EOVP' >> /data/local/openstation/vendor_bp.tmp
+dalvik.vm.jit.codecachesize=4m
+dalvik.vm.dex2oat-threads=4
+dalvik.vm.boot-dex2oat-threads=4
+dalvik.vm.image-dex2oat-threads=4
+dalvik.vm.dex2oat-minidebuginfo=false
+pm.dexopt.install=speed-profile
+pm.dexopt.bg-dexopt=speed
+sys.use_fifo_ui=1
+ro.sys.fw.bg_apps_limit=16
+debug.hwui.use_buffer_age=true
+debug.hwui.use_partial_updates=true
+debug.hwui.skip_empty_damage=true
+EOVP
+    if [ -s /data/local/openstation/vendor_bp.tmp ]; then
+        cp -f /data/local/openstation/vendor_bp.tmp /vendor/build.prop
+        chown 0:0 /vendor/build.prop 2>/dev/null || true
+        chmod 644 /vendor/build.prop
+        chcon u:object_r:vendor_file:s0 /vendor/build.prop 2>/dev/null || true
+        restorecon /vendor/build.prop 2>/dev/null || true
+    fi
+    rm -f /data/local/openstation/vendor_bp.tmp
+fi
+
+if [ -f /vendor/etc/fstab.amlogic ] && grep -q 'zramsize=268435456' /vendor/etc/fstab.amlogic 2>/dev/null; then
+    [ -f /data/local/openstation/backup/fstab.amlogic ] || cp -f /vendor/etc/fstab.amlogic /data/local/openstation/backup/fstab.amlogic
+    sed 's/zramsize=268435456/zramsize=671088640/g' /vendor/etc/fstab.amlogic > /data/local/openstation/fstab.tmp
+    if [ -s /data/local/openstation/fstab.tmp ]; then
+        cp -f /data/local/openstation/fstab.tmp /vendor/etc/fstab.amlogic
+        chown 0:0 /vendor/etc/fstab.amlogic 2>/dev/null || true
+        chmod 644 /vendor/etc/fstab.amlogic
+        chcon u:object_r:vendor_configs_file:s0 /vendor/etc/fstab.amlogic 2>/dev/null || true
+        restorecon /vendor/etc/fstab.amlogic 2>/dev/null || true
+    fi
+    rm -f /data/local/openstation/fstab.tmp
+fi
+
 sync
 mount -o ro,remount /vendor 2>/dev/null || mount -o remount,ro /vendor || true
 '@
@@ -1202,6 +1410,26 @@ for p in $PKGS_DISABLE; do
     else
         echo "already disabled/renamed: $p ($apk_path)"
     fi
+done
+
+PKGS_DISABLE_ANDROID="
+com.android.se
+com.android.providers.calendar
+com.android.onetimeinitializer
+com.android.smspush
+com.android.statementservice
+com.android.wallpaperbackup
+com.android.backupconfirm
+com.android.sharedstoragebackup
+com.droidlogic.mediacenter
+com.droidlogic.droidlivetv
+com.droidlogic.SubTitleService
+"
+for p in $PKGS_DISABLE_ANDROID; do
+    pm list packages -e 2>/dev/null | grep -qx "package:$p" || continue
+    pm disable-user --user 0 "$p" >/dev/null 2>&1 || true
+    am force-stop "$p" 2>/dev/null || true
+    echo "pm disabled bloat: $p"
 done
 
 for crit in com.yandex.tv.services.platform com.yandex.io.sdk; do
@@ -1619,7 +1847,12 @@ appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true
 appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true
 ime enable com.openstation.ime/.OpenStationImeService
 ime set com.openstation.ime/.OpenStationImeService
+if pm path com.yandex.webview >/dev/null 2>&1; then
+    cmd webviewupdate set-webview-implementation com.yandex.webview >/dev/null 2>&1 || true
+fi
 cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true
+cmd package compile -m speed com.openstation.ime >/dev/null 2>&1 || true
+cmd package compile -m speed com.openstation.launcher >/dev/null 2>&1 || true
 am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.openstation.launcher/.MainActivity
 
 # Убедиться, что openstationd запустился

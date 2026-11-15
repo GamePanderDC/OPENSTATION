@@ -1,40 +1,40 @@
 {
-    "name":  "OpenStation Max",
-    "device":  "yandexstation_2",
-    "version":  "1.6.3",
-    "autonomous":  true,
-    "changelog":  "OpenStation Max v1.6.3: 6 новых музыкальных визуализаторов + бегущая строка полного названия трека без стартовой иконки, тихое переключение треков Алисой, фиксация gemini-3.8-live, отключение FLAC в Яндекс Музыке, интерактивное восстановление Wi-Fi/BT (misc + btlinux-1.0), выверенные имена и характеры ассистента.",
-    "buildTimeUtc":  "2026-11-14T23:56:13Z",
-    "files":  {
-                  "daemon":  {
-                                 "fileName":  "openstationd",
-                                 "size":  3140688,
-                                 "sha256":  "f6cabf35f6501515d19584b142d9be055e451cefbb56e81dcd79a193aefe4a3f"
-                             },
-                  "bootlogod":  {
-                                    "fileName":  "bootlogod",
-                                    "size":  657728,
-                                    "sha256":  "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
-                                },
-                  "launcher":  {
-                                   "fileName":  "OpenStationLauncher.apk",
-                                   "size":  5146276,
-                                   "sha256":  "7ccc13e202c77bd32238682031384fec50c2377ecd6980ffa6b19f33aa3b0c85"
-                               },
-                  "ime":  {
-                              "fileName":  "OpenStationIME.apk",
-                              "size":  808866,
-                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-                          },
-                  "bootanimation":  {
-                                        "fileName":  "bootanimation.zip",
-                                        "size":  6725707,
-                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
-                                    },
-                  "bootlogo":  {
-                                   "fileName":  "logo.img",
-                                   "size":  2252608,
-                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-                               }
-              }
+  "name": "OpenStation Max",
+  "device": "yandexstation_2",
+  "version": "1.6.4",
+  "autonomous": true,
+  "changelog": "OpenStation Max v1.6.4: глубокая оптимизация нагрева и энергопотребления (адаптивный порог тишины Silero VAD, дедупликация SPI-кадров LED-матрицы, пауза невидимого 3D-шара и снижение GPU-нагрузки в лаунчере/скринсейвере/мастере, CPU governor schedutil и ускоренный GPU DVFS), монолитный Spatial Liquid Glass интерфейс (новый плеер, живой фото-скринсейвер, подвкладки панели управления, выбор скорости анимаций, сброс оболочки, обновлённый мастер настройки).",
+  "buildTimeUtc": "2026-11-15T09:07:56Z",
+  "files": {
+    "daemon": {
+      "fileName": "openstationd",
+      "size": 3333680,
+      "sha256": "e2de0de93ddb08947185ecb958b4046f27cc5495e6293c6c9392de824cc5b264"
+    },
+    "bootlogod": {
+      "fileName": "bootlogod",
+      "size": 657728,
+      "sha256": "a79b0aa3be9d9c902d05b9fa71a2931678f7f97a34e8eb9fd94431f2f4fd4e14"
+    },
+    "launcher": {
+      "fileName": "OpenStationLauncher.apk",
+      "size": 10483859,
+      "sha256": "7a3ece38cc0e96a240c58feaf202a66e7155b1852724ec68abd05e4c7b05a663"
+    },
+    "ime": {
+      "fileName": "OpenStationIME.apk",
+      "size": 808866,
+      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
+    },
+    "bootanimation": {
+      "fileName": "bootanimation.zip",
+      "size": 6725707,
+      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+    },
+    "bootlogo": {
+      "fileName": "logo.img",
+      "size": 2252608,
+      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+    }
+  }
 }

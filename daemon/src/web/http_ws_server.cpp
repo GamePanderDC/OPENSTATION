@@ -313,8 +313,98 @@ void HttpWsServer::broadcast_ws_frame(uint8_t opcode, const uint8_t* data, size_
     }
 }
 
+static std::string sanitize_utf8_for_ws(const std::string& input) {
+    // WebSocket RFC 6455 text frames MUST be valid UTF-8; browsers drop connections with 1007 otherwise.
+    bool valid = true;
+    const size_t n = input.size();
+    for (size_t i = 0; i < n;) {
+        const uint8_t b0 = static_cast<uint8_t>(input[i]);
+        if (b0 < 0x80) {
+            ++i;
+            continue;
+        }
+        size_t len = 0;
+        uint32_t cp = 0;
+        if ((b0 & 0xE0) == 0xC0 && b0 >= 0xC2) {
+            len = 2;
+            cp = b0 & 0x1F;
+        } else if ((b0 & 0xF0) == 0xE0) {
+            len = 3;
+            cp = b0 & 0x0F;
+        } else if ((b0 & 0xF8) == 0xF0 && b0 <= 0xF4) {
+            len = 4;
+            cp = b0 & 0x07;
+        } else {
+            valid = false;
+            break;
+        }
+        if (i + len > n) {
+            valid = false;
+            break;
+        }
+        for (size_t k = 1; k < len; ++k) {
+            const uint8_t bk = static_cast<uint8_t>(input[i + k]);
+            if ((bk & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+            cp = (cp << 6) | (bk & 0x3F);
+        }
+        if (!valid) break;
+        if ((len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+            (len == 4 && (cp < 0x10000 || cp > 0x10FFFF))) {
+            valid = false;
+            break;
+        }
+        i += len;
+    }
+    if (valid) return input;
+
+    std::string out;
+    out.reserve(n);
+    for (size_t i = 0; i < n;) {
+        const uint8_t b0 = static_cast<uint8_t>(input[i]);
+        if (b0 < 0x80) {
+            out.push_back(static_cast<char>(b0));
+            ++i;
+            continue;
+        }
+        size_t len = 0;
+        uint32_t cp = 0;
+        if ((b0 & 0xE0) == 0xC0 && b0 >= 0xC2) {
+            len = 2;
+            cp = b0 & 0x1F;
+        } else if ((b0 & 0xF0) == 0xE0) {
+            len = 3;
+            cp = b0 & 0x0F;
+        } else if ((b0 & 0xF8) == 0xF0 && b0 <= 0xF4) {
+            len = 4;
+            cp = b0 & 0x07;
+        }
+        bool ok = (len >= 2 && i + len <= n);
+        for (size_t k = 1; ok && k < len; ++k) {
+            const uint8_t bk = static_cast<uint8_t>(input[i + k]);
+            if ((bk & 0xC0) != 0x80) ok = false;
+            cp = (cp << 6) | (bk & 0x3F);
+        }
+        if (ok && ((len == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) ||
+                   (len == 4 && (cp < 0x10000 || cp > 0x10FFFF)))) {
+            ok = false;
+        }
+        if (ok) {
+            out.append(input, i, len);
+            i += len;
+        } else {
+            out.push_back('?');
+            ++i;
+        }
+    }
+    return out;
+}
+
 void HttpWsServer::broadcast_ws_text(const std::string& text) {
-    broadcast_ws_frame(0x01, reinterpret_cast<const uint8_t*>(text.data()), text.size(), false);
+    const std::string clean = sanitize_utf8_for_ws(text);
+    broadcast_ws_frame(0x01, reinterpret_cast<const uint8_t*>(clean.data()), clean.size(), false);
 }
 
 void HttpWsServer::broadcast_ws_audio(const int16_t* pcm, size_t samples) {
@@ -440,9 +530,12 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
         }
         resp += "\r\n";
         if (!send_all(cfd, resp.data(), resp.size())) return;
-        // Clear strict timeout for long-lived WebSocket
+        // Clear strict receive timeout for long-lived WebSocket, and give send a generous 8s budget
+        // so brief Wi-Fi stalls on mobile browsers do not tear down the live telemetry stream.
         struct timeval notv {0, 0};
+        struct timeval ws_snd_tv {8, 0};
         setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &notv, sizeof(notv));
+        setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &ws_snd_tv, sizeof(ws_snd_tv));
 
         ws_client = std::make_shared<WsClient>();
         ws_client->fd = cfd;

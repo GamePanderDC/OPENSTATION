@@ -65,7 +65,14 @@ class YandexMusicApi(private val context: Context) {
             return QUALITY_NORMAL
         }
 
-        private val coverCache = object : LruCache<String, Bitmap>(32) {}
+        private val coverCache = object : LruCache<String, Bitmap>(4096) {
+            override fun sizeOf(key: String, value: Bitmap): Int =
+                (value.allocationByteCount / 1024).coerceAtLeast(1)
+        }
+
+        fun trimCoverCache(maxSizeKb: Int = 0) {
+            if (maxSizeKb <= 0) coverCache.evictAll() else coverCache.trimToSize(maxSizeKb)
+        }
 
         fun normalizeOAuthToken(raw: String?): String {
             var s = (raw ?: "").trim().trim('"', '\'')

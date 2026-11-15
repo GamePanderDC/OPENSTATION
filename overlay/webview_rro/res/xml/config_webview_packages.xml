@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<webviewproviders>
+    <webviewprovider
+        description="Yandex WebView"
+        packageName="com.yandex.webview"
+        availableByDefault="true" />
+    <webviewprovider
+        description="Android WebView"
+        packageName="com.android.webview"
+        availableByDefault="true" />
+</webviewproviders>

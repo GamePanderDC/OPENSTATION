@@ -256,7 +256,7 @@ internal class MiscRepairDialogHelper(
             fun updateBg(focused: Boolean) {
                 background = GradientDrawable().apply {
                     setColor(if (focused) focBg else normBg)
-                    setStroke(dp(if (focused) 2 else 1), Color.parseColor(if (focused) "#FFFFFFFF" else "#33FFFFFF"))
+                    setStroke(dp(1), Color.parseColor(if (focused) "#787DD3FC" else "#28FFFFFF"))
                     cornerRadius = dp(12).toFloat()
                 }
             }
@@ -277,10 +277,10 @@ internal class MiscRepairDialogHelper(
                     dp(if (sel || foc) 2 else 1),
                     Color.parseColor(
                         when {
-                            foc && sel -> "#FFFFFFFF"
+                            foc && sel -> "#90BAE6FD"
                             sel -> "#FF00D4FF"
-                            foc -> "#AAFFFFFF"
-                            else -> "#33FFFFFF"
+                            foc -> "#68BAE6FD"
+                            else -> "#28FFFFFF"
                         }
                     )
                 )

@@ -158,8 +158,29 @@ int main() {
 
     restored.assistant.system_prompt.clear();
     restored.assistant.name.clear();
+    restored.input.action_short = "dj_mode";
+    restored.input.action_long = "dj_mode";
     restored.sanitize_and_validate();
     assert(!restored.assistant.system_prompt.empty());
     assert(!restored.assistant.name.empty());
     assert(restored.assistant.gemini_model == "gemini-3.8-live");
+    assert(restored.input.action_short == "assistant");
+    assert(restored.input.action_long == "scrub");
+    assert(defaults.input.action_long == "scrub");
+
+    // UTF-8 safe truncation + corrupted "???" note filtering in memory_notes
+    {
+        DaemonConfig mc;
+        // Build 130x 2-byte Cyrillic "Ж" (260 bytes total); boundary at 240 bytes must stay valid UTF-8
+        std::string cyr_260;
+        for (int i = 0; i < 130; ++i) cyr_260 += "Ж";
+        mc.assistant.memory_notes = {"???", "  ? ?? ", "A" + cyr_260, "любит кофе"};
+        mc.sanitize_and_validate();
+        assert(mc.assistant.memory_notes.size() == 2);
+        const std::string& truncated = mc.assistant.memory_notes[0];
+        assert(truncated.size() <= 240);
+        // 'A' (1 byte) + 119 * 2-byte "Ж" = 239 bytes (never splits the 240th-241st byte codepoint!)
+        assert(truncated.size() == 239);
+        assert(mc.assistant.memory_notes[1] == "любит кофе");
+    }
 }

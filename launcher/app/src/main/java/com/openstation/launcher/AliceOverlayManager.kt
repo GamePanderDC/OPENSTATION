@@ -336,6 +336,7 @@ class AliceOverlayManager(private val context: Context) {
 
     private fun showOrUpdateOverlay() {
         ensureViews()
+        orbView?.let { v -> AliceOrbFrames.preloadAsync(context) { v.invalidate() } }
         bindState()
         val container = rootContainer ?: return
         val card = dockCard ?: return

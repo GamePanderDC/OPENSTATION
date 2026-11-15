@@ -18,6 +18,7 @@ import android.media.audiofx.BassBoost
 import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.Equalizer
 import android.media.audiofx.Visualizer
+import android.media.session.MediaSessionManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -25,6 +26,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import android.widget.Toast
 import org.json.JSONObject
 import java.net.DatagramPacket
@@ -111,6 +113,7 @@ class StationAudioService : Service() {
     private var volumeOverlayManager: VolumeOverlayManager? = null
     var bleRemoteManager: BleRemoteManager? = null
         private set
+    private var remoteMicStreamer: RemoteMicStreamer? = null
     @Volatile
     private var lastBtEventMs = 0L
     @Volatile
@@ -121,9 +124,35 @@ class StationAudioService : Service() {
     private var pendingBtDiscoverableUntilMs = 0L
     @Volatile
     private var zeroSpectrumSent = false
+    @Volatile
+    private var scrubDucking = false
+    @Volatile
+    private var scrubCaptureResumeMs = 0L
+    private var externalDuckFocusRequest: android.media.AudioFocusRequest? = null
     private val volPushLock = Any()
     private var volPushThread: HandlerThread? = null
     private var volPushHandler: Handler? = null
+    private var volApplyThread: HandlerThread? = null
+    private var volApplyHandler: Handler? = null
+    private var remotePushThread: HandlerThread? = null
+    private var remotePushHandler: Handler? = null
+    private var remotePeriodicRunnable: Runnable? = null
+    private val pendingApplyVolPct = java.util.concurrent.atomic.AtomicInteger(-1)
+    private val pendingApplyVolShowUi = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val pendingVolApply = Runnable {
+        if (!running) return@Runnable
+        val pct = pendingApplyVolPct.get()
+        if (pct < 0) return@Runnable
+        val showUi = pendingApplyVolShowUi.get()
+        lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
+        try {
+            val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
+            val idx = ((pct / 100.0) * maxV).roundToInt().coerceIn(0, maxV)
+            val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx, flags)
+            lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
+        } catch (_: Throwable) {}
+    }
     private val pendingVolPush = Runnable {
         if (running) pushVolumeStateToDaemon(showOsd = true)
     }
@@ -217,12 +246,30 @@ class StationAudioService : Service() {
             start()
         }
         volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
-        bleRemoteManager = BleRemoteManager(this)
+        remotePushThread = HandlerThread("StationRemotePush").apply { start() }.also {
+            remotePushHandler = Handler(it.looper)
+        }
+        bleRemoteManager = BleRemoteManager(this).apply {
+            onStateChanged = { stateObj -> pushRemoteStateToDaemon(stateObj) }
+            onActionResult = { kind, ok, message, reqId ->
+                val stateObj = toJsonObject()
+                stateObj.put("actionKind", kind)
+                stateObj.put("actionOk", ok)
+                stateObj.put("actionMessage", message)
+                if (reqId.isNotEmpty()) stateObj.put("reqId", reqId)
+                pushRemoteStateToDaemon(stateObj)
+            }
+        }
+        remoteMicStreamer = RemoteMicStreamer(this, bleRemoteManager)
         bleRemoteManager?.startReconnect()
+        scheduleRemotePeriodicPush(1200L)
         startForegroundNotification()
         running = true
         volPushThread = HandlerThread("StationVolPush").apply { start() }.also {
             volPushHandler = Handler(it.looper)
+        }
+        volApplyThread = HandlerThread("StationVolApply").apply { start() }.also {
+            volApplyHandler = Handler(it.looper)
         }
         try {
             val vf = IntentFilter().apply {
@@ -286,14 +333,27 @@ class StationAudioService : Service() {
         overlayManager = null
         try { volumeOverlayManager?.stop() } catch (_: Throwable) {}
         volumeOverlayManager = null
+        try { remotePeriodicRunnable?.let { remotePushHandler?.removeCallbacks(it) } } catch (_: Throwable) {}
+        remotePeriodicRunnable = null
+        try { bleRemoteManager?.onStateChanged = null } catch (_: Throwable) {}
+        try { bleRemoteManager?.onActionResult = null } catch (_: Throwable) {}
+        try { remoteMicStreamer?.release() } catch (_: Throwable) {}
+        remoteMicStreamer = null
         try { bleRemoteManager?.release() } catch (_: Throwable) {}
         bleRemoteManager = null
+        try { remotePushThread?.quitSafely() } catch (_: Throwable) {}
+        remotePushHandler = null
+        remotePushThread = null
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
         try { unregisterReceiver(btEventReceiver) } catch (_: Throwable) {}
         try { volPushHandler?.removeCallbacks(pendingVolPush) } catch (_: Throwable) {}
         try { volPushThread?.quitSafely() } catch (_: Throwable) {}
         volPushHandler = null
         volPushThread = null
+        try { volApplyHandler?.removeCallbacks(pendingVolApply) } catch (_: Throwable) {}
+        try { volApplyThread?.quitSafely() } catch (_: Throwable) {}
+        volApplyHandler = null
+        volApplyThread = null
         try { udpSocket?.close() } catch (_: Throwable) {}
         try { specUdpSocket?.close() } catch (_: Throwable) {}
         specUdpSocket = null
@@ -302,6 +362,11 @@ class StationAudioService : Service() {
         try { visualizer?.release() } catch (_: Throwable) {}
         visualizerActive = false
         super.onDestroy()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        LiquidGlassKit.trimCachesForPressure(level, allowReleaseOrb = !isLauncherForeground)
     }
 
     private fun startForegroundNotification() {
@@ -448,6 +513,45 @@ class StationAudioService : Service() {
         }
     }
 
+    private fun scheduleRemotePeriodicPush(delayMs: Long) {
+        val h = remotePushHandler ?: return
+        remotePeriodicRunnable?.let { h.removeCallbacks(it) }
+        val r = object : Runnable {
+            override fun run() {
+                if (!running) return
+                val obj = try { bleRemoteManager?.toJsonObject() } catch (_: Throwable) { null }
+                if (obj != null) pushRemoteStateToDaemonNow(obj)
+                if (running) remotePushHandler?.postDelayed(this, 12000L)
+            }
+        }
+        remotePeriodicRunnable = r
+        h.postDelayed(r, delayMs)
+    }
+
+    private fun pushRemoteStateToDaemon(stateObj: JSONObject) {
+        if (!running) return
+        val copy = try { JSONObject(stateObj.toString()) } catch (_: Throwable) { stateObj }
+        remotePushHandler?.post {
+            if (running) pushRemoteStateToDaemonNow(copy)
+        }
+    }
+
+    private fun pushRemoteStateToDaemonNow(stateObj: JSONObject) {
+        try {
+            val conn = (URL("http://127.0.0.1:8080/api/remote/state").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 900
+                readTimeout = 900
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            }
+            val bytes = stateObj.toString().toByteArray(Charsets.UTF_8)
+            conn.outputStream.use { it.write(bytes) }
+            conn.responseCode
+            conn.disconnect()
+        } catch (_: Throwable) {}
+    }
+
     private fun handleUdpJson(raw: String) {
         try {
             val obj = JSONObject(raw)
@@ -503,36 +607,59 @@ class StationAudioService : Service() {
                     val steps = obj.optInt("steps", 1).coerceIn(1, 5)
                     val showUi = obj.optBoolean("showUi", false)
                     val showOsd = obj.optBoolean("showOsd", true)
+                    val hasPct = obj.has("percent")
+                    val pct = obj.optInt("percent", -1).coerceIn(0, 100)
+                    val muted = obj.optBoolean("muted", pct <= 0)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
-                    val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
-                    val direction = if (dir >= 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
-                    for (i in 0 until steps) {
-                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, flags)
+                    if (hasPct) {
+                        if (showOsd) {
+                            volumeOverlayManager?.showVolume(pct, muted)
+                        }
+                        pendingApplyVolPct.set(pct)
+                        pendingApplyVolShowUi.set(showUi)
+                        val ah = volApplyHandler
+                        if (ah != null) {
+                            ah.removeCallbacks(pendingVolApply)
+                            ah.post(pendingVolApply)
+                        } else {
+                            pendingVolApply.run()
+                        }
+                    } else {
+                        val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
+                        val direction = if (dir >= 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+                        for (i in 0 until steps) {
+                            audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, flags)
+                        }
+                        lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
+                        if (showOsd) showCurrentVolumeOverlay()
                     }
-                    lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
-                    if (showOsd) showCurrentVolumeOverlay()
                 }
                 "volume_set" -> {
                     val pct = obj.optInt("percent", 50).coerceIn(0, 100)
                     val showUi = obj.optBoolean("showUi", false)
                     val showOsd = obj.optBoolean("showOsd", true)
-                    lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
-                    val maxV = max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
-                    val idx = ((pct / 100.0) * maxV).roundToInt().coerceIn(0, maxV)
-                    val flags = if (showUi) AudioManager.FLAG_SHOW_UI else 0
-                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, idx, flags)
+                    val muted = obj.optBoolean("muted", pct <= 0)
                     lastRemoteVolCmdMs = SystemClock.elapsedRealtime()
                     if (showOsd) {
-                        val muted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC)
                         volumeOverlayManager?.showVolume(pct, muted)
+                    }
+                    pendingApplyVolPct.set(pct)
+                    pendingApplyVolShowUi.set(showUi)
+                    val ah = volApplyHandler
+                    if (ah != null) {
+                        ah.removeCallbacks(pendingVolApply)
+                        ah.post(pendingVolApply)
+                    } else {
+                        pendingVolApply.run()
                     }
                 }
                 "go_home" -> {
                     handler.post { bringLauncherHome() }
                 }
                 "find_remote" -> {
+                    val reqId = obj.optString("reqId", "")
                     volumeOverlayManager?.showToastPill("ПОИСК ПУЛЬТА", "Отправляю BLE-сигнал зуммера на пульт...", "#E8C686", 2400L)
-                    bleRemoteManager?.triggerBuzzer { ok, msg ->
+                    bleRemoteManager?.triggerBuzzer(reqId) { ok, msg ->
                         volumeOverlayManager?.showToastPill(
                             if (ok) "ПУЛЬТ ОТКЛИКНУЛСЯ" else "ПУЛЬТ НЕ НАЙДЕН",
                             msg,
@@ -542,13 +669,27 @@ class StationAudioService : Service() {
                     }
                 }
                 "pair_remote" -> {
-                    bleRemoteManager?.startAutoScanAndPair(60000L) { st, detail ->
+                    val reqId = obj.optString("reqId", "")
+                    val forceRescan = obj.optBoolean("forceRescan", false)
+                    val targetAddr = obj.optString("address", "").trim().ifEmpty { null }
+                    bleRemoteManager?.startAutoScanAndPair(60000L, forceRescan, targetAddr, reqId) { st, detail ->
                         val col = when (st) {
                             "connected" -> "#10D281"
                             "error", "not_found" -> "#F87171"
                             else -> "#00D4FF"
                         }
                         volumeOverlayManager?.showToastPill("BLE ПУЛЬТ YANDEX", detail, col, 3200L)
+                    }
+                }
+                "forget_remote" -> {
+                    val reqId = obj.optString("reqId", "")
+                    bleRemoteManager?.forgetBondedRemote(reqId) { ok, msg ->
+                        volumeOverlayManager?.showToastPill(
+                            if (ok) "ПУЛЬТ УДАЛЁН" else "ОШИБКА",
+                            msg,
+                            if (ok) "#E8C686" else "#F87171",
+                            3200L
+                        )
                     }
                 }
                 "setup_remote" -> {
@@ -598,6 +739,20 @@ class StationAudioService : Service() {
                     val duck = obj.optBoolean("duck", false)
                     musicPlayer.setDuck(duck)
                 }
+                "scrub_duck" -> {
+                    val duck = obj.optBoolean("duck", false)
+                    setScrubDuckingState(duck)
+                }
+                "music_seek_delta" -> {
+                    val deltaMs = obj.optLong("deltaMs", 0L)
+                    if (deltaMs != 0L) {
+                        if (musicPlayer.hasActiveOrPausedTrack()) {
+                            musicPlayer.seekBy(deltaMs)
+                        } else {
+                            seekExternalPlayback(deltaMs)
+                        }
+                    }
+                }
                 "music_action" -> {
                     val act = obj.optString("action", "")
                     if (act.isNotEmpty()) {
@@ -617,6 +772,11 @@ class StationAudioService : Service() {
                     val tts = obj.optDouble("ttsRms", 0.0).toFloat()
                     val mic = obj.optDouble("micRms", 0.0).toFloat()
                     LiveOrbState.updateVoiceLevel(st, tts, mic)
+                }
+                "remote_mic" -> {
+                    val active = obj.optBoolean("active", false)
+                    val reason = obj.optString("reason", "assistant")
+                    remoteMicStreamer?.setActive(active, reason)
                 }
             }
         } catch (t: Throwable) {
@@ -700,6 +860,60 @@ class StationAudioService : Service() {
         } catch (t: Throwable) {
             Log.e(TAG, "handleBluetoothCommand error", t)
         }
+    }
+
+    private fun setScrubDuckingState(duck: Boolean) {
+        if (duck) {
+            scrubDucking = true
+            scrubCaptureResumeMs = Long.MAX_VALUE
+            musicPlayer.setScrubDuck(true)
+            if (!musicPlayer.hasActiveOrPausedTrack() && externalDuckFocusRequest == null &&
+                android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val req = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(
+                            android.media.AudioAttributes.Builder()
+                                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .build()
+                        )
+                        .build()
+                    if (audioManager.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                        externalDuckFocusRequest = req
+                    }
+                } catch (_: Throwable) {}
+            }
+        } else {
+            scrubDucking = false
+            scrubCaptureResumeMs = SystemClock.elapsedRealtime() + 380L
+            musicPlayer.setScrubDuck(false)
+            val req = externalDuckFocusRequest
+            if (req != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                externalDuckFocusRequest = null
+                try { audioManager.abandonAudioFocusRequest(req) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    private fun seekExternalPlayback(deltaMs: Long) {
+        try {
+            val msm = getSystemService(Context.MEDIA_SESSION_SERVICE) as? MediaSessionManager
+            val controllers = msm?.getActiveSessions(null)
+            if (!controllers.isNullOrEmpty()) {
+                val c = controllers[0]
+                val st = c.playbackState
+                if (st != null) {
+                    val tgt = (st.position + deltaMs).coerceAtLeast(0L)
+                    c.transportControls.seekTo(tgt)
+                    return
+                }
+            }
+        } catch (_: Throwable) {}
+        try {
+            val code = if (deltaMs >= 0L) KeyEvent.KEYCODE_MEDIA_FAST_FORWARD else KeyEvent.KEYCODE_MEDIA_REWIND
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+            audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+        } catch (_: Throwable) {}
     }
 
     private fun openYandexMusicActivity(tab: String = "", openLogin: Boolean = false) {
@@ -911,6 +1125,17 @@ class StationAudioService : Service() {
             var silentTicks = 100
             var visEnabled = false
             var fftBuf: ByteArray? = null
+            var waveBuf: ByteArray? = null
+            var lastWaveBuf: ByteArray? = null
+            var hasLastWave = false
+            var quietWaveSent = 0
+            var measSupported = false
+            val peakRms = Visualizer.MeasurementPeakRms()
+            var wavePktBytes: ByteArray? = null
+            var wavePktBuf: ByteBuffer? = null
+            var wavePktObj: DatagramPacket? = null
+            val wavePktAddr = InetAddress.getByName("127.0.0.1")
+            var lastFftMs = 0L
 
             var lastReportedPlaying: Boolean? = null
             fun sendUdpMusicState(playing: Boolean) {
@@ -944,6 +1169,12 @@ class StationAudioService : Service() {
                             val cap = min(1024, Visualizer.getCaptureSizeRange()[1])
                             v.captureSize = cap
                             v.scalingMode = Visualizer.SCALING_MODE_NORMALIZED
+                            measSupported = try {
+                                v.measurementMode = Visualizer.MEASUREMENT_MODE_PEAK_RMS
+                                true
+                            } catch (_: Throwable) {
+                                false
+                            }
                             val startActive = musicPlayer.getSnapshot().playing ||
                                 audioManager.isMusicActive ||
                                 LiveOrbState.assistantState != "idle"
@@ -962,8 +1193,20 @@ class StationAudioService : Service() {
 
                             visualizer = v
                             fftBuf = ByteArray(cap)
+                            waveBuf = ByteArray(cap)
+                            lastWaveBuf = ByteArray(cap)
+                            hasLastWave = false
+                            quietWaveSent = 0
+                            val pktArr = ByteArray(12 + cap)
+                            pktArr[0] = 'A'.code.toByte()
+                            pktArr[1] = 'S'.code.toByte()
+                            pktArr[2] = 'W'.code.toByte()
+                            pktArr[3] = '2'.code.toByte()
+                            wavePktBytes = pktArr
+                            wavePktBuf = ByteBuffer.wrap(pktArr).order(ByteOrder.LITTLE_ENDIAN)
+                            wavePktObj = DatagramPacket(pktArr, pktArr.size, wavePktAddr, 8087)
                             visualizerActive = true
-                            Log.i(TAG, "Audio Visualizer attached to session 0 (cap=$cap, enabled=$startActive)")
+                            Log.i(TAG, "Audio Visualizer attached to session 0 (cap=$cap, meas=$measSupported, enabled=$startActive)")
                         } catch (t: Throwable) {
                             visualizerActive = false
                             try { Thread.sleep(3000) } catch (_: InterruptedException) {}
@@ -973,17 +1216,23 @@ class StationAudioService : Service() {
 
                     val v = visualizer
                     val fft = fftBuf
-                    if (v != null && fft != null) {
-                        val audioLikelyActive = musicPlayer.getSnapshot().playing ||
-                            audioManager.isMusicActive ||
-                            LiveOrbState.assistantState != "idle"
+                    val wb = waveBuf
+                    val lwb = lastWaveBuf
+                    val nowMs = SystemClock.elapsedRealtime()
+                    val musicPlaying = musicPlayer.getSnapshot().playing
+                    val mediaPlaying = musicPlaying || (audioManager.isMusicActive && LiveOrbState.assistantState == "idle")
+                    val audioLikelyActive = musicPlaying ||
+                        audioManager.isMusicActive ||
+                        LiveOrbState.assistantState != "idle"
 
+                    if (v != null && fft != null) {
                         if (!visEnabled) {
                             if (audioLikelyActive) {
                                 try {
                                     v.enabled = true
                                     visEnabled = true
                                     silentTicks = 0
+                                    hasLastWave = false
                                 } catch (t: Throwable) {
                                     Log.w(TAG, "Visualizer resume error: ${t.message}")
                                     try { v.release() } catch (_: Throwable) {}
@@ -998,59 +1247,104 @@ class StationAudioService : Service() {
                         }
 
                         try {
-                            val rc = v.getFft(fft)
-                            if (rc == Visualizer.SUCCESS) {
-                                var peak = 0f
-                                for (b in 0 until 24) {
-                                    val b0 = binStarts[b]
-                                    val b1 = binEnds[b]
-                                    var sum = 0f
-                                    for (k in b0..b1) {
-                                        val re = fft[2 * k].toFloat()
-                                        val im = fft[2 * k + 1].toFloat()
-                                        sum += sqrt(re * re + im * im)
-                                    }
-                                    val mag = sum / max(1, b1 - b0 + 1)
-                                    val norm = (ln(1f + mag * 0.45f) / 3.4f).coerceIn(0f, 1f)
-                                    val prev = smooth[b]
-                                    val sm = if (norm > prev) {
-                                        prev * 0.35f + norm * 0.65f
-                                    } else {
-                                        prev * 0.72f + norm * 0.28f
-                                    }
-                                    smooth[b] = sm
-                                    bands[b] = sm
-                                    if (sm > peak) peak = sm
-                                }
+                            // 1) Continuous deduplicated 48 kHz waveform capture whenever track/media plays
+                            if (mediaPlaying && !scrubDucking && nowMs >= scrubCaptureResumeMs &&
+                                wb != null && lwb != null && wavePktBytes != null && wavePktBuf != null && wavePktObj != null) {
+                                if (v.getWaveForm(wb) == Visualizer.SUCCESS) {
+                                    if (!hasLastWave || !wb.contentEquals(lwb)) {
+                                        System.arraycopy(wb, 0, lwb, 0, wb.size)
+                                        hasLastWave = true
 
-                                val isPlaying = musicPlayer.getSnapshot().playing
-                                sendUdpMusicState(isPlaying)
-                                if (peak > 0.025f) {
-                                    silentTicks = 0
-                                    zeroSpectrumSent = false
-                                    LiveOrbState.updateMusicSpectrum(bands, isPlaying)
-                                    sendUdpBands(bands)
-                                } else if (silentTicks < 6) {
-                                    silentTicks++
-                                    LiveOrbState.updateMusicSpectrum(bands, isPlaying)
-                                    sendUdpBands(bands)
-                                } else {
-                                    silentTicks++
-                                    if (!zeroSpectrumSent) {
-                                        zeroSpectrumSent = true
-                                        smooth.fill(0f)
-                                        LiveOrbState.updateMusicSpectrum(zeroBands, isPlaying)
-                                        sendUdpBands(zeroBands)
-                                    } else if (isPlaying != LiveOrbState.musicPlaying) {
-                                        LiveOrbState.musicPlaying = isPlaying
+                                        var maxDev = 0
+                                        for (i in wb.indices) {
+                                            val dev = kotlin.math.abs((wb[i].toInt() and 0xFF) - 128)
+                                            if (dev > maxDev) maxDev = dev
+                                        }
+
+                                        var peakLin = -1f
+                                        var rmsLin = -1f
+                                        if (measSupported && v.getMeasurementPeakRms(peakRms) == Visualizer.SUCCESS) {
+                                            if (peakRms.mPeak <= 0 && peakRms.mPeak >= -9600) {
+                                                peakLin = if (peakRms.mPeak > -9500) Math.pow(10.0, peakRms.mPeak / 2000.0).toFloat() else 0f
+                                            }
+                                            if (peakRms.mRms <= 0 && peakRms.mRms >= -9600) {
+                                                rmsLin = if (peakRms.mRms > -9500) Math.pow(10.0, peakRms.mRms / 2000.0).toFloat() else 0f
+                                            }
+                                        }
+
+                                        val shouldSend = maxDev >= 2 || quietWaveSent < 2
+                                        if (maxDev >= 2) quietWaveSent = 0 else quietWaveSent++
+                                        if (shouldSend) {
+                                            wavePktBuf.position(4)
+                                            wavePktBuf.putFloat(peakLin)
+                                            wavePktBuf.putFloat(rmsLin)
+                                            System.arraycopy(wb, 0, wavePktBytes, 12, wb.size)
+                                            try {
+                                                val sock = specUdpSocket?.takeUnless { it.isClosed } ?: DatagramSocket().also { specUdpSocket = it }
+                                                wavePktObj.length = wavePktBytes.size
+                                                sock.send(wavePktObj)
+                                            } catch (_: Throwable) {}
+                                        }
                                     }
-                                    if (silentTicks >= 45 && !audioLikelyActive && visEnabled) {
-                                        try {
-                                            v.enabled = false
-                                            visEnabled = false
-                                        } catch (_: Throwable) {}
-                                        try { Thread.sleep(250) } catch (_: InterruptedException) {}
-                                        continue
+                                }
+                            }
+
+                            // 2) LED spectrum FFT (~40 Hz)
+                            if (nowMs - lastFftMs >= 24L) {
+                                lastFftMs = nowMs
+                                val rc = v.getFft(fft)
+                                if (rc == Visualizer.SUCCESS) {
+                                    var peak = 0f
+                                    for (b in 0 until 24) {
+                                        val b0 = binStarts[b]
+                                        val b1 = binEnds[b]
+                                        var sum = 0f
+                                        for (k in b0..b1) {
+                                            val re = fft[2 * k].toFloat()
+                                            val im = fft[2 * k + 1].toFloat()
+                                            sum += sqrt(re * re + im * im)
+                                        }
+                                        val mag = sum / max(1, b1 - b0 + 1)
+                                        val norm = (ln(1f + mag * 0.45f) / 3.4f).coerceIn(0f, 1f)
+                                        val prev = smooth[b]
+                                        val sm = if (norm > prev) {
+                                            prev * 0.35f + norm * 0.65f
+                                        } else {
+                                            prev * 0.72f + norm * 0.28f
+                                        }
+                                        smooth[b] = sm
+                                        bands[b] = sm
+                                        if (sm > peak) peak = sm
+                                    }
+
+                                    sendUdpMusicState(musicPlaying)
+                                    if (peak > 0.025f) {
+                                        silentTicks = 0
+                                        zeroSpectrumSent = false
+                                        LiveOrbState.updateMusicSpectrum(bands, musicPlaying)
+                                        sendUdpBands(bands)
+                                    } else if (silentTicks < 6) {
+                                        silentTicks++
+                                        LiveOrbState.updateMusicSpectrum(bands, musicPlaying)
+                                        sendUdpBands(bands)
+                                    } else {
+                                        silentTicks++
+                                        if (!zeroSpectrumSent) {
+                                            zeroSpectrumSent = true
+                                            smooth.fill(0f)
+                                            LiveOrbState.updateMusicSpectrum(zeroBands, musicPlaying)
+                                            sendUdpBands(zeroBands)
+                                        } else if (musicPlaying != LiveOrbState.musicPlaying) {
+                                            LiveOrbState.musicPlaying = musicPlaying
+                                        }
+                                        if (silentTicks >= 45 && !audioLikelyActive && visEnabled) {
+                                            try {
+                                                v.enabled = false
+                                                visEnabled = false
+                                            } catch (_: Throwable) {}
+                                            try { Thread.sleep(250) } catch (_: InterruptedException) {}
+                                            continue
+                                        }
                                     }
                                 }
                             }
@@ -1062,7 +1356,8 @@ class StationAudioService : Service() {
                             visEnabled = false
                         }
                     }
-                    try { Thread.sleep(45) } catch (_: InterruptedException) {}
+                    val sleepMs = if (mediaPlaying && !scrubDucking) 6L else if (audioLikelyActive) 24L else 90L
+                    try { Thread.sleep(sleepMs) } catch (_: InterruptedException) {}
                 }
             } finally {
                 try { specUdpSocket?.close() } catch (_: Throwable) {}

@@ -70,6 +70,8 @@ class HomeEqWidgetController(
     fun buildView(): LinearLayout {
         rootCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             setPadding(dp(14), dp(10), dp(14), dp(10))
             LiquidGlassKit.applyGlass(
                 this,
@@ -77,7 +79,7 @@ class HomeEqWidgetController(
                 baseTint = Color.parseColor("#660B1324"),
                 focusTint = Color.parseColor("#8813223B"),
                 normalStroke = Color.parseColor("#4438BDF8"),
-                focusStroke = Color.parseColor("#FFE8C686"),
+                focusStroke = Color.parseColor("#78BAE6FD"),
                 refractStrength = 1.05f
             )
             elevation = dp(10).toFloat()
@@ -86,6 +88,8 @@ class HomeEqWidgetController(
         val headerRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -115,12 +119,12 @@ class HomeEqWidgetController(
                 baseTint = Color.parseColor("#59182844"),
                 focusTint = Color.parseColor("#99263F66"),
                 normalStroke = Color.parseColor("#4DE8C686"),
-                focusStroke = Color.parseColor("#FFE8C686")
+                focusStroke = Color.parseColor("#90E8C686")
             )
             isFocusable = true
             isClickable = true
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
+                v.animate().scaleX(if (hasFocus) 1.025f else 1f).scaleY(if (hasFocus) 1.025f else 1f).setDuration(90).start()
                 if (!hasFocus && adjustingChannel >= 0) setAdjustingChannel(-1)
             }
             setOnClickListener { onCyclePreset() }
@@ -132,6 +136,8 @@ class HomeEqWidgetController(
         val barsRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 6f
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(108)
@@ -143,6 +149,10 @@ class HomeEqWidgetController(
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
                 setPadding(dp(3), dp(4), dp(3), dp(4))
+                clipToOutline = true
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    defaultFocusHighlightEnabled = false
+                }
                 isFocusable = true
                 isClickable = true
                 background = makeChannelBg(adjusting = false, focused = false)
@@ -150,7 +160,7 @@ class HomeEqWidgetController(
                     if (ch < 5) marginEnd = dp(4)
                 }
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(85).start()
+                    v.animate().scaleX(if (hasFocus) 1.025f else 1f).scaleY(if (hasFocus) 1.025f else 1f).setDuration(85).start()
                     if (!hasFocus && adjustingChannel == ch) {
                         adjustingChannel = -1
                     }
@@ -347,6 +357,9 @@ class HomeEqWidgetController(
         }
     }
 
+    fun hasActiveSpectrumGlow(): Boolean =
+        barViews.any { it.isGlowing() }
+
     private fun setAdjustingChannel(ch: Int) {
         adjustingChannel = ch
         for (i in 0 until channelBoxes.size) {
@@ -414,7 +427,7 @@ class HomeEqWidgetController(
                 }
                 focused -> {
                     setColor(Color.parseColor("#4D182946"))
-                    setStroke(dp(2), Color.parseColor("#FFE8C686"))
+                    setStroke(dp(1), Color.parseColor("#90E8C686"))
                 }
                 else -> {
                     setColor(Color.parseColor("#2E08101E"))
@@ -449,11 +462,14 @@ class HomeEqWidgetController(
 
         fun setSpectrumGlow(e: Float) {
             val next = specEnergy * 0.5f + e.coerceIn(0f, 1f) * 0.5f
-            if (kotlin.math.abs(next - specEnergy) > 0.02f) {
-                specEnergy = next
+            val settled = if (next < 0.008f && e <= 0.001f) 0f else next
+            if (kotlin.math.abs(settled - specEnergy) > 0.02f || (settled == 0f && specEnergy != 0f)) {
+                specEnergy = settled
                 invalidate()
             }
         }
+
+        fun isGlowing(): Boolean = specEnergy > 0.008f
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)

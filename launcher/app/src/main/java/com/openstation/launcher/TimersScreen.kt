@@ -63,7 +63,10 @@ class TimersScreen(
     private val listCol = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
     private var isAlarm = false
+    private var kindInitialized = false
     private val kindBtns = ArrayList<TextView>()
+    private val btnClose: TextView
+    private val btnReset: TextView
     private val left = Picker(0, 99, 10)
     private val right = Picker(0, 59, 0)
     private val tvUnit = makeText("мин", 15f, "#94A3B8")
@@ -90,13 +93,15 @@ class TimersScreen(
             text = txt
             textSize = sizeSp
             setTextColor(Color.parseColor(colorHex))
-            typeface = if (bold) Typeface.create("sans-serif-medium", Typeface.BOLD) else Typeface.DEFAULT
+            typeface = if (bold) YandexFonts.displayBold(context) else YandexFonts.textMedium(context)
         }
 
     init {
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(24), dp(20), dp(24), dp(20))
+            clipChildren = false
+            clipToPadding = false
         }
         LiquidGlassKit.applyGlass(
             root,
@@ -104,28 +109,39 @@ class TimersScreen(
             baseTint = Color.parseColor("#D6080D18"),
             focusTint = Color.parseColor("#E010182C"),
             normalStroke = Color.parseColor("#2AFFFFFF"),
-            focusStroke = Color.parseColor("#AAFFFFFF"),
+            focusStroke = Color.parseColor("#447DD3FC"),
             refractStrength = 1.05f
         )
         addView(root, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // ---- Left column: Active Timers & Alarms ----
-        val leftCol = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        val leftCol = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
         val headRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
         }
         headRow.addView(makeText("Таймеры и будильники", 22f, "#FFFFFF", bold = true).apply {
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         })
-        headRow.addView(makePill("Закрыть", gold = false) { onClose() })
+        btnClose = makePill("Закрыть", gold = false) { onClose() }.apply {
+            id = View.generateViewId()
+        }
+        headRow.addView(btnClose)
         leftCol.addView(headRow)
 
+        listCol.clipChildren = false
+        listCol.clipToPadding = false
         leftCol.addView(ScrollView(context).apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
-            setPadding(dp(2), dp(2), dp(2), dp(2))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             addView(listCol)
         }, LinearLayout.LayoutParams(-1, 0, 1f))
 
@@ -139,6 +155,8 @@ class TimersScreen(
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
+            clipChildren = false
+            clipToPadding = false
         }
         LiquidGlassKit.applyGlass(
             card,
@@ -152,6 +170,8 @@ class TimersScreen(
         val kinds = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(4), dp(4), dp(4), dp(4))
+            clipChildren = false
+            clipToPadding = false
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#66050912"))
                 cornerRadius = dp(16).toFloat()
@@ -163,6 +183,12 @@ class TimersScreen(
                 gravity = Gravity.CENTER
                 isFocusable = true
                 isClickable = true
+                setOnFocusChangeListener { v, hasFocus ->
+                    v.animate().scaleX(if (hasFocus) 1.02f else 1f).scaleY(if (hasFocus) 1.02f else 1f).setDuration(80).start()
+                    if (hasFocus && (i == 1) != isAlarm) {
+                        setKind(i == 1)
+                    }
+                }
                 setOnClickListener { setKind(i == 1) }
             }
             kindBtns.add(b)
@@ -175,6 +201,8 @@ class TimersScreen(
         val pickRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
         }
         pickRow.addView(left.view)
         pickRow.addView(makeText(":", 48f, "#94A3B8"), LinearLayout.LayoutParams(-2, -2).apply {
@@ -185,8 +213,13 @@ class TimersScreen(
         pickRow.addView(tvUnit, LinearLayout.LayoutParams(dp(44), -2).apply { marginStart = dp(10) })
         card.addView(pickRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
 
+        daysRow.apply {
+            clipChildren = false
+            clipToPadding = false
+        }
         dayNames.forEachIndexed { i, d ->
             val b = makeText(d, 13f, "#E2E8F0", bold = true).apply {
+                id = View.generateViewId()
                 gravity = Gravity.CENTER
                 isFocusable = true
                 isClickable = true
@@ -200,6 +233,7 @@ class TimersScreen(
         card.addView(daysRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         soundRow.apply {
+            id = View.generateViewId()
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -211,7 +245,7 @@ class TimersScreen(
                 baseTint = Color.parseColor("#44141E30"),
                 focusTint = Color.parseColor("#881E2E48"),
                 normalStroke = Color.parseColor("#20FFFFFF"),
-                focusStroke = Color.WHITE
+                focusStroke = Color.parseColor("#78BAE6FD")
             )
             setOnClickListener {
                 soundIdx = (soundIdx + 1) % sounds.size
@@ -227,11 +261,17 @@ class TimersScreen(
         val btnRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END
+            clipChildren = false
+            clipToPadding = false
         }
-        btnRow.addView(makePill("Сброс", gold = false) { resetEditor() }.apply {
+        btnReset = makePill("Сброс", gold = false) { resetEditor() }.apply {
+            id = View.generateViewId()
             (layoutParams as? LinearLayout.LayoutParams)?.marginEnd = dp(8)
-        })
-        btnSave = makePill("", gold = true) { save() }
+        }
+        btnRow.addView(btnReset)
+        btnSave = makePill("", gold = true) { save() }.apply {
+            id = View.generateViewId()
+        }
         btnRow.addView(btnSave, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         card.addView(btnRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
 
@@ -254,7 +294,7 @@ class TimersScreen(
     }
 
     fun focusFirst() {
-        left.view.requestFocus()
+        kindBtns.firstOrNull()?.requestFocus() ?: left.btnUp.requestFocus()
     }
 
     fun update(
@@ -299,8 +339,12 @@ class TimersScreen(
             isFocusable = true
             isClickable = true
             setBackgroundResource(if (gold) R.drawable.bg_pill_gold else R.drawable.bg_pill)
+            clipToOutline = true
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                defaultFocusHighlightEnabled = false
+            }
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(90).start()
+                v.animate().scaleX(if (hasFocus) 1.025f else 1f).scaleY(if (hasFocus) 1.025f else 1f).setDuration(90).start()
             }
             setOnClickListener { onClick() }
         }
@@ -351,7 +395,7 @@ class TimersScreen(
                 baseTint = Color.parseColor("#550E2A47"),
                 focusTint = Color.parseColor("#77143A60"),
                 normalStroke = Color.parseColor("#4438BDF8"),
-                focusStroke = Color.WHITE
+                focusStroke = Color.parseColor("#8838BDF8")
             )
             val row = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
             val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
@@ -393,7 +437,7 @@ class TimersScreen(
                     baseTint = Color.parseColor(if (on) "#66121E33" else "#440B101B"),
                     focusTint = Color.parseColor("#881D2F4F"),
                     normalStroke = Color.parseColor(if (on) "#3A38BDF8" else "#18FFFFFF"),
-                    focusStroke = Color.WHITE
+                    focusStroke = Color.parseColor("#887DD3FC")
                 )
                 setOnClickListener { setAlarmEnabled(i, !on) }
                 setOnLongClickListener { confirmDelete(i); true }
@@ -429,7 +473,7 @@ class TimersScreen(
         tick()
 
         val listFocusable = listCol.getFocusables(View.FOCUS_DOWN).isNotEmpty()
-        left.view.nextFocusLeftId = if (listFocusable) View.NO_ID else kindBtns[0].id
+        updateNavigationLinks(listFocusable)
         if (focusedIdx >= 0 && listCol.childCount > 0) {
             val target = listCol.getChildAt(focusedIdx.coerceAtMost(listCol.childCount - 1))
             val focusable = target?.getFocusables(View.FOCUS_DOWN)?.firstOrNull()
@@ -484,22 +528,83 @@ class TimersScreen(
             .show()
     }
 
+    private fun updateNavigationLinks(listFocusable: Boolean = listCol.getFocusables(View.FOCUS_DOWN).isNotEmpty()) {
+        val activeKind = kindBtns[if (isAlarm) 1 else 0]
+        kindBtns[0].nextFocusLeftId = btnClose.id
+        kindBtns[0].nextFocusRightId = kindBtns[1].id
+        kindBtns[0].nextFocusDownId = left.btnUp.id
+        kindBtns[1].nextFocusLeftId = kindBtns[0].id
+        kindBtns[1].nextFocusRightId = kindBtns[1].id
+        kindBtns[1].nextFocusDownId = right.btnUp.id
+
+        btnClose.nextFocusRightId = activeKind.id
+        btnClose.nextFocusDownId = if (listFocusable) View.NO_ID else activeKind.id
+
+        val leftEscapeId = if (listFocusable) View.NO_ID else btnClose.id
+        left.btnUp.nextFocusUpId = activeKind.id
+        left.btnUp.nextFocusDownId = left.btnDown.id
+        left.btnUp.nextFocusLeftId = leftEscapeId
+        left.btnUp.nextFocusRightId = right.btnUp.id
+
+        left.btnDown.nextFocusUpId = left.btnUp.id
+        left.btnDown.nextFocusDownId = if (isAlarm) dayBtns[0].id else btnReset.id
+        left.btnDown.nextFocusLeftId = leftEscapeId
+        left.btnDown.nextFocusRightId = right.btnDown.id
+
+        right.btnUp.nextFocusUpId = activeKind.id
+        right.btnUp.nextFocusDownId = right.btnDown.id
+        right.btnUp.nextFocusLeftId = left.btnUp.id
+        right.btnUp.nextFocusRightId = right.btnUp.id
+
+        right.btnDown.nextFocusUpId = right.btnUp.id
+        right.btnDown.nextFocusDownId = if (isAlarm) dayBtns[3].id else btnSave.id
+        right.btnDown.nextFocusLeftId = left.btnDown.id
+        right.btnDown.nextFocusRightId = right.btnDown.id
+
+        dayBtns.forEachIndexed { idx, db ->
+            db.nextFocusUpId = if (idx < 3) left.btnDown.id else right.btnDown.id
+            db.nextFocusDownId = soundRow.id
+            db.nextFocusLeftId = if (idx == 0) leftEscapeId else dayBtns[idx - 1].id
+            db.nextFocusRightId = if (idx == dayBtns.lastIndex) db.id else dayBtns[idx + 1].id
+        }
+
+        soundRow.nextFocusUpId = dayBtns[0].id
+        soundRow.nextFocusDownId = btnSave.id
+        soundRow.nextFocusLeftId = leftEscapeId
+        soundRow.nextFocusRightId = soundRow.id
+
+        btnReset.nextFocusUpId = if (isAlarm) soundRow.id else left.btnDown.id
+        btnReset.nextFocusLeftId = leftEscapeId
+        btnReset.nextFocusRightId = btnSave.id
+
+        btnSave.nextFocusUpId = if (isAlarm) soundRow.id else right.btnDown.id
+        btnSave.nextFocusLeftId = btnReset.id
+        btnSave.nextFocusRightId = btnSave.id
+    }
+
     private fun setKind(alarm: Boolean) {
+        val changed = !kindInitialized || isAlarm != alarm
+        kindInitialized = true
         isAlarm = alarm
         kindBtns.forEachIndexed { i, b ->
             val sel = (i == 1) == alarm
-            b.background = GradientDrawable().apply {
-                setColor(Color.parseColor(if (sel) "#FFE8C686" else "#00000000"))
-                cornerRadius = dp(12).toFloat()
-            }
+            LiquidGlassKit.applyGlass(
+                b,
+                radiusDp = 12f,
+                baseTint = Color.parseColor(if (sel) "#DDE8C686" else "#26141E30"),
+                focusTint = Color.parseColor(if (sel) "#F2F0D399" else "#7823395B"),
+                normalStroke = Color.parseColor(if (sel) "#88FDE68A" else "#16FFFFFF"),
+                focusStroke = Color.parseColor(if (sel) "#967DD3FC" else "#78BAE6FD")
+            )
             b.setTextColor(Color.parseColor(if (sel) "#0B0F17" else "#E2E8F0"))
         }
-        resetEditor()
+        if (changed) resetEditor()
         daysRow.visibility = if (alarm) View.VISIBLE else View.GONE
         soundRow.visibility = if (alarm) View.VISIBLE else View.GONE
         tvUnit.text = if (alarm) "" else "мин"
         btnSave.text = if (alarm) "Сохранить будильник" else "Запустить таймер"
         renderDays()
+        updateNavigationLinks()
     }
 
     private fun resetEditor() {
@@ -521,7 +626,7 @@ class TimersScreen(
                 baseTint = Color.parseColor(if (active) "#8838BDF8" else "#33141E30"),
                 focusTint = Color.parseColor(if (active) "#BB38BDF8" else "#66243652"),
                 normalStroke = Color.parseColor(if (active) "#997DD3FC" else "#20FFFFFF"),
-                focusStroke = Color.WHITE
+                focusStroke = Color.parseColor("#787DD3FC")
             )
             b.setTextColor(Color.parseColor(if (active) "#FFFFFF" else "#94A3B8"))
         }
@@ -555,33 +660,61 @@ class TimersScreen(
 
     private inner class Picker(private var min: Int, private var max: Int, var value: Int) {
         private val tv = makeText("", 52f, "#FFFFFF").apply { gravity = Gravity.CENTER }
+        val btnUp = makeStepperButton("▲") { step(1) }
+        val btnDown = makeStepperButton("▼") { step(-1) }
         val view = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            isFocusable = true
-            isClickable = true
+            clipChildren = false
+            clipToPadding = false
+            isFocusable = false
+            isClickable = false
             LiquidGlassKit.applyGlass(
                 this,
                 radiusDp = 18f,
                 baseTint = Color.parseColor("#330D1728"),
-                focusTint = Color.parseColor("#881A2C47"),
+                focusTint = Color.parseColor("#55142238"),
                 normalStroke = Color.parseColor("#24FFFFFF"),
-                focusStroke = Color.WHITE
+                focusStroke = Color.parseColor("#447DD3FC")
             )
-            addView(makeText("▲", 14f, "#94A3B8").apply { gravity = Gravity.CENTER })
-            addView(tv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2); bottomMargin = dp(2) })
-            addView(makeText("▼", 14f, "#94A3B8").apply { gravity = Gravity.CENTER })
-            setOnKeyListener { _, keyCode, event ->
-                if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
-                when (keyCode) {
-                    KeyEvent.KEYCODE_DPAD_UP -> { step(1); true }
-                    KeyEvent.KEYCODE_DPAD_DOWN -> { step(-1); true }
-                    else -> false
-                }
-            }
-            setOnClickListener { step(1) }
+            addView(btnUp, LinearLayout.LayoutParams(dp(92), dp(30)))
+            addView(tv, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(4) })
+            addView(btnDown, LinearLayout.LayoutParams(dp(92), dp(30)))
             layoutParams = LinearLayout.LayoutParams(dp(110), -2)
+        }
+
+        private fun makeStepperButton(symbol: String, onStep: () -> Unit): TextView {
+            return makeText(symbol, 15f, "#CBD5E1", bold = true).apply {
+                id = View.generateViewId()
+                gravity = Gravity.CENTER
+                isFocusable = true
+                isClickable = true
+                LiquidGlassKit.applyGlass(
+                    this,
+                    radiusDp = 10f,
+                    baseTint = Color.parseColor("#26142034"),
+                    focusTint = Color.parseColor("#88223C63"),
+                    normalStroke = Color.parseColor("#18FFFFFF"),
+                    focusStroke = Color.parseColor("#78BAE6FD")
+                )
+                setOnFocusChangeListener { v, hasFocus ->
+                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(80).start()
+                    (v as TextView).setTextColor(Color.parseColor(if (hasFocus) "#FFFFFF" else "#94A3B8"))
+                }
+                setOnKeyListener { _, keyCode, event ->
+                    val isSelect = keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                        keyCode == KeyEvent.KEYCODE_ENTER ||
+                        keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                    if (isSelect && event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0 && event.repeatCount % 2 == 0) {
+                        onStep()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                setOnClickListener { onStep() }
+            }
         }
 
         fun set(min: Int, max: Int, value: Int) {

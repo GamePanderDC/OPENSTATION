@@ -14,16 +14,21 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Manages native Yandex Station BLE Remote (HID 0x1812) discovery,
- * automatic bonding, battery query, and physical buzzer ("Find Remote") alerts.
+ * Manages Yandex Station BLE Remote (HID 0x1812) discovery, LE-transport pairing,
+ * honest live connection verification, unpairing, and Immediate Alert (0x1802) buzzer wakeup.
  */
 class BleRemoteManager(private val context: Context) {
 
@@ -32,6 +37,8 @@ class BleRemoteManager(private val context: Context) {
         private const val PREF_NAME = "openstation_remote_prefs"
         private const val KEY_REMOTE_MAC = "yndx_remote_mac"
         private const val KEY_REMOTE_NAME = "yndx_remote_name"
+        private const val PROFILE_HID_HOST = 4
+        private const val TRANSPORT_LE = 2
 
         private val UUID_IMMEDIATE_ALERT = UUID.fromString("00001802-0000-1000-8000-00805f9b34fb")
         private val UUID_ALERT_LEVEL = UUID.fromString("00002a06-0000-1000-8000-00805f9b34fb")
@@ -45,28 +52,63 @@ class BleRemoteManager(private val context: Context) {
         val connected: Boolean,
         val name: String,
         val address: String,
-        val batteryPct: Int = -1
+        val batteryPct: Int = -1,
+        val scanState: String = "idle",
+        val scanDetail: String = ""
     )
+
+    data class DiscoveredRemote(
+        val name: String,
+        val address: String,
+        val rssi: Int,
+        val yandex: Boolean,
+        val bonded: Boolean
+    )
+
+    var onStateChanged: ((JSONObject) -> Unit)? = null
+    var onActionResult: ((kind: String, ok: Boolean, message: String, reqId: String) -> Unit)? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val scanning = AtomicBoolean(false)
     private var activeScanCallback: ScanCallback? = null
     private var scanTimeoutRunnable: Runnable? = null
+    private var genericPickRunnable: Runnable? = null
     private var bondReceiver: BroadcastReceiver? = null
+    private var discoveryReceiver: BroadcastReceiver? = null
     private var reconnectActive = false
+
+    @Volatile private var hidHostProxy: BluetoothProfile? = null
     @Volatile private var hidConnectedAddress: String? = null
+    @Volatile private var lastBatteryPct: Int = -1
+    @Volatile private var currentScanState: String = "idle"
+    @Volatile private var currentScanDetail: String = ""
+    @Volatile private var lastInputScanMs: Long = 0L
+    @Volatile private var cachedInputLines: String = ""
+
+    private val candidatesLock = Any()
+    private val discoveredMap = LinkedHashMap<String, DiscoveredRemote>()
+
     private var hidReceiverRegistered = false
     private val hidReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 "android.bluetooth.input.profile.action.CONNECTION_STATE_CHANGED" -> {
                     val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-                    val saved = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
-                    if (!isYandexRemoteName(device.name) && (saved.isEmpty() || device.address != saved)) return
+                    if (!isTargetOrSaved(device)) return
                     when (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)) {
-                        BluetoothProfile.STATE_CONNECTED -> hidConnectedAddress = device.address
+                        BluetoothProfile.STATE_CONNECTED -> {
+                            hidConnectedAddress = device.address
+                            lastInputScanMs = 0L
+                            setScanProgress("connected", "Пульт ${safeName(device)} подключён")
+                        }
                         BluetoothProfile.STATE_DISCONNECTED -> {
                             if (hidConnectedAddress == device.address) hidConnectedAddress = null
+                            lastInputScanMs = 0L
+                            if (currentScanState == "connected") {
+                                setScanProgress("idle", "Пульт отключён")
+                            } else {
+                                notifyStateChanged()
+                            }
                             scheduleReconnect(5000L)
                         }
                     }
@@ -74,17 +116,20 @@ class BleRemoteManager(private val context: Context) {
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
                     if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) != BluetoothAdapter.STATE_ON) {
                         hidConnectedAddress = null
+                        lastInputScanMs = 0L
+                        notifyStateChanged()
                     }
                 }
             }
         }
     }
+
     private var reconnectDelay = 5000L
     private val hidConnecting = AtomicBoolean(false)
     private val reconnectTask = object : Runnable {
         override fun run() {
             if (!reconnectActive) return
-            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            val adapter = getBtAdapter()
             if (adapter == null || !adapter.isEnabled) {
                 scheduleReconnect(30000L)
                 return
@@ -95,15 +140,14 @@ class BleRemoteManager(private val context: Context) {
             }
             val device = try { findTargetDevice() } catch (_: Throwable) { null }
             if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
-                // While no remote is paired, listen for a remote entering pairing mode.
-                // Do not turn Bluetooth back on if the user switched it off.
-                startLeScanInternal(adapter, 60000L, { state, _ ->
-                    when (state) {
-                        "connected" -> scheduleReconnect(30000L)
-                        "not_found" -> scheduleReconnect(5000L)
-                        "error" -> scheduleReconnect(30000L)
-                    }
-                }, ScanSettings.SCAN_MODE_LOW_POWER)
+                // Do not run periodic background LE scans when no remote is bonded; explicit
+                // user/WebUI pairing starts scanning on demand. Re-check bonded state gently.
+                scheduleReconnect(60000L)
+                return
+            }
+            if (hasLiveHidConnection(device)) {
+                hidConnectedAddress = device.address
+                notifyStateChanged()
                 scheduleReconnect(30000L)
                 return
             }
@@ -114,20 +158,121 @@ class BleRemoteManager(private val context: Context) {
             }
         }
     }
-    @Volatile
-    private var lastBatteryPct: Int = -1
+
+    private val hidProxyListener = object : BluetoothProfile.ServiceListener {
+        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+            if (profile == PROFILE_HID_HOST) {
+                hidHostProxy = proxy
+                val target = findTargetDevice()
+                if (target != null && proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
+                    hidConnectedAddress = target.address
+                } else {
+                    hidConnectedAddress = null
+                }
+                notifyStateChanged()
+            }
+        }
+
+        override fun onServiceDisconnected(profile: Int) {
+            if (profile == PROFILE_HID_HOST) {
+                hidHostProxy = null
+            }
+        }
+    }
 
     private val prefs by lazy {
         context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     }
 
-    fun isYandexRemoteName(name: String?): Boolean {
-        return RemoteIdentity.isYandexRemoteName(name)
+    private fun getBtAdapter(): BluetoothAdapter? {
+        val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        return bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+    }
+
+    private fun safeName(device: BluetoothDevice?): String {
+        if (device == null) return "Yandex Remote"
+        return try {
+            device.name?.takeIf { it.isNotBlank() } ?: prefs.getString(KEY_REMOTE_NAME, "Yandex Remote") ?: "Yandex Remote"
+        } catch (_: SecurityException) {
+            prefs.getString(KEY_REMOTE_NAME, "Yandex Remote") ?: "Yandex Remote"
+        }
+    }
+
+    private fun isTargetOrSaved(device: BluetoothDevice): Boolean {
+        val saved = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
+        if (saved.isNotEmpty() && device.address.equals(saved, ignoreCase = true)) return true
+        val n = try { device.name } catch (_: SecurityException) { null }
+        return isYandexRemoteName(n)
+    }
+
+    fun isYandexRemoteName(name: String?): Boolean = RemoteIdentity.isYandexRemoteName(name)
+
+    private fun isLocationEnabledForBle(): Boolean {
+        return try {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+            lm?.isLocationEnabled == true
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
+    private fun ensureHidProxyBound() {
+        if (hidHostProxy != null) return
+        try {
+            getBtAdapter()?.getProfileProxy(context, hidProxyListener, PROFILE_HID_HOST)
+        } catch (_: Throwable) {}
+    }
+
+    private fun readInputDevicesText(): String {
+        val now = SystemClock.elapsedRealtime()
+        if ((now - lastInputScanMs) < 450L && cachedInputLines.isNotEmpty()) {
+            return cachedInputLines
+        }
+        val txt = try {
+            File("/proc/bus/input/devices").takeIf { it.canRead() }?.readText() ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+        cachedInputLines = txt
+        lastInputScanMs = now
+        return txt
+    }
+
+    private fun hasLiveHidConnection(device: BluetoothDevice): Boolean {
+        ensureHidProxyBound()
+        val proxy = hidHostProxy
+        if (proxy != null) {
+            val stateConnected = try {
+                proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED
+            } catch (_: Throwable) {
+                false
+            }
+            if (!stateConnected) {
+                if (hidConnectedAddress == device.address) hidConnectedAddress = null
+                return false
+            }
+            hidConnectedAddress = device.address
+            return true
+        }
+        // Fallback before HidHost proxy binds: require active kernel input device OR explicit broadcast + input entry
+        val inputs = readInputDevicesText()
+        if (inputs.isNotEmpty()) {
+            val macLower = device.address.lowercase()
+            val dName = try { device.name ?: "" } catch (_: SecurityException) { "" }
+            val hasInput = inputs.contains(macLower, ignoreCase = true) ||
+                (dName.isNotBlank() && inputs.contains(dName, ignoreCase = true))
+            if (hasInput) {
+                hidConnectedAddress = device.address
+                return true
+            }
+        }
+        return false
     }
 
     fun startReconnect() {
         handler.post {
             reconnectActive = true
+            ensureHidProxyBound()
             if (!hidReceiverRegistered) {
                 try {
                     val filter = IntentFilter().apply {
@@ -142,6 +287,7 @@ class BleRemoteManager(private val context: Context) {
             }
             reconnectDelay = 5000L
             scheduleReconnect(5000L)
+            notifyStateChanged()
         }
     }
 
@@ -151,10 +297,15 @@ class BleRemoteManager(private val context: Context) {
             handler.removeCallbacks(reconnectTask)
             stopScan()
             unregisterBondReceiver()
+            unregisterDiscoveryReceiver()
             if (hidReceiverRegistered) {
                 try { context.unregisterReceiver(hidReceiver) } catch (_: Throwable) {}
                 hidReceiverRegistered = false
             }
+            hidHostProxy?.let {
+                try { getBtAdapter()?.closeProfileProxy(PROFILE_HID_HOST, it) } catch (_: Throwable) {}
+            }
+            hidHostProxy = null
             hidConnectedAddress = null
         }
     }
@@ -169,20 +320,74 @@ class BleRemoteManager(private val context: Context) {
         return try {
             val device = findTargetDevice()
             if (device == null || device.bondState != BluetoothDevice.BOND_BONDED) {
-                RemoteStatus(false, false, "", "", -1)
+                RemoteStatus(
+                    bonded = false,
+                    connected = false,
+                    name = "",
+                    address = "",
+                    batteryPct = -1,
+                    scanState = currentScanState,
+                    scanDetail = currentScanDetail
+                )
             } else {
+                val isLive = hasLiveHidConnection(device)
                 RemoteStatus(
                     bonded = true,
-                    connected = hidConnectedAddress == device.address,
-                    name = device.name ?: prefs.getString(KEY_REMOTE_NAME, "Yandex Remote") ?: "Yandex Remote",
+                    connected = isLive,
+                    name = safeName(device),
                     address = device.address,
-                    batteryPct = lastBatteryPct
+                    batteryPct = if (isLive) lastBatteryPct else -1,
+                    scanState = currentScanState,
+                    scanDetail = currentScanDetail
                 )
             }
         } catch (t: Throwable) {
             Log.w(TAG, "getRemoteStatus failed: ${t.message}")
-            RemoteStatus(false, false, "", "", -1)
+            RemoteStatus(false, false, "", "", -1, currentScanState, currentScanDetail)
         }
+    }
+
+    fun getDiscoveredCandidates(): List<DiscoveredRemote> {
+        synchronized(candidatesLock) {
+            return discoveredMap.values.sortedByDescending { (if (it.yandex) 200 else 0) + it.rssi }
+        }
+    }
+
+    fun toJsonObject(): JSONObject {
+        val st = getRemoteStatus()
+        val obj = JSONObject()
+        obj.put("bonded", st.bonded)
+        obj.put("connected", st.connected)
+        obj.put("name", st.name)
+        obj.put("address", st.address)
+        obj.put("batteryPct", st.batteryPct)
+        obj.put("scanState", st.scanState)
+        obj.put("scanDetail", st.scanDetail)
+        obj.put("scanning", scanning.get())
+        val arr = JSONArray()
+        for (c in getDiscoveredCandidates()) {
+            val item = JSONObject()
+            item.put("name", c.name)
+            item.put("address", c.address)
+            item.put("rssi", c.rssi)
+            item.put("yandex", c.yandex)
+            item.put("bonded", c.bonded)
+            arr.put(item)
+        }
+        obj.put("candidates", arr)
+        return obj
+    }
+
+    private fun setScanProgress(state: String, detail: String) {
+        currentScanState = state
+        currentScanDetail = detail
+        notifyStateChanged()
+    }
+
+    private fun notifyStateChanged() {
+        try {
+            onStateChanged?.invoke(toJsonObject())
+        } catch (_: Throwable) {}
     }
 
     private fun findTargetDevice(): BluetoothDevice? {
@@ -190,7 +395,6 @@ class BleRemoteManager(private val context: Context) {
         val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter() ?: return null
         val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
 
-        // The remembered remote takes precedence over other Yandex remotes nearby.
         if (savedMac.isNotEmpty()) {
             try {
                 adapter.getRemoteDevice(savedMac).takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
@@ -200,63 +404,95 @@ class BleRemoteManager(private val context: Context) {
         try {
             adapter.bondedDevices?.firstOrNull { isYandexRemoteName(it.name) }?.let { return it }
         } catch (_: Throwable) {}
-        try {
-            val connected = bm?.getConnectedDevices(BluetoothProfile.GATT) ?: emptyList()
-            connected.firstOrNull { it.bondState == BluetoothDevice.BOND_BONDED && isYandexRemoteName(it.name) }
-                ?.let { return it }
-        } catch (_: Throwable) {}
         return null
     }
 
     fun startAutoScanAndPair(
         durationMs: Long = 60000L,
+        forceRescan: Boolean = false,
+        targetAddress: String? = null,
+        reqId: String = "",
         onStatus: (state: String, detail: String) -> Unit
     ) {
-        startAutoScanAndPairInternal(durationMs, onStatus, 0)
+        startAutoScanAndPairInternal(durationMs, forceRescan, targetAddress, reqId, onStatus, 0)
     }
 
     private fun startAutoScanAndPairInternal(
         durationMs: Long,
+        forceRescan: Boolean,
+        targetAddress: String?,
+        reqId: String,
         onStatus: (state: String, detail: String) -> Unit,
         enableAttempts: Int
     ) {
         handler.post {
+            fun report(st: String, det: String) {
+                setScanProgress(st, det)
+                onStatus(st, det)
+                if (st == "connected" || st == "error" || st == "not_found") {
+                    onActionResult?.invoke("pair_remote", st == "connected", det, reqId)
+                }
+            }
+
             try {
-                val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-                val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+                val adapter = getBtAdapter()
                 if (adapter == null) {
-                    onStatus("error", "Bluetooth-адаптер недоступен")
+                    report("error", "Bluetooth-адаптер недоступен")
                     return@post
                 }
                 if (!adapter.isEnabled) {
                     if (enableAttempts >= 10) {
-                        onStatus("error", "Bluetooth не включился. Проверьте настройки и повторите поиск.")
+                        report("error", "Bluetooth не включился. Проверьте настройки и повторите поиск.")
                         return@post
                     }
                     if (enableAttempts == 0 && adapter.state != BluetoothAdapter.STATE_TURNING_ON && !adapter.enable()) {
-                        onStatus("error", "Не удалось включить Bluetooth для поиска пульта.")
+                        report("error", "Не удалось включить Bluetooth для поиска пульта.")
                         return@post
                     }
-                    onStatus("searching", "Включаю Bluetooth для поиска пульта...")
+                    report("searching", "Включаю Bluetooth для поиска пульта...")
                     handler.postDelayed({
-                        startAutoScanAndPairInternal(durationMs, onStatus, enableAttempts + 1)
+                        startAutoScanAndPairInternal(durationMs, forceRescan, targetAddress, reqId, onStatus, enableAttempts + 1)
                     }, 1200L)
                     return@post
                 }
 
-                // If already bonded, trigger immediate GATT connect wakeup
-                findTargetDevice()?.let { dev ->
-                    if (dev.bondState == BluetoothDevice.BOND_BONDED) {
-                        onStatus("pairing", "Подключаю сопряжённый пульт ${dev.name ?: "Yandex"}...")
-                        connectHid(adapter, dev, onStatus)
+                // Explicit target chosen by user from TV/Web UI candidate list
+                if (!targetAddress.isNullOrBlank()) {
+                    val dev = try { adapter.getRemoteDevice(targetAddress.trim().uppercase()) } catch (_: Throwable) { null }
+                    if (dev == null) {
+                        report("error", "Некорректный MAC-адрес пульта: $targetAddress")
                         return@post
+                    }
+                    stopScan()
+                    val label = safeName(dev)
+                    bondAndConnect(dev, label, forceRebond = forceRescan, onStatus = ::report)
+                    return@post
+                }
+
+                // Only short-circuit when NOT forcing rescan AND the bonded remote is genuinely live-connected right now
+                val existing = findTargetDevice()
+                if (!forceRescan && existing != null && existing.bondState == BluetoothDevice.BOND_BONDED && hasLiveHidConnection(existing)) {
+                    report("connected", "Пульт ${safeName(existing)} уже подключён.")
+                    connectAndProbeGatt(existing, buzz = false) { _, _ -> notifyStateChanged() }
+                    return@post
+                }
+
+                // If an old bonded remote exists but is disconnected, try waking HID in background
+                // while STILL starting active LE scan so a newly reset/replacement remote is never skipped!
+                if (!forceRescan && existing != null && existing.bondState == BluetoothDevice.BOND_BONDED) {
+                    Log.i(TAG, "Bonded remote ${existing.address} is currently offline; probing HID while scanning LE...")
+                    connectHid(adapter, existing) { st, det ->
+                        if (st == "connected") {
+                            stopScan()
+                            report("connected", det)
+                        }
                     }
                 }
 
-                startLeScanInternal(adapter, durationMs, onStatus)
+                startLeScanInternal(adapter, durationMs, ::report, ScanSettings.SCAN_MODE_LOW_LATENCY, background = false)
             } catch (t: Throwable) {
                 Log.w(TAG, "startAutoScanAndPair error", t)
-                onStatus("error", "Ошибка поиска BLE-пульта: ${t.message}")
+                report("error", "Ошибка поиска BLE-пульта: ${t.message}")
             }
         }
     }
@@ -265,37 +501,93 @@ class BleRemoteManager(private val context: Context) {
         adapter: BluetoothAdapter,
         durationMs: Long,
         onStatus: (state: String, detail: String) -> Unit,
-        scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY
+        scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY,
+        background: Boolean = false
     ) {
-        stopScan()
+        stopScan(resetSearchingState = false)
+        synchronized(candidatesLock) {
+            if (!background) discoveredMap.clear()
+        }
+
         val scanner = adapter.bluetoothLeScanner
         if (scanner == null) {
-            onStatus("error", "BLE-сканер не готов")
+            if (!background) {
+                startClassicDiscoveryFallback(adapter, durationMs, onStatus)
+            } else {
+                onStatus("error", "BLE-сканер не готов")
+            }
             return
         }
 
         scanning.set(true)
-        onStatus("searching", "Ищу пульт. Удерживайте «Домой» и «−» до включения подсветки.")
+        if (!background) {
+            onStatus("searching", "Ищу пульт по Bluetooth LE. Удерживайте «Домой» и «−» на пульте ~5 сек.")
+        }
 
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult?) {
                 val dev = result?.device ?: return
-                val name = dev.name ?: result.scanRecord?.deviceName ?: ""
+                val rawName = try { dev.name } catch (_: SecurityException) { null }
+                    ?: result.scanRecord?.deviceName
+                    ?: ""
+                val svcUuids = result.scanRecord?.serviceUuids?.mapNotNull { it?.uuid } ?: emptyList()
                 val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
-                if (!isYandexRemoteName(name) && (savedMac.isEmpty() || dev.address != savedMac)) return
+                val matchesSaved = savedMac.isNotEmpty() && dev.address.equals(savedMac, ignoreCase = true)
+                if (!RemoteIdentity.isBleRemoteCandidate(rawName, svcUuids) && !matchesSaved) return
 
-                if (!scanning.compareAndSet(true, false)) return
-                stopScan()
-                val label = name.ifBlank { "Yandex Remote" }
-                Log.i(TAG, "Discovered BLE remote: $label [${dev.address}]")
-                onStatus("found", "Найден пульт $label (${dev.address}), подключаю...")
-                bondAndConnect(dev, label, onStatus)
+                val isYandex = isYandexRemoteName(rawName) || svcUuids.contains(RemoteIdentity.UUID_OMNI_VOICE_SERVICE)
+                val label = rawName.ifBlank { if (isYandex) "Yandex Remote" else "BLE HID Remote" }
+                val bonded = try { dev.bondState == BluetoothDevice.BOND_BONDED } catch (_: Throwable) { false }
+
+                val isNew = synchronized(candidatesLock) {
+                    val prev = discoveredMap[dev.address]
+                    discoveredMap[dev.address] = DiscoveredRemote(
+                        name = label,
+                        address = dev.address,
+                        rssi = result.rssi,
+                        yandex = isYandex,
+                        bonded = bonded
+                    )
+                    prev == null
+                }
+                if (isNew) {
+                    Log.i(TAG, "Discovered BLE remote candidate: $label [${dev.address}] rssi=${result.rssi} yandex=$isYandex uuids=$svcUuids")
+                    notifyStateChanged()
+                }
+
+                // Prefer immediate auto-pair for genuine Yandex remote (or remembered MAC).
+                // For generic BLE HID 0x1812 remotes, wait briefly (2.5s) in case Yandex appears, then connect.
+                if (isYandex || matchesSaved) {
+                    if (!scanning.compareAndSet(true, false)) return
+                    stopScan()
+                    onStatus("found", "Найден пульт $label (${dev.address}), подключаю...")
+                    // Since the remote is actively advertising in pairing mode, remove any stale bond first
+                    bondAndConnect(dev, label, forceRebond = true, onStatus = onStatus)
+                } else if (!background && genericPickRunnable == null) {
+                    val pick = Runnable {
+                        genericPickRunnable = null
+                        if (!scanning.get()) return@Runnable
+                        val best = getDiscoveredCandidates().firstOrNull() ?: return@Runnable
+                        val targetDev = try { adapter.getRemoteDevice(best.address) } catch (_: Throwable) { null } ?: return@Runnable
+                        if (!scanning.compareAndSet(true, false)) return@Runnable
+                        stopScan()
+                        onStatus("found", "Найден BLE HID пульт ${best.name} (${best.address}), подключаю...")
+                        bondAndConnect(targetDev, best.name, forceRebond = true, onStatus = onStatus)
+                    }
+                    genericPickRunnable = pick
+                    handler.postDelayed(pick, 2500L)
+                }
             }
 
             override fun onScanFailed(errorCode: Int) {
                 if (scanning.compareAndSet(true, false)) {
                     stopScan()
-                    onStatus("error", "Ошибка BLE-сканера (код $errorCode)")
+                    if (!background) {
+                        Log.w(TAG, "LE scan failed ($errorCode), trying classic/dual discovery fallback...")
+                        startClassicDiscoveryFallback(adapter, durationMs, onStatus)
+                    } else {
+                        onStatus("error", "Ошибка BLE-сканера (код $errorCode)")
+                    }
                 }
             }
         }
@@ -313,155 +605,331 @@ class BleRemoteManager(private val context: Context) {
             return
         }
 
+        // Also mirror Android TV discovery on active scans if location might suppress LE results
+        if (!background && !isLocationEnabledForBle()) {
+            Log.w(TAG, "Location mode is disabled; starting discovery fallback alongside LE scan")
+            startClassicDiscoveryFallback(adapter, durationMs, onStatus, keepLeScan = true)
+        }
+
         val timeout = Runnable {
             if (scanning.compareAndSet(true, false)) {
                 stopScan()
-                onStatus("not_found", "Пульт не найден. Удерживайте «Домой» и «−» до включения подсветки и повторите поиск.")
+                val candidates = getDiscoveredCandidates()
+                if (candidates.isNotEmpty() && !background) {
+                    onStatus("not_found", "Найдены HID-устройства (${candidates.size}) — выберите нужное в списке или повторите поиск.")
+                } else {
+                    onStatus("not_found", "Пульт не найден. Удерживайте «Домой» и «−» на пульте ~5 сек и повторите поиск.")
+                }
             }
         }
         scanTimeoutRunnable = timeout
         handler.postDelayed(timeout, durationMs.coerceIn(5000L, 60000L))
     }
 
+    private fun startClassicDiscoveryFallback(
+        adapter: BluetoothAdapter,
+        durationMs: Long,
+        onStatus: (String, String) -> Unit,
+        keepLeScan: Boolean = false
+    ) {
+        unregisterDiscoveryReceiver()
+        val br = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action != BluetoothDevice.ACTION_FOUND) return
+                val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                val name = try { dev.name } catch (_: SecurityException) { null } ?: ""
+                val isYandex = isYandexRemoteName(name)
+                if (!isYandex && dev.type != BluetoothDevice.DEVICE_TYPE_LE && dev.type != BluetoothDevice.DEVICE_TYPE_DUAL) return
+                val label = name.ifBlank { dev.address }
+                synchronized(candidatesLock) {
+                    discoveredMap[dev.address] = DiscoveredRemote(
+                        name = label,
+                        address = dev.address,
+                        rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, (-70).toShort()).toInt(),
+                        yandex = isYandex,
+                        bonded = dev.bondState == BluetoothDevice.BOND_BONDED
+                    )
+                }
+                notifyStateChanged()
+                if (isYandex) {
+                    unregisterDiscoveryReceiver()
+                    try { adapter.cancelDiscovery() } catch (_: Throwable) {}
+                    if (keepLeScan) stopScan()
+                    onStatus("found", "Найден пульт $label (${dev.address}), подключаю...")
+                    bondAndConnect(dev, label, forceRebond = true, onStatus = onStatus)
+                }
+            }
+        }
+        discoveryReceiver = br
+        try {
+            context.registerReceiver(br, IntentFilter(BluetoothDevice.ACTION_FOUND))
+            adapter.startDiscovery()
+            if (!keepLeScan) {
+                handler.postDelayed({
+                    unregisterDiscoveryReceiver()
+                    try { adapter.cancelDiscovery() } catch (_: Throwable) {}
+                }, durationMs.coerceIn(5000L, 20000L))
+            }
+        } catch (_: Throwable) {
+            unregisterDiscoveryReceiver()
+        }
+    }
+
+    private fun invokeCreateBondLe(device: BluetoothDevice): Boolean {
+        return try {
+            val m = BluetoothDevice::class.java.getMethod("createBond", Int::class.javaPrimitiveType)
+            (m.invoke(device, TRANSPORT_LE) as? Boolean) ?: false
+        } catch (_: Throwable) {
+            try {
+                device.createBond()
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
+    private fun invokeRemoveBond(device: BluetoothDevice): Boolean {
+        return try {
+            val m = BluetoothDevice::class.java.getMethod("removeBond")
+            (m.invoke(device) as? Boolean) ?: false
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun bondAndConnect(
+        device: BluetoothDevice,
+        label: String,
+        forceRebond: Boolean = false,
+        onStatus: (state: String, detail: String) -> Unit
+    ) {
+        val adapter = getBtAdapter()
+        if (device.bondState == BluetoothDevice.BOND_BONDED) {
+            if (!forceRebond || hasLiveHidConnection(device)) {
+                if (adapter == null) onStatus("error", "Bluetooth-адаптер недоступен")
+                else connectHid(adapter, device, onStatus)
+                return
+            }
+            // Remote re-advertised in pairing mode while station kept stale keys -> wipe stale bond first
+            onStatus("pairing", "Сбрасываю старую привязку $label для повторного сопряжения...")
+            invokeRemoveBond(device)
+            handler.postDelayed({
+                bondFreshDevice(device, label, onStatus)
+            }, 600L)
+            return
+        }
+        bondFreshDevice(device, label, onStatus)
+    }
+
+    private fun bondFreshDevice(
         device: BluetoothDevice,
         label: String,
         onStatus: (state: String, detail: String) -> Unit
     ) {
         if (device.bondState == BluetoothDevice.BOND_BONDED) {
-            val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-                ?: BluetoothAdapter.getDefaultAdapter()
+            val adapter = getBtAdapter()
             if (adapter == null) onStatus("error", "Bluetooth-адаптер недоступен")
             else connectHid(adapter, device, onStatus)
             return
         }
 
         unregisterBondReceiver()
+        val guard = Runnable {
+            unregisterBondReceiver()
+            onStatus("error", "Таймаут сопряжения с $label. Убедитесь, что пульт мигает, и повторите.")
+        }
         val br = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
                 val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
                 if (dev.address != device.address) return
-                val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
-                when (state) {
+                when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
                     BluetoothDevice.BOND_BONDED -> {
+                        handler.removeCallbacks(guard)
                         unregisterBondReceiver()
                         prefs.edit().putString(KEY_REMOTE_MAC, dev.address).putString(KEY_REMOTE_NAME, label).apply()
-                        onStatus("pairing", "Пульт сопряжён, подключаю кнопки...")
-                        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-                            ?: BluetoothAdapter.getDefaultAdapter()
+                        onStatus("pairing", "Пульт $label сопряжён, подключаю кнопки...")
+                        val adapter = getBtAdapter()
                         if (adapter == null) onStatus("error", "Bluetooth-адаптер недоступен")
-                        else connectHid(adapter, dev, onStatus)
+                        else {
+                            // Short settle delay helps Fluoride finish GATT HID service discovery after SMP
+                            handler.postDelayed({ connectHid(adapter, dev, onStatus) }, 350L)
+                        }
                     }
                     BluetoothDevice.BOND_NONE -> {
+                        handler.removeCallbacks(guard)
                         unregisterBondReceiver()
-                        onStatus("error", "Не удалось завершить сопряжение с $label")
+                        onStatus("error", "Не удалось завершить сопряжение с $label (ключ отклонен)")
                     }
                 }
             }
         }
         bondReceiver = br
         context.registerReceiver(br, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+        handler.postDelayed(guard, 22000L)
 
         try {
-            onStatus("pairing", "Сопрягаю пульт $label...")
-            if (!device.createBond()) {
+            onStatus("pairing", "Сопрягаю BLE-пульт $label...")
+            if (!invokeCreateBondLe(device)) {
+                handler.removeCallbacks(guard)
                 unregisterBondReceiver()
-                onStatus("error", "Не удалось начать сопряжение с $label")
+                onStatus("error", "Не удалось начать LE-сопряжение с $label")
             }
         } catch (t: Throwable) {
+            handler.removeCallbacks(guard)
             unregisterBondReceiver()
             onStatus("error", "Ошибка createBond: ${t.message}")
         }
     }
 
-    // Android 9 exposes HID host as profile 4, but its connect method is
-    // hidden from the public SDK. A bonded GATT connection alone is not HID.
-    private fun connectHid(adapter: BluetoothAdapter, device: BluetoothDevice,
-                           onStatus: (String, String) -> Unit) {
+    private fun connectHid(
+        adapter: BluetoothAdapter,
+        device: BluetoothDevice,
+        onStatus: (String, String) -> Unit
+    ) {
         if (!hidConnecting.compareAndSet(false, true)) {
             onStatus("pairing", "Подключение пульта уже выполняется.")
             return
         }
-        val profileId = 4
         val finished = AtomicBoolean(false)
-        var profile: BluetoothProfile? = null
+        var openedLocalProxy: BluetoothProfile? = null
         fun finish(state: String, detail: String) {
             if (!finished.compareAndSet(false, true)) return
             hidConnecting.set(false)
             if (state == "connected") {
                 hidConnectedAddress = device.address
                 prefs.edit().putString(KEY_REMOTE_MAC, device.address)
-                    .putString(KEY_REMOTE_NAME, try { device.name ?: "Yandex Remote" } catch (_: SecurityException) { "Yandex Remote" }).apply()
-            } else if (hidConnectedAddress == device.address) hidConnectedAddress = null
-            profile?.let { try { adapter.closeProfileProxy(profileId, it) } catch (_: Throwable) {} }
+                    .putString(KEY_REMOTE_NAME, safeName(device)).apply()
+            } else if (hidConnectedAddress == device.address) {
+                hidConnectedAddress = null
+            }
+            openedLocalProxy?.let {
+                if (it !== hidHostProxy) {
+                    try { adapter.closeProfileProxy(PROFILE_HID_HOST, it) } catch (_: Throwable) {}
+                }
+            }
             onStatus(state, detail)
         }
-        val timeout = Runnable { finish("error", "Пульт сопряжён, но подключение кнопок не подтвердилось. Нажмите кнопку пульта и повторите.") }
+
+        val timeout = Runnable {
+            finish("error", "Пульт сопряжён, но не отвечает по HID. Нажмите любую кнопку на пульте.")
+        }
+
+        fun runWithProxy(proxy: BluetoothProfile) {
+            try {
+                if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
+                    handler.removeCallbacks(timeout)
+                    finish("connected", "Пульт ${safeName(device)} подключён. Кнопки активны.")
+                    return
+                }
+                val connectMethod = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
+                val initiated = (connectMethod.invoke(proxy, device) as? Boolean) ?: false
+                if (!initiated) {
+                    handler.removeCallbacks(timeout)
+                    finish("error", "Android не смог инициировать HID-соединение с пультом.")
+                    return
+                }
+                val poll = object : Runnable {
+                    override fun run() {
+                        if (finished.get()) return
+                        try {
+                            if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
+                                handler.removeCallbacks(timeout)
+                                finish("connected", "Пульт ${safeName(device)} подключён. Кнопки активны.")
+                            } else {
+                                handler.postDelayed(this, 450L)
+                            }
+                        } catch (t: Throwable) {
+                            handler.removeCallbacks(timeout)
+                            finish("error", "Не удалось проверить состояние пульта: ${t.message}")
+                        }
+                    }
+                }
+                handler.post(poll)
+            } catch (t: Throwable) {
+                handler.removeCallbacks(timeout)
+                finish("error", "Не удалось подключить HID-профиль: ${t.message}")
+            }
+        }
+
+        handler.postDelayed(timeout, 12000L)
+        val cached = hidHostProxy
+        if (cached != null) {
+            runWithProxy(cached)
+            return
+        }
+
         val listener = object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(p: Int, proxy: BluetoothProfile) {
                 if (finished.get()) {
-                    try { adapter.closeProfileProxy(profileId, proxy) } catch (_: Throwable) {}
+                    try { adapter.closeProfileProxy(PROFILE_HID_HOST, proxy) } catch (_: Throwable) {}
                     return
                 }
-                profile = proxy
-                try {
-                    if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
-                        handler.removeCallbacks(timeout)
-                        finish("connected", "Пульт подключён. Проверьте кнопки.")
-                        return
-                    }
-                    val connect = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java)
-                    if (connect.invoke(proxy, device) != true) {
-                        handler.removeCallbacks(timeout)
-                        finish("error", "Android не смог начать подключение пульта.")
-                        return
-                    }
-                    val poll = object : Runnable {
-                        override fun run() {
-                            if (finished.get()) return
-                            try {
-                                if (proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED) {
-                                    handler.removeCallbacks(timeout)
-                                    finish("connected", "Пульт подключён. Проверьте кнопки.")
-                                } else handler.postDelayed(this, 500L)
-                            } catch (t: Throwable) {
-                                handler.removeCallbacks(timeout)
-                                finish("error", "Не удалось проверить состояние пульта: ${t.message}")
-                            }
-                        }
-                    }
-                    handler.post(poll)
-                } catch (t: Throwable) {
-                    handler.removeCallbacks(timeout)
-                    finish("error", "Не удалось подключить профиль пульта: ${t.message}")
-                }
+                openedLocalProxy = proxy
+                hidHostProxy = proxy
+                runWithProxy(proxy)
             }
+
             override fun onServiceDisconnected(p: Int) {
                 handler.removeCallbacks(timeout)
-                finish("error", "Служба пульта отключилась.")
+                finish("error", "Служба HID отключилась.")
             }
         }
-        handler.postDelayed(timeout, 15000L)
         try {
-            if (!adapter.getProfileProxy(context, listener, profileId)) {
+            if (!adapter.getProfileProxy(context, listener, PROFILE_HID_HOST)) {
                 handler.removeCallbacks(timeout)
-                finish("error", "Служба подключения пульта недоступна.")
+                finish("error", "Служба HID-профиля недоступна.")
             }
         } catch (t: Throwable) {
             handler.removeCallbacks(timeout)
-            finish("error", "Не удалось открыть службу пульта: ${t.message}")
+            finish("error", "Ошибка открытия HID-профиля: ${t.message}")
         }
     }
 
-    fun triggerBuzzer(onResult: (ok: Boolean, message: String) -> Unit) {
+    fun forgetBondedRemote(reqId: String = "", onDone: ((Boolean, String) -> Unit)? = null) {
+        handler.post {
+            stopScan()
+            unregisterBondReceiver()
+            val adapter = getBtAdapter()
+            var removedCount = 0
+            val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""
+            try {
+                adapter?.bondedDevices?.forEach { dev ->
+                    val name = try { dev.name } catch (_: SecurityException) { null }
+                    if (isYandexRemoteName(name) || (savedMac.isNotEmpty() && dev.address.equals(savedMac, ignoreCase = true))) {
+                        if (invokeRemoveBond(dev)) removedCount++
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "forgetBondedRemote error: ${t.message}")
+            }
+            prefs.edit().remove(KEY_REMOTE_MAC).remove(KEY_REMOTE_NAME).apply()
+            hidConnectedAddress = null
+            lastBatteryPct = -1
+            lastInputScanMs = 0L
+            synchronized(candidatesLock) { discoveredMap.clear() }
+            val msg = if (removedCount > 0) "Привязка пульта удалена. Можно подключить новый." else "Сохранённый пульт очищен."
+            setScanProgress("idle", msg)
+            onActionResult?.invoke("forget_remote", true, msg, reqId)
+            onDone?.invoke(true, msg)
+        }
+    }
+
+    fun triggerBuzzer(reqId: String = "", onResult: (ok: Boolean, message: String) -> Unit) {
         thread(name = "BleRemoteBuzzer", isDaemon = true) {
+            val st = getRemoteStatus()
             val dev = findTargetDevice()
-            if (dev == null) {
-                onResult(false, "Пульт YNDX ещё не привязан. Сначала выполните поиск пульта.")
+            if (dev == null || !st.bonded) {
+                val msg = "Пульт не привязан и не подключён. Сначала выполните «Автопоиск пульта»."
+                onActionResult?.invoke("find_remote", false, msg, reqId)
+                onResult(false, msg)
                 return@thread
             }
-            connectAndProbeGatt(dev, buzz = true, onDone = onResult)
+            connectAndProbeGatt(dev, buzz = true) { ok, msg ->
+                notifyStateChanged()
+                onActionResult?.invoke("find_remote", ok, msg, reqId)
+                onResult(ok, msg)
+            }
         }
     }
 
@@ -476,10 +944,15 @@ class BleRemoteManager(private val context: Context) {
             val guard = Runnable {
                 if (finished.compareAndSet(false, true)) {
                     try { gattRef?.disconnect(); gattRef?.close() } catch (_: Throwable) {}
-                    onDone(false, if (buzz) "Пульт не вышел на связь по BLE (нажмите любую кнопку на пульте или проверьте батарейки)" else "Таймаут подключения GATT")
+                    val msg = if (buzz) {
+                        "Пульт не отвечает по BLE (вне зоны, разряжен или не подключён — нажмите кнопку на пульте)."
+                    } else {
+                        "Таймаут опроса GATT"
+                    }
+                    onDone(false, msg)
                 }
             }
-            handler.postDelayed(guard, 6500L)
+            handler.postDelayed(guard, 7200L)
 
             val gattCb = object : BluetoothGattCallback() {
                 override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
@@ -490,7 +963,7 @@ class BleRemoteManager(private val context: Context) {
                         if (finished.compareAndSet(false, true)) {
                             handler.removeCallbacks(guard)
                             try { gatt.close() } catch (_: Throwable) {}
-                            onDone(false, "Соединение с пультом прервалось (status=$status)")
+                            onDone(false, "Пульт не вышел на связь по BLE (status=$status)")
                         }
                     }
                 }
@@ -505,19 +978,17 @@ class BleRemoteManager(private val context: Context) {
                         return
                     }
 
-                    // Try reading battery characteristic if present
                     val batChar = gatt.getService(UUID_BATTERY_SERVICE)?.getCharacteristic(UUID_BATTERY_LEVEL)
                     if (!buzz) {
                         if (batChar != null) gatt.readCharacteristic(batChar)
                         if (finished.compareAndSet(false, true)) {
                             handler.removeCallbacks(guard)
                             handler.postDelayed({ try { gatt.disconnect(); gatt.close() } catch (_: Throwable) {} }, 600L)
-                            onDone(true, "Пульт ${device.name ?: "Yandex Remote"} подключён!")
+                            onDone(true, "Пульт ${safeName(device)} подключён!")
                         }
                         return
                     }
 
-                    // Find Immediate Alert characteristic (0x1802 / 0x2A06) or fallback writable buzzer characteristic
                     val alertSvc = gatt.getService(UUID_IMMEDIATE_ALERT) ?: gatt.getService(UUID_LINK_LOSS)
                     var alertChar: BluetoothGattCharacteristic? = alertSvc?.getCharacteristic(UUID_ALERT_LEVEL)
                     if (alertChar == null) {
@@ -546,18 +1017,17 @@ class BleRemoteManager(private val context: Context) {
                         if (alertChar.writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) {
                             if (finished.compareAndSet(false, true)) {
                                 handler.removeCallbacks(guard)
-                                handler.postDelayed({
-                                    try { gatt.disconnect(); gatt.close() } catch (_: Throwable) {}
-                                }, 1800L)
-                                onDone(ok, if (ok) "Сигнал зуммера отправлен на пульт!" else "Не удалось записать команду зуммера")
+                                handler.postDelayed({ try { gatt.disconnect(); gatt.close() } catch (_: Throwable) {} }, 1800L)
+                                onDone(ok, if (ok) "Пульт пищит! (Сигнал отправлен)" else "Не удалось записать команду зуммера")
                             }
                         }
                     } else {
-                        // Even without standard 0x1802, holding active GATT wake confirms link
+                        // Read battery cleanly since no buzzer char exists, confirming active GATT link
+                        if (batChar != null) gatt.readCharacteristic(batChar)
                         if (finished.compareAndSet(false, true)) {
                             handler.removeCallbacks(guard)
                             handler.postDelayed({ try { gatt.disconnect(); gatt.close() } catch (_: Throwable) {} }, 900L)
-                            onDone(true, "Связь с пультом активна (без аппаратного зуммера 0x1802 на этой ревизии пульта)")
+                            onDone(true, "Пульт на связи (без пищащего зуммера 0x1802 на этой ревизии пульта)")
                         }
                     }
                 }
@@ -570,7 +1040,10 @@ class BleRemoteManager(private val context: Context) {
                 ) {
                     if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == UUID_BATTERY_LEVEL) {
                         val b = characteristic.value?.firstOrNull()?.toInt()?.and(0xFF) ?: -1
-                        if (b in 0..100) lastBatteryPct = b
+                        if (b in 0..100) {
+                            lastBatteryPct = b
+                            notifyStateChanged()
+                        }
                     }
                 }
 
@@ -601,16 +1074,26 @@ class BleRemoteManager(private val context: Context) {
         }
     }
 
-    fun stopScan() {
+    fun stopScan(resetSearchingState: Boolean = true) {
         scanTimeoutRunnable?.let { handler.removeCallbacks(it) }
         scanTimeoutRunnable = null
-        val cb = activeScanCallback ?: return
+        genericPickRunnable?.let { handler.removeCallbacks(it) }
+        genericPickRunnable = null
+        unregisterDiscoveryReceiver()
+        try { getBtAdapter()?.cancelDiscovery() } catch (_: Throwable) {}
+        val cb = activeScanCallback
         activeScanCallback = null
         scanning.set(false)
-        try {
-            val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-            bm?.adapter?.bluetoothLeScanner?.stopScan(cb)
-        } catch (_: Throwable) {}
+        if (cb != null) {
+            try {
+                getBtAdapter()?.bluetoothLeScanner?.stopScan(cb)
+            } catch (_: Throwable) {}
+        }
+        if (resetSearchingState) {
+            resolveStoppedScanState(currentScanState, getRemoteStatus().connected)?.let { (st, det) ->
+                setScanProgress(st, det)
+            }
+        }
     }
 
     private fun unregisterBondReceiver() {
@@ -620,10 +1103,31 @@ class BleRemoteManager(private val context: Context) {
         bondReceiver = null
     }
 
+    private fun unregisterDiscoveryReceiver() {
+        discoveryReceiver?.let {
+            try { context.unregisterReceiver(it) } catch (_: Throwable) {}
+        }
+        discoveryReceiver = null
+    }
+
     fun release() {
         handler.post {
             stopScan()
             unregisterBondReceiver()
+            unregisterDiscoveryReceiver()
+            hidHostProxy?.let {
+                try { getBtAdapter()?.closeProfileProxy(PROFILE_HID_HOST, it) } catch (_: Throwable) {}
+            }
+            hidHostProxy = null
         }
+    }
+}
+
+internal fun resolveStoppedScanState(previousState: String, connected: Boolean): Pair<String, String>? {
+    if (previousState != "searching") return null
+    return if (connected) {
+        "connected" to "Пульт подключён"
+    } else {
+        "idle" to ""
     }
 }

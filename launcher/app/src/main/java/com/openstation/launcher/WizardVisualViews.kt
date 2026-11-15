@@ -107,16 +107,26 @@ class WizardAuroraCanvasView(context: Context) : View(context) {
     private var running = false
     private var cachedBeamW = -1
 
-    private val frameCb = object : Choreographer.FrameCallback {
+    private val frameCb: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
-            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+            if (!isShown) {
+                lastFrameNs = 0L
+                removeCallbacks(stepRunnable)
+                postDelayed(stepRunnable, 380L)
+                return
+            }
+            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.12f)
             lastFrameNs = frameTimeNanos
             animTimeSec += dt
             stepSimulation(dt)
             invalidate()
-            Choreographer.getInstance().postFrameCallback(this)
+            removeCallbacks(stepRunnable)
+            postDelayed(stepRunnable, if (confettiActive) 28L else 42L)
         }
+    }
+    private val stepRunnable = Runnable {
+        if (running) Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun setStep(step: Int, totalSteps: Int = 7) {
@@ -157,12 +167,23 @@ class WizardAuroraCanvasView(context: Context) : View(context) {
         if (running) return
         running = true
         lastFrameNs = 0L
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun stopAnimations() {
         running = false
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().removeFrameCallback(frameCb)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (running && visibility == VISIBLE && isShown) {
+            lastFrameNs = 0L
+            removeCallbacks(stepRunnable)
+            Choreographer.getInstance().postFrameCallback(frameCb)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -300,6 +321,11 @@ class WizardStepRailView(
     private val progressGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rectF = RectF()
     private var lastFrameNs = 0L
+    private var cachedCapShader: LinearGradient? = null
+    private var cachedCapL = -1f
+    private var cachedCapT = -1f
+    private var cachedCapR = -1f
+    private var cachedCapB = -1f
 
     private fun dp(v: Float): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
@@ -311,7 +337,8 @@ class WizardStepRailView(
             lastFrameNs = frameTimeNanos
             val diff = activeIndex.toFloat() - animPos
             if (kotlin.math.abs(diff) > 0.002f) {
-                animPos += diff * (dt * 12f).coerceIn(0.08f, 0.45f)
+                val speedMul = MotionPrefs.glSmoothFactor(context)
+                animPos += diff * (dt * 7.2f * speedMul).coerceIn(0.05f, 0.42f)
                 invalidate()
                 Choreographer.getInstance().postFrameCallback(this)
             } else {
@@ -340,7 +367,10 @@ class WizardStepRailView(
                 isFocusable = true
                 isClickable = true
                 setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(110).start()
+                    v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f)
+                        .setDuration(MotionPrefs.dur(context, 220L))
+                        .setInterpolator(MotionPrefs.focusCurve)
+                        .start()
                     updateButtonColors()
                     invalidate()
                 }
@@ -369,9 +399,9 @@ class WizardStepRailView(
     private fun updateButtonColors() {
         buttons.forEachIndexed { idx, tv ->
             val color = when {
-                idx == activeIndex -> Color.parseColor("#0B0F17")
-                tv.isFocused -> Color.parseColor("#FFE8C686")
-                idx < activeIndex -> Color.parseColor("#6EE7B7")
+                idx == activeIndex -> Color.parseColor("#FEF3C7")
+                tv.isFocused -> Color.parseColor("#BAE6FD")
+                idx < activeIndex -> Color.parseColor("#86EFAC")
                 else -> Color.parseColor("#94A3B8")
             }
             tv.setTextColor(color)
@@ -388,17 +418,17 @@ class WizardStepRailView(
         val w = width.toFloat()
         val h = height.toFloat()
         if (w > 4f && h > 4f) {
-            // Track capsule background
-            progressTrackPaint.color = Color.parseColor("#8C0B1322")
+            // Frosted Spatial Glass track capsule background
+            progressTrackPaint.color = Color.parseColor("#44091020")
             rectF.set(0f, 0f, w, h)
             canvas.drawRoundRect(rectF, h * 0.5f, h * 0.5f, progressTrackPaint)
 
             capsuleStrokePaint.strokeWidth = dp(1f)
-            capsuleStrokePaint.color = Color.parseColor("#33FFFFFF")
+            capsuleStrokePaint.color = Color.parseColor("#30FFFFFF")
             rectF.inset(dp(0.5f), dp(0.5f))
             canvas.drawRoundRect(rectF, h * 0.5f, h * 0.5f, capsuleStrokePaint)
 
-            // Interpolate sliding golden highlight capsule between adjacent buttons
+            // Interpolate sliding translucent Spatial amber glass highlight capsule
             val i0 = animPos.toInt().coerceIn(0, buttons.lastIndex)
             val i1 = min(buttons.lastIndex, i0 + 1)
             val frac = (animPos - i0).coerceIn(0f, 1f)
@@ -411,26 +441,42 @@ class WizardStepRailView(
 
             // Subtle progress fill trace behind completed steps
             if (left > dp(6f)) {
-                progressGlowPaint.color = Color.parseColor("#2410B981")
+                progressGlowPaint.color = Color.parseColor("#1838BDF8")
                 rectF.set(dp(4f), top + dp(2f), left + dp(8f), bot - dp(2f))
                 canvas.drawRoundRect(rectF, (bot - top) * 0.5f, (bot - top) * 0.5f, progressGlowPaint)
             }
 
             if (right > left + 2f) {
-                capsulePaint.shader = LinearGradient(
-                    left, top, right, bot,
-                    intArrayOf(Color.parseColor("#F5DFB0"), Color.parseColor("#D8AC5E")),
-                    null,
-                    Shader.TileMode.CLAMP
-                )
+                if (cachedCapShader == null ||
+                    kotlin.math.abs(left - cachedCapL) > 0.5f ||
+                    kotlin.math.abs(top - cachedCapT) > 0.5f ||
+                    kotlin.math.abs(right - cachedCapR) > 0.5f ||
+                    kotlin.math.abs(bot - cachedCapB) > 0.5f) {
+                    cachedCapL = left
+                    cachedCapT = top
+                    cachedCapR = right
+                    cachedCapB = bot
+                    cachedCapShader = LinearGradient(
+                        left, top, right, bot,
+                        intArrayOf(Color.parseColor("#665B431B"), Color.parseColor("#443D2C10")),
+                        null,
+                        Shader.TileMode.CLAMP
+                    )
+                }
+                capsulePaint.shader = cachedCapShader
                 rectF.set(left, top, right, bot)
                 canvas.drawRoundRect(rectF, (bot - top) * 0.5f, (bot - top) * 0.5f, capsulePaint)
+
+                capsuleStrokePaint.strokeWidth = dp(1.25f)
+                capsuleStrokePaint.color = Color.parseColor("#90E8C686")
+                rectF.inset(dp(0.6f), dp(0.6f))
+                canvas.drawRoundRect(rectF, (bot - top) * 0.5f, (bot - top) * 0.5f, capsuleStrokePaint)
             }
 
             for (tv in buttons) {
                 if (tv.isFocused) {
                     focusRingPaint.strokeWidth = dp(1.8f)
-                    focusRingPaint.color = Color.parseColor("#E638BDF8")
+                    focusRingPaint.color = Color.parseColor("#CCFDE68A")
                     rectF.set(tv.left.toFloat(), tv.top.toFloat(), tv.right.toFloat(), tv.bottom.toFloat())
                     canvas.drawRoundRect(rectF, (tv.bottom - tv.top) * 0.5f, (tv.bottom - tv.top) * 0.5f, focusRingPaint)
                 }
@@ -463,10 +509,16 @@ class WizardWaveformView(context: Context) : View(context) {
     private fun dp(v: Float): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, resources.displayMetrics)
 
-    private val frameCb = object : Choreographer.FrameCallback {
+    private val frameCb: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
-            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+            if (!isShown) {
+                lastFrameNs = 0L
+                removeCallbacks(stepRunnable)
+                postDelayed(stepRunnable, 350L)
+                return
+            }
+            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.12f)
             lastFrameNs = frameTimeNanos
             animPhase += dt * (if (speechActive) 7.5f else 3.2f)
             for (i in 0 until barCount) {
@@ -478,8 +530,12 @@ class WizardWaveformView(context: Context) : View(context) {
                 barValues[i] += (desired - barValues[i]) * (dt * rate).coerceIn(0.05f, 0.65f)
             }
             invalidate()
-            Choreographer.getInstance().postFrameCallback(this)
+            removeCallbacks(stepRunnable)
+            postDelayed(stepRunnable, if (speechActive) 30L else 55L)
         }
+    }
+    private val stepRunnable = Runnable {
+        if (running) Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun updateTelemetry(rms: Int, noiseFloor: Int, vadSpeech: Boolean) {
@@ -493,12 +549,23 @@ class WizardWaveformView(context: Context) : View(context) {
         if (running) return
         running = true
         lastFrameNs = 0L
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun stopAnimations() {
         running = false
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().removeFrameCallback(frameCb)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (running && visibility == VISIBLE && isShown) {
+            lastFrameNs = 0L
+            removeCallbacks(stepRunnable)
+            Choreographer.getInstance().postFrameCallback(frameCb)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -574,29 +641,50 @@ class WizardLedRingPreviewView(context: Context) : View(context) {
     private val matrixDotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val hsv = floatArrayOf(0f, 0.9f, 1f)
 
-    private val frameCb = object : Choreographer.FrameCallback {
+    private val frameCb: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
-            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+            if (!isShown) {
+                lastFrameNs = 0L
+                removeCallbacks(stepRunnable)
+                postDelayed(stepRunnable, 350L)
+                return
+            }
+            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.12f)
             lastFrameNs = frameTimeNanos
             phase += dt * 2.8f
             val liveEnergy = max(LiveOrbState.musicOverall, max(LiveOrbState.ttsRms, LiveOrbState.micRms))
             audioLevel += ((liveEnergy.coerceIn(0.08f, 1f)) - audioLevel) * 0.25f
             invalidate()
-            Choreographer.getInstance().postFrameCallback(this)
+            removeCallbacks(stepRunnable)
+            postDelayed(stepRunnable, if (liveEnergy > 0.05f) 32L else 55L)
         }
+    }
+    private val stepRunnable = Runnable {
+        if (running) Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun startAnimations() {
         if (running) return
         running = true
         lastFrameNs = 0L
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun stopAnimations() {
         running = false
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().removeFrameCallback(frameCb)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (running && visibility == VISIBLE && isShown) {
+            lastFrameNs = 0L
+            removeCallbacks(stepRunnable)
+            Choreographer.getInstance().postFrameCallback(frameCb)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -751,27 +839,48 @@ class WizardHeroGlyphView(
         spritePaint.alpha = 255
     }
 
-    private val frameCb = object : Choreographer.FrameCallback {
+    private val frameCb: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!running) return
-            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
+            if (!isShown) {
+                lastFrameNs = 0L
+                removeCallbacks(stepRunnable)
+                postDelayed(stepRunnable, 350L)
+                return
+            }
+            val dt = if (lastFrameNs == 0L) 0.016f else ((frameTimeNanos - lastFrameNs) / 1_000_000_000f).coerceIn(0.001f, 0.12f)
             lastFrameNs = frameTimeNanos
             phase += dt * 1.9f
             invalidate()
-            Choreographer.getInstance().postFrameCallback(this)
+            removeCallbacks(stepRunnable)
+            postDelayed(stepRunnable, 42L)
         }
+    }
+    private val stepRunnable = Runnable {
+        if (running) Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun startAnimations() {
         if (running) return
         running = true
         lastFrameNs = 0L
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().postFrameCallback(frameCb)
     }
 
     fun stopAnimations() {
         running = false
+        removeCallbacks(stepRunnable)
         Choreographer.getInstance().removeFrameCallback(frameCb)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (running && visibility == VISIBLE && isShown) {
+            lastFrameNs = 0L
+            removeCallbacks(stepRunnable)
+            Choreographer.getInstance().postFrameCallback(frameCb)
+        }
     }
 
     override fun onAttachedToWindow() {
@@ -875,13 +984,24 @@ class WizardHeroGlyphView(
     }
 
     private fun drawMusicHero(canvas: Canvas, cx: Float, cy: Float, sz: Float) {
-        val spin = (phase * 28f) % 360f
-        drawCenteredSprite(canvas, sprite(R.drawable.sprite_vinyl_disc), cx - sz * 0.04f, cy, sz * 0.78f, rotDeg = spin)
+        val cardSize = sz * 0.72f
+        val rad = cardSize * 0.24f
+        val bobY = sin(phase * 1.15f) * sz * 0.020f
+        val half = cardSize * 0.5f
+        arcRect.set(cx - half, cy - half + bobY, cx + half, cy + half + bobY)
 
-        val eqBob = sin(phase * 1.5f) * sz * 0.02f
-        drawCenteredSprite(canvas, sprite(R.drawable.sprite_sys_eq), cx - sz * 0.30f, cy - sz * 0.27f + eqBob, sz * 0.28f)
+        haloPaint.shader = null
+        haloPaint.style = Paint.Style.FILL
+        haloPaint.color = Color.argb(66, 12, 20, 38)
+        canvas.drawRoundRect(arcRect, rad, rad, haloPaint)
 
-        val ymBob = sin(phase * 1.25f + 1.4f) * sz * 0.022f
-        drawCenteredSprite(canvas, sprite(R.drawable.sprite_ym_emblem), cx + sz * 0.27f, cy + sz * 0.24f + ymBob, sz * 0.36f, rotDeg = -5f)
+        drawCenteredSprite(canvas, sprite(R.drawable.sprite_ym_emblem), cx, cy + bobY, cardSize * 0.72f)
+
+        ringPaint.strokeWidth = max(2.2f, sz * 0.022f)
+        ringPaint.color = Color.argb(128, 255, 255, 255)
+        canvas.drawRoundRect(arcRect, rad, rad, ringPaint)
+
+        val eqBob = sin(phase * 1.5f + 0.8f) * sz * 0.022f
+        drawCenteredSprite(canvas, sprite(R.drawable.sprite_sys_eq), cx + sz * 0.30f, cy + sz * 0.26f + eqBob, sz * 0.30f)
     }
 }

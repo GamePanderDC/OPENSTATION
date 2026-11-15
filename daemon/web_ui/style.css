@@ -1634,7 +1634,7 @@ textarea { resize: vertical; line-height: 1.45; }
 .conn-banner b, .alarm-banner b { font-size: 0.94rem; }
 .conn-banner { background: rgba(251, 66, 104, 0.16); border: 1px solid rgba(251, 66, 104, 0.42); color: #ffd4dd; }
 .alarm-banner { background: rgba(0, 212, 255, 0.16); border: 1px solid rgba(0, 212, 255, 0.44); color: #ecfeff; }
-body.offline .content { opacity: 0.45; pointer-events: none; }
+body.offline .content { opacity: 0.78; }
 
 .login-card { align-items: center; text-align: center; display: flex; flex-direction: column; gap: 10px; }
 .login-ico {
@@ -1811,4 +1811,64 @@ body.offline .content { opacity: 0.45; pointer-events: none; }
 #astModel[disabled], #astModel[readonly] {
   opacity: 0.72;
   cursor: not-allowed;
+}
+
+/* ========== REAL WEBGL SNELL'S LAW OPTICAL GLASS MODE ========== */
+#webglGlassCanvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+}
+html.webgl-glass #webglGlassCanvas {
+  display: block;
+}
+html.webgl-glass body {
+  background: #060911 !important;
+  animation: none !important;
+}
+html.webgl-glass .app {
+  position: relative;
+  z-index: 1;
+}
+html.webgl-glass .glass-filter {
+  display: none !important;
+  filter: none !important;
+}
+html.webgl-glass .glass-overlay {
+  background: rgba(10, 16, 32, 0.14);
+}
+html.webgl-glass .card,
+html.webgl-glass .sidebar,
+html.webgl-glass .appbar,
+html.webgl-glass .topbar,
+html.webgl-glass .tabs,
+html.webgl-glass .mini-side,
+html.webgl-glass .btn,
+html.webgl-glass .badge,
+html.webgl-glass .toast,
+html.webgl-glass .conn-banner,
+html.webgl-glass .alarm-banner,
+html.webgl-glass .wizard-card,
+html.webgl-glass .modal-box,
+html.webgl-glass .quick-action {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.webgl-glass .card,
+html.webgl-glass .sidebar,
+html.webgl-glass .appbar,
+html.webgl-glass .topbar,
+html.webgl-glass .mini-side {
+  background: rgba(8, 14, 28, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+html.webgl-glass .conn-banner {
+  background: rgba(251, 66, 104, 0.18) !important;
+}
+html.webgl-glass .alarm-banner {
+  background: rgba(0, 212, 255, 0.18) !important;
 }

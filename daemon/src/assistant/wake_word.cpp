@@ -375,19 +375,21 @@ void WakeWordEngine::worker_loop() {
         lead_count = 0;
     };
 
-    auto is_speaker_playback_running = []() -> bool {
+    auto is_speaker_playback_running = [last_idx = 0]() mutable -> bool {
         static constexpr const char* kPaths[] = {
             "/proc/asound/card0/pcm0p/sub0/status",
             "/proc/asound/card0/pcm2p/sub0/status",
             "/proc/asound/card0/pcm3p/sub0/status",
         };
-        for (const char* p : kPaths) {
-            FILE* f = std::fopen(p, "r");
+        for (int off = 0; off < 3; ++off) {
+            const int idx = (last_idx + off) % 3;
+            FILE* f = std::fopen(kPaths[idx], "r");
             if (!f) continue;
             char line[64] = {};
             const bool ok = (std::fgets(line, sizeof(line), f) != nullptr);
             std::fclose(f);
             if (ok && std::strstr(line, "RUNNING") != nullptr) {
+                last_idx = idx;
                 return true;
             }
         }
@@ -398,9 +400,12 @@ void WakeWordEngine::worker_loop() {
     bool vad_had_speech = false;
     bool speaker_playing = false;
     int hangover_wins = 0;
+    int vad_hang_wins = 16; // Keep Silero warm briefly on startup/reset & after speech
     int active_energy_wins = 0;
     int music_cont_wins = 0;
     float avg_music_sq = 1.0e-4f;
+    float ambient_sq = 8.0e-6f;
+    float short_sq = 6.0e-6f;
     uint32_t vad_clr_cnt = 0;
     uint32_t pb_poll_cnt = 0;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
@@ -443,8 +448,11 @@ void WakeWordEngine::worker_loop() {
             kws_active = false;
             vad_had_speech = false;
             hangover_wins = 0;
+            vad_hang_wins = 16;
             active_energy_wins = 0;
             music_cont_wins = 0;
+            ambient_sq = 8.0e-6f;
+            short_sq = 6.0e-6f;
             create_engines(cur_cfg);
         }
 
@@ -456,8 +464,10 @@ void WakeWordEngine::worker_loop() {
             kws_active = false;
             vad_had_speech = false;
             hangover_wins = 0;
+            vad_hang_wins = 16;
             active_energy_wins = 0;
             music_cont_wins = 0;
+            short_sq = ambient_sq;
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
             vad_speech_active_.store(false);
@@ -471,7 +481,7 @@ void WakeWordEngine::worker_loop() {
         while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
             const float* win = acc.data() + acc_head;
 
-            if ((pb_poll_cnt++ & 15U) == 0U) {
+            if ((pb_poll_cnt++ & 31U) == 0U) {
                 speaker_playing = is_speaker_playback_running();
             }
 
@@ -480,19 +490,28 @@ void WakeWordEngine::worker_loop() {
                 sum_sq += win[i] * win[i];
             }
             const float mean_sq = sum_sq / static_cast<float>(kVadWin);
+            short_sq = short_sq * 0.50f + mean_sq * 0.50f;
 
-            // Fast dead-silence energy gate before invoking ONNX when idle & quiet.
-            if (!speaker_playing && !kws_active && hangover_wins == 0 && mean_sq < 2.0e-7f) {
-                if (vad_had_speech) {
-                    g_sherpa.vadReset(vad);
-                    vad_had_speech = false;
+            // Dual-timescale adaptive silence gate: symmetric slow noise-floor tracker avoids dipping on
+            // brief silences, while 64ms smoothed short_sq ignores single-window clicks & AGC micro-spikes.
+            const float wake_sq = std::max(8.0e-7f, ambient_sq * 1.60f + 1.5e-6f);
+            if (!speaker_playing && !kws_active && hangover_wins == 0 && short_sq < wake_sq && mean_sq < wake_sq * 1.35f) {
+                ambient_sq = std::clamp(ambient_sq * 0.992f + mean_sq * 0.008f, 4.0e-7f, 3.0e-5f);
+                if (vad_hang_wins == 0) {
+                    if (vad_had_speech) {
+                        g_sherpa.vadReset(vad);
+                        vad_had_speech = false;
+                    }
+                    active_energy_wins = 0;
+                    music_cont_wins = 0;
+                    vad_speech_active_.store(false);
+                    push_lead_win(win);
+                    acc_head += kVadWin;
+                    continue;
                 }
-                active_energy_wins = 0;
-                music_cont_wins = 0;
-                vad_speech_active_.store(false);
-                push_lead_win(win);
-                acc_head += kVadWin;
-                continue;
+                --vad_hang_wins;
+            } else if (!speaker_playing && (short_sq >= wake_sq || mean_sq >= wake_sq * 1.35f)) {
+                vad_hang_wins = std::max(vad_hang_wins, (kws_active || vad_had_speech) ? 16 : 6);
             }
 
             bool speech = false;
@@ -524,6 +543,9 @@ void WakeWordEngine::worker_loop() {
                     }
                 } else {
                     active_energy_wins = 0;
+                    if (!speech && !kws_active && hangover_wins == 0 && mean_sq <= 4.0e-5f) {
+                        ambient_sq = std::clamp(ambient_sq * 0.985f + mean_sq * 0.015f, 4.0e-7f, 3.0e-5f);
+                    }
                 }
             }
 

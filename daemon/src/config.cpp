@@ -223,8 +223,11 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
         input.action_short = "assistant";
     }
-    if (!is_one_of(input.action_long, {"assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
-        input.action_long = "led_cycle";
+    if (input.action_long == "dj_mode") {
+        input.action_long = "scrub";
+    }
+    if (!is_one_of(input.action_long, {"scrub", "assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
+        input.action_long = "scrub";
     }
 
     if (!is_one_of(assistant.mode, {"gemini", "wyoming", "off"})) {
@@ -276,13 +279,40 @@ void DaemonConfig::sanitize_and_validate() {
     assistant.max_session_sec = std::clamp(assistant.max_session_sec, 15, 600);
     assistant.vad_silence_ms = std::clamp(assistant.vad_silence_ms, 300, 3000);
     {
+        auto truncate_utf8 = [](const std::string& s, size_t max_bytes) -> std::string {
+            if (s.size() <= max_bytes) return s;
+            size_t pos = 0;
+            while (pos < max_bytes) {
+                unsigned char c = static_cast<unsigned char>(s[pos]);
+                size_t clen = 1;
+                if ((c & 0x80u) == 0) clen = 1;
+                else if ((c & 0xE0u) == 0xC0u) clen = 2;
+                else if ((c & 0xF0u) == 0xE0u) clen = 3;
+                else if ((c & 0xF8u) == 0xF0u) clen = 4;
+                if (pos + clen > max_bytes || pos + clen > s.size()) break;
+                pos += clen;
+            }
+            return s.substr(0, pos);
+        };
+        auto is_placeholder_qmarks = [](const std::string& s) -> bool {
+            bool has_non_space = false;
+            for (unsigned char c : s) {
+                if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+                has_non_space = true;
+                if (c != '?') return false;
+            }
+            return has_non_space;
+        };
+
         std::vector<std::string> clean_notes;
         clean_notes.reserve(assistant.memory_notes.size());
         for (std::string n : assistant.memory_notes) {
             while (!n.empty() && (n.front() == ' ' || n.front() == '\t' || n.front() == '\r' || n.front() == '\n')) n.erase(n.begin());
             while (!n.empty() && (n.back() == ' ' || n.back() == '\t' || n.back() == '\r' || n.back() == '\n')) n.pop_back();
+            if (n.empty() || is_placeholder_qmarks(n)) continue;
+            n = truncate_utf8(n, 240);
+            while (!n.empty() && (n.back() == ' ' || n.back() == '\t')) n.pop_back();
             if (n.empty()) continue;
-            if (n.size() > 240) n.resize(240);
             if (std::find(clean_notes.begin(), clean_notes.end(), n) == clean_notes.end()) {
                 clean_notes.push_back(std::move(n));
                 if (clean_notes.size() >= 25) break;
@@ -458,6 +488,7 @@ json::Value DaemonConfig::to_json() const {
     in["actionShort"] = Value::make_str(input.action_short);
     in["actionLong"] = Value::make_str(input.action_long);
     root["input"] = std::move(in);
+    root["configSchemaVersion"] = Value::make_int(3);
 
     Value ast = Value::make_obj();
     ast["enabled"] = Value::make_bool(assistant.enabled);
@@ -774,6 +805,13 @@ bool DaemonConfig::load() {
         return false;
     }
     from_json(v);
+    if (!v.get("configSchemaVersion") || v.get("configSchemaVersion")->as_int(1) < 3) {
+        if (input.action_long == "led_cycle" || input.action_long == "dj_mode") {
+            input.action_long = "scrub";
+            LOGI("Config", "Upgraded default long-press action -> scrub (schema v3)");
+        }
+        save();
+    }
     LOGI("Config", "Loaded config from %s", path.c_str());
     return true;
 }

@@ -64,15 +64,19 @@ void InputMonitor::scan_devices() {
         }
         DevRole role;
         bool match = false;
+        bool exclusive_grab = false;
+        bool grabbed = false;
         if (sname.find("gpio_keypad") != std::string::npos) {
             role = DevRole::Keypad;
             match = true;
         } else if (sname.find("rotary-volume") != std::string::npos) {
             role = DevRole::Rotary;
             match = true;
+            exclusive_grab = true;
             // Exclusively grab rotary encoder so Android InputReader does not see phantom PAGE_UP/PAGE_DOWN
-            if (ioctl(fd, EVIOCGRAB, 1) < 0) {
-                LOGW("InputMonitor", "EVIOCGRAB failed on %s: %s", path.c_str(), strerror(errno));
+            grabbed = (ioctl(fd, EVIOCGRAB, 1) >= 0);
+            if (!grabbed) {
+                LOGW("InputMonitor", "EVIOCGRAB failed on %s: %s (will retry)", path.c_str(), strerror(errno));
             }
         } else if (sname.find("Headphones") != std::string::npos) {
             role = DevRole::HeadphoneJack;
@@ -98,7 +102,7 @@ void InputMonitor::scan_devices() {
 
         if (match) {
             LOGI("InputMonitor", "Watching %s (%s, role=%d)", path.c_str(), sname.c_str(), static_cast<int>(role));
-            fds_.push_back(WatchedFd{fd, role, sname, path});
+            fds_.push_back(WatchedFd{fd, role, sname, path, exclusive_grab, grabbed});
         } else {
             ::close(fd);
         }
@@ -134,6 +138,7 @@ void InputMonitor::poll_loop() {
     using clock = std::chrono::steady_clock;
     bool action_down = false;
     bool action_long_fired = false;
+    bool action_hold_active = false;
     clock::time_point action_down_tp;
 
     int mute_tap_count = 0;
@@ -141,12 +146,25 @@ void InputMonitor::poll_loop() {
     bool mute_tap_pending = false;
     clock::time_point last_home_press_tp{};
     clock::time_point last_rescan_tp = clock::now();
+    clock::time_point last_grab_retry_tp = clock::now();
 
     while (running_.load()) {
         auto now = clock::now();
         if (now - last_rescan_tp >= std::chrono::milliseconds(2500)) {
             scan_devices();
             last_rescan_tp = now;
+        }
+        if (now - last_grab_retry_tp >= std::chrono::milliseconds(500)) {
+            last_grab_retry_tp = now;
+            for (auto& w : fds_) {
+                if (w.fd >= 0 && w.exclusive_grab && !w.grabbed) {
+                    if (ioctl(w.fd, EVIOCGRAB, 1) >= 0) {
+                        w.grabbed = true;
+                        LOGI("InputMonitor", "Acquired exclusive EVIOCGRAB on %s (%s)",
+                             w.path.c_str(), w.name.c_str());
+                    }
+                }
+            }
         }
         std::vector<struct pollfd> pfds;
         pfds.reserve(fds_.size());
@@ -156,14 +174,24 @@ void InputMonitor::poll_loop() {
             pfd.events = POLLIN;
             pfds.push_back(pfd);
         }
-        int ret = pfds.empty() ? (usleep(100000), 0) : poll(pfds.data(), pfds.size(), 100);
+        int poll_ms = action_down ? 40 : 100;
+        int ret = pfds.empty() ? (usleep(100000), 0) : poll(pfds.data(), pfds.size(), poll_ms);
         now = clock::now();
 
-        if (action_down && !action_long_fired &&
-            now - action_down_tp >= std::chrono::milliseconds(800)) {
-            action_long_fired = true;
-            LOGI("InputMonitor", "Action button long press");
-            if (cb_) cb_(HwEventType::ActionLong);
+        if (action_down && !action_long_fired) {
+            const bool scrub_mode = hold_scrub_enabled_.load();
+            const auto threshold = std::chrono::milliseconds(scrub_mode ? 360 : 800);
+            if (now - action_down_tp >= threshold) {
+                action_long_fired = true;
+                if (scrub_mode) {
+                    action_hold_active = true;
+                    LOGI("InputMonitor", "Action hold start -> scrub");
+                    if (cb_) cb_(HwEventType::ActionHoldStart);
+                } else {
+                    LOGI("InputMonitor", "Action button long press");
+                    if (cb_) cb_(HwEventType::ActionLong);
+                }
+            }
         }
 
         // Check if pending Mute tap sequence expired without reaching 5 taps
@@ -218,10 +246,19 @@ void InputMonitor::poll_loop() {
                 }
                 if (nr != sizeof(ev)) break;
                 if (fds_[i].role == DevRole::Rotary && ev.type == EV_KEY && ev.value == 1) {
-                    if (ev.code == kRotaryUp) {
-                        if (cb_) cb_(HwEventType::RotaryUp);
-                    } else if (ev.code == kRotaryDown) {
-                        if (cb_) cb_(HwEventType::RotaryDown);
+                    if (ev.code == kRotaryUp || ev.code == kRotaryDown) {
+                        // Turning rotary while holding Alice engages scrub-hold immediately without waiting 360 ms.
+                        if (action_down && !action_hold_active && hold_scrub_enabled_.load()) {
+                            action_long_fired = true;
+                            action_hold_active = true;
+                            LOGI("InputMonitor", "Action hold + rotary -> instant scrub");
+                            if (cb_) cb_(HwEventType::ActionHoldStart);
+                        }
+                        if (ev.code == kRotaryUp) {
+                            if (cb_) cb_(HwEventType::RotaryUp);
+                        } else {
+                            if (cb_) cb_(HwEventType::RotaryDown);
+                        }
                     }
                 } else if (fds_[i].role == DevRole::Keypad && ev.type == EV_KEY) {
                     if (ev.code == kKeyMute && ev.value == 1) {
@@ -245,10 +282,15 @@ void InputMonitor::poll_loop() {
                         if (ev.value == 1) {
                             action_down = true;
                             action_long_fired = false;
+                            action_hold_active = false;
                             action_down_tp = clock::now();
                         } else if (ev.value == 0 && action_down) {
                             action_down = false;
-                            if (!action_long_fired) {
+                            if (action_hold_active) {
+                                action_hold_active = false;
+                                LOGI("InputMonitor", "Action hold end");
+                                if (cb_) cb_(HwEventType::ActionHoldEnd);
+                            } else if (!action_long_fired) {
                                 LOGI("InputMonitor", "Action button short press");
                                 if (cb_) cb_(HwEventType::ActionShort);
                             }
@@ -276,6 +318,16 @@ void InputMonitor::poll_loop() {
             }
         }
         if (removed_any) {
+            for (const auto& w : fds_) {
+                if (w.fd < 0 && w.role == DevRole::Keypad && action_down) {
+                    action_down = false;
+                    action_long_fired = false;
+                    if (action_hold_active) {
+                        action_hold_active = false;
+                        if (cb_) cb_(HwEventType::ActionHoldEnd);
+                    }
+                }
+            }
             fds_.erase(
                 std::remove_if(fds_.begin(), fds_.end(),
                                [](const WatchedFd& w) { return w.fd < 0; }),

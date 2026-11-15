@@ -243,8 +243,8 @@ FramebufferHw::~FramebufferHw() {
 void FramebufferHw::update_needs_spectrum_locked() {
     const bool v_speak = (voice_state_ == VoiceVisualState::Speaking);
     const bool m_vis = music_playing_ && screen_cfg_.auto_music_visualizer && (screen_cfg_.mode != "off");
-    const bool ns = (ring_cfg_.mode == "music" || ring_cfg_.mode == "voice" || v_speak ||
-                     (fb5_present_.load() && (screen_cfg_.mode == "spectrum" || v_speak || m_vis)));
+    const bool ns = ring_cfg_.mode == "music" || ring_cfg_.mode == "voice" || v_speak ||
+                     (fb5_present_.load() && (screen_cfg_.mode == "spectrum" || v_speak || m_vis));
     needs_spectrum_.store(ns, std::memory_order_relaxed);
 }
 
@@ -410,6 +410,22 @@ void FramebufferHw::set_music_track_title(const std::string& title) {
     if (notify) cv_.notify_all();
 }
 
+void FramebufferHw::set_scrub_visual(const ScrubVisualSnapshot& sv) {
+    bool notify = false;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        bool changed = (scrub_visual_.active != sv.active) ||
+                       (scrub_visual_.scrubbing_audio != sv.scrubbing_audio) ||
+                       (scrub_visual_.seek_display_ms != sv.seek_display_ms);
+        scrub_visual_ = sv;
+        if (changed) {
+            ++wake_seq_;
+            notify = true;
+        }
+    }
+    if (notify) cv_.notify_all();
+}
+
 int FramebufferHw::measure_text_pixel_width(const std::string& text) {
     auto cps = utf8_to_codepoints(text);
     return cps.empty() ? 0 : static_cast<int>(cps.size()) * 6 - 1;
@@ -436,6 +452,7 @@ void FramebufferHw::trigger_music_track_banner(const std::string& title, uint8_t
         scr_override_one_shot_ = true;
         scr_override_speed_ = 18.0;
         scr_override_start_ = std::chrono::steady_clock::now();
+        scr_override_pause_tp_ = scr_override_start_;
         scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(dur_ms);
         ++wake_seq_;
     }
@@ -488,6 +505,8 @@ void FramebufferHw::trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_
 }
 
 void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint8_t g, uint8_t b, int duration_ms) {
+    const int min_full_ms = compute_full_scroll_duration_ms(text, 22.0, 25);
+    const int clamped_ms = std::clamp(std::max(duration_ms, min_full_ms), 300, 180000);
     {
         std::lock_guard<std::mutex> lk(mu_);
         scr_override_text_ = text;
@@ -495,7 +514,8 @@ void FramebufferHw::trigger_screen_text(const std::string& text, uint8_t r, uint
         scr_override_one_shot_ = false;
         scr_override_speed_ = 22.0;
         scr_override_start_ = std::chrono::steady_clock::now();
-        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(std::clamp(duration_ms, 300, 180000));
+        scr_override_pause_tp_ = std::chrono::steady_clock::time_point{};
+        scr_text_until_ = scr_override_start_ + std::chrono::milliseconds(clamped_ms);
         ++wake_seq_;
     }
     cv_.notify_all();
@@ -732,11 +752,13 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
     double bt_elapsed = 0.0;
     bool startup_active = false;
     double startup_elapsed = 0.0;
+    ScrubVisualSnapshot scrub{};
     {
         std::lock_guard<std::mutex> lk(mu_);
         vstate = voice_state_;
         muted = mic_muted_;
         spec = spectrum_;
+        scrub = scrub_visual_;
         osd_active = now < osd_until_;
         osd_pct = osd_volume_pct_;
         flash_active = now < flash_until_;
@@ -872,6 +894,26 @@ void FramebufferHw::render_ring(double t_sec, const LedRingConfig& cfg) {
                 logical[i] = scale_rgb(lerp_rgb(Rgb{0, 200, 160}, Rgb{160, 255, 240}, w), energy);
             }
         }
+    } else if (scrub.active && scrub.scrubbing_audio) {
+        double head = std::fmod(static_cast<double>(scrub.platter_deg) * (24.0 / 360.0), 24.0);
+        if (head < 0.0) head += 24.0;
+        double head2 = std::fmod(head + 12.0, 24.0);
+        float abs_v = std::abs(scrub.velocity);
+        float scrub_k = std::clamp(abs_v / 3.2f, 0.0f, 1.0f);
+        Rgb tail_c = (scrub.velocity < -0.10f) ? Rgb{255, 90, 45}
+                   : (scrub.velocity > 0.10f)  ? Rgb{0, 235, 255}
+                                               : Rgb{135, 206, 250};
+        float bass = (spec[0] + spec[1] + spec[2] + spec[3]) * 0.25f;
+        Rgb bg_c = scale_rgb(Rgb{14, 24, 52}, 0.30f + bass * 0.40f);
+        for (int i = 0; i < 24; ++i) {
+            double d1 = std::min(std::fabs(i - head), 24.0 - std::fabs(i - head));
+            double d2 = std::min(std::fabs(i - head2), 24.0 - std::fabs(i - head2));
+            float k1 = static_cast<float>(std::max(0.0, 1.0 - d1 / (2.8 + scrub_k * 2.2)));
+            float k2 = static_cast<float>(std::max(0.0, 1.0 - d2 / 2.2));
+            Rgb needle = lerp_rgb(tail_c, Rgb{255, 255, 255}, k1 * (0.40f + scrub_k * 0.60f));
+            logical[i] = lerp_rgb(bg_c, needle, std::clamp(k1 + k2 * 0.45f, 0.0f, 1.0f));
+        }
+        if (muted) logical[0] = Rgb{255, 25, 35};
     } else if (muted && cfg.mode != "off") {
         // Dedicated muted ring indication matching physical Station Max cue
         float pulse = 0.35f + 0.65f * (0.5f + 0.5f * std::sin(static_cast<float>(t_sec * 2.2)));
@@ -1028,6 +1070,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     int weather_temp = 0;
     std::string weather_cond = "clear";
     double weather_elapsed = 0.0;
+    ScrubVisualSnapshot scrub{};
     {
         std::lock_guard<std::mutex> lk(mu_);
         vstate = voice_state_;
@@ -1035,6 +1078,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             voice_elapsed = std::max(0.0, std::chrono::duration<double>(now - voice_state_start_).count());
         }
         spec = spectrum_;
+        scrub = scrub_visual_;
         osd_active = now < osd_until_;
         osd_pct = osd_volume_pct_;
         if (now < startup_until_) {
@@ -1063,12 +1107,25 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             weather_elapsed = std::chrono::duration<double>(now - weather_start_).count();
         }
         if (now < scr_text_until_ && !scr_override_text_.empty()) {
+            const bool occluded_banner = osd_active || startup_active || bt_active || task_active || weather_active;
+            if (scr_override_one_shot_ && occluded_banner) {
+                if (scr_override_pause_tp_.time_since_epoch().count() > 0 && now > scr_override_pause_tp_) {
+                    const auto paused_dt = now - scr_override_pause_tp_;
+                    scr_override_start_ += paused_dt;
+                    scr_text_until_ += paused_dt;
+                }
+                scr_override_pause_tp_ = now;
+            } else {
+                scr_override_pause_tp_ = std::chrono::steady_clock::time_point{};
+            }
             scr_override_active = true;
             scr_override_txt = scr_override_text_;
             scr_override_col = scr_override_color_;
             scr_override_one_shot = scr_override_one_shot_;
             scr_override_speed = scr_override_speed_;
-            scr_override_elapsed = std::chrono::duration<double>(now - scr_override_start_).count();
+            scr_override_elapsed = std::max(0.0, std::chrono::duration<double>(now - scr_override_start_).count());
+        } else {
+            scr_override_pause_tp_ = std::chrono::steady_clock::time_point{};
         }
     }
 
@@ -1080,7 +1137,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         double norm = std::clamp(std::log10(lux + 1.0) / 2.4, 0.05, 1.0);
         bl = std::clamp(static_cast<int>(norm * max_bl), 1, max_bl);
     }
-    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || startup_active || bt_active || task_active || weather_active || music_vis_active) &&
+    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || startup_active || bt_active || task_active || weather_active || music_vis_active || (scrub.active && scrub.seek_display_ms != 0 && now < scrub.seek_badge_until)) &&
         bl < std::max(1, max_bl / 3)) {
         bl = std::max(1, max_bl / 3);
     }
@@ -1115,6 +1172,8 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         scene_key = "banner";
     } else if (vstate != VoiceVisualState::Idle) {
         scene_key = "voice:" + std::to_string(static_cast<int>(vstate));
+    } else if (scrub.active && scrub.seek_display_ms != 0 && now < scrub.seek_badge_until) {
+        scene_key = "scrub";
     } else if (cfg.mode == "off") {
         scene_key = "off";
     } else if (music_vis_active) {
@@ -2158,6 +2217,24 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
                 }
             }
         }
+    } else if (scrub.active && scrub.seek_display_ms != 0 && now < scrub.seek_badge_until) {
+        int sec = std::clamp(std::abs(scrub.seek_display_ms) / 1000, 0, 99);
+        bool neg = scrub.seek_display_ms < 0;
+        Rgb sc = neg ? Rgb{255, 115, 60} : Rgb{85, 245, 255};
+        int dx_start = (sec >= 10) ? 7 : 9;
+        draw_glyph_3x7(neg ? 11 : 10, dx_start, 2, sc);
+        if (sec >= 10) {
+            draw_glyph_3x7(sec / 10, dx_start + 4, 2, sc);
+            draw_glyph_3x7(sec % 10, dx_start + 8, 2, sc);
+        } else {
+            draw_glyph_3x7(sec, dx_start + 4, 2, sc);
+        }
+        int bars = std::clamp(1 + static_cast<int>(std::abs(scrub.velocity) * 1.5f), 1, 6);
+        for (int k = 0; k < bars; ++k) {
+            int bx = neg ? (20 - k * 2) : (4 + k * 2);
+            pset(bx, 11, sc);
+            pset(bx, 12, sc);
+        }
     } else if (cfg.mode == "off") {
         // target remains black, crossfades smoothly off
     } else if (music_vis_active) {
@@ -2170,8 +2247,11 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         int h = std::clamp(tm_now.tm_hour, 0, 23);
         int m = std::clamp(tm_now.tm_min, 0, 59);
         int s = std::clamp(tm_now.tm_sec, 0, 59);
-        float colon_k = 0.25f + 0.75f * (0.5f + 0.5f * std::cos(static_cast<float>(t_sec * kPi * 2.0)));
         const std::string& cs = cfg.clock_style;
+        const bool clock_smooth = (cs == "neon" || cs == "seconds" || cs == "binary");
+        float colon_k = clock_smooth
+            ? (0.25f + 0.75f * (0.5f + 0.5f * std::cos(static_cast<float>(t_sec * kPi * 2.0))))
+            : (((static_cast<int>(t_sec * 2.0) % 2) == 0) ? 1.0f : 0.25f);
 
         if (cs == "binary" && W >= 22 && H >= 12) {
             const int digits[6] = {h / 10, h % 10, m / 10, m % 10, s / 10, s % 10};
@@ -2354,7 +2434,7 @@ void FramebufferHw::worker_loop() {
         auto now = clock::now();
         double t_sec = std::chrono::duration<double>(now - start_tp).count();
 
-        if (now - last_sensor_tp >= std::chrono::milliseconds(2000)) {
+        if (now - last_sensor_tp >= std::chrono::milliseconds(3000)) {
             poll_sensors();
             last_sensor_tp = now;
         }
@@ -2373,7 +2453,7 @@ void FramebufferHw::worker_loop() {
             last_fb5_probe_tp = now - std::chrono::seconds(5);
         }
 
-        if (fb5_.fd >= 0 && now - last_fb5_health_tp >= std::chrono::milliseconds(3500)) {
+        if (fb5_.fd >= 0 && now - last_fb5_health_tp >= std::chrono::milliseconds(6000)) {
             struct fb_var_screeninfo vi{};
             if (ioctl(fb5_.fd, FBIOGET_VSCREENINFO, &vi) != 0) {
                 LOGW("Framebuffer", "fb5 ioctl health check failed; resetting LED screen");
@@ -2384,13 +2464,13 @@ void FramebufferHw::worker_loop() {
                 scr_prev_frame_.clear();
                 last_scene_key_.clear();
             } else {
-                ioctl(fb5_.fd, FBIOBLANK, 0);
                 last_fb5_ok_tp_ = now;
             }
             last_fb5_health_tp = now;
         }
 
-        if (fb5_.fd >= 0 && now - last_fb5_refresh_tp >= std::chrono::milliseconds(20000)) {
+        if (fb5_.fd >= 0 && now - last_fb5_refresh_tp >= std::chrono::milliseconds(60000)) {
+            ioctl(fb5_.fd, FBIOBLANK, 0);
             fb5_.has_prev = false;
             last_fb5_refresh_tp = now;
         }
@@ -2449,17 +2529,19 @@ void FramebufferHw::worker_loop() {
             bool bt_active_lk = (now < bt_until_);
             bool task_active_lk = (now < task_icon_until_);
             bool music_active = (music_playing_ || now < music_stop_grace_until_) && scfg.auto_music_visualizer && scfg.mode != "off";
+            bool scrub_active_lk = scrub_visual_.scrubbing_audio;
             bool transient_active = (voice_state_ != VoiceVisualState::Idle) || mic_muted_ ||
                                     (now < osd_until_) || (now < flash_until_) ||
                                     (now < cal_until_) || (now < scr_text_until_) ||
                                     startup_active_lk || bt_active_lk || task_active_lk ||
-                                    trans_active || weather_active || music_active;
+                                    trans_active || weather_active || music_active || scrub_active_lk;
             bool ring_static = (rcfg.mode == "off" || rcfg.mode == "solid");
             bool scr_has = fb5_present_.load();
             bool clock_smooth = (scfg.mode == "clock" &&
                                  (scfg.clock_style == "neon" || scfg.clock_style == "seconds" || scfg.clock_style == "binary"));
             bool scr_static = (!scr_has || scfg.mode == "off" || (scfg.mode == "clock" && !clock_smooth));
-            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk) ? 25 : 55;
+            int sleep_ms = scrub_active_lk ? 22
+                         : (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk || (now < scr_text_until_)) ? 25 : 66;
             if (!transient_active && ring_static && scr_static) {
                 sleep_ms = (scr_has && scfg.mode == "clock") ? 200 : 500;
             }

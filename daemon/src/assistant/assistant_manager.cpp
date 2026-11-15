@@ -698,6 +698,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
               "транслировать музыку с телефона на Станцию (A2DP Sink). На «выключи блютуз», «отключи блютуз» вызывай bluetooth_control(action=\"disable\").\n"
               "- Поиск пульта (find_remote): если пользователь просит найти пульт («где пульт», «найди пульт», «попищи пультом»), сразу вызывай find_remote().\n"
               "- Настройка пульта (setup_remote): при просьбе «настрой пульт», «подключи пульт» или «сопряги пульт» сразу вызывай setup_remote(), это открывает интерактивную пошаговую инструкцию и поиск BLE-пульта на телевизоре.\n"
+              "- Экран и телевизор (device_power, tv_hdmi_cec): на команды «выключи экран», «погаси экран», «отключи экран», «выруби экран», «усыпи экран» ВСЕГДА сразу вызывай device_power(action=\"screen_sleep\"). На команды «выключи телевизор», «выруби телик», «выключи ТВ» СРАЗУ вызывай device_power(action=\"screen_sleep\") и tv_hdmi_cec(action=\"standby\"). На «включи экран», «разбуди экран», «включи телевизор/телик/ТВ» вызывай device_power(action=\"screen_wake\"). НЕ путай эти команды с завершением диалога.\n"
               "- Перезагрузка демона и службы (device_power): если пользователь просит перезагрузить или перезапустить демон, ассистента, службу или оболочку OpenStation («перезагрузи демон», «перезапусти демон», «рестарт демона/сервиса»), ВСЕГДА вызывай device_power(action=\"restart_daemon\") и кратко подтверди 1 фразой («Перезагружаю демон, вернусь через пару секунд»). НИКОГДА не перезапускай openstationd через shell_exec или adb_exec (убийство процесса через дочерний shell прервёт перезапуск).\n"
               "- Если music_control вернул authRequired=true (нужен вход в аккаунт Яндекса), вежливо скажи пользователю об этом и предложи войти на экране ТВ или через веб-пульт.\n"
               "- Никогда не выдумывай погоду, новости, время или факты — вызывай соответствующий инструмент. "
@@ -1378,6 +1379,12 @@ void AssistantManager::session_worker(uint64_t sid,
                     json::Value bargs = json::Value::make_obj();
                     bargs["action"] = json::Value::make_str("disable");
                     cb_.execute_tool("bluetooth_control", bargs);
+                }
+            } else if (std::string pwr = parse_local_screen_power_intent(ul); !pwr.empty()) {
+                if (cb_.execute_tool) {
+                    json::Value pargs = json::Value::make_obj();
+                    pargs["action"] = json::Value::make_str(pwr);
+                    cb_.execute_tool("device_power", pargs);
                 }
             }
         }

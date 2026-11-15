@@ -3,6 +3,11 @@
   let state = null;
   let ws = null;
   let wsReconnectTimer = null;
+  let wsReconnectFailures = 0;
+  let httpPollTimer = null;
+  let httpPollInFlight = false;
+  let lastHttpOkMs = 0;
+  let connFails = 0;
   let saveTimer = null;
   let volTimer = null;
   let ampVolTimer = null;
@@ -92,19 +97,31 @@
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
 
-  async function api(path, method = "GET", body = null) {
-    const opts = { method, headers: {} };
+  async function api(path, method = "GET", body = null, extraOpts = null) {
+    const opts = { method, headers: {}, cache: "no-store" };
     if (body !== null) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    const res = await fetch(path, opts);
-    let data = null;
-    try { data = await res.json(); } catch {}
-    if (!res.ok) {
-      throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
+    let timerId = null;
+    if (extraOpts && extraOpts.timeoutMs > 0 && typeof AbortController !== "undefined") {
+      const ctrl = new AbortController();
+      opts.signal = ctrl.signal;
+      timerId = setTimeout(() => ctrl.abort(), extraOpts.timeoutMs);
     }
-    return data || {};
+    try {
+      const res = await fetch(path, opts);
+      let data = null;
+      try { data = await res.json(); } catch {}
+      if (!res.ok) {
+        throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
+      }
+      lastHttpOkMs = Date.now();
+      if (connFails > 0) setConn(true);
+      return data || {};
+    } finally {
+      if (timerId) clearTimeout(timerId);
+    }
   }
 
   function scheduleConfigPush() {
@@ -790,6 +807,9 @@
     applyBootanimState(d.bootanim || {});
     applyOtaState(d.ota || {}, d.firmwareVersion);
     applyWifiAdbState(d.wifiAdb || {}, d);
+    if (typeof applyBleRemoteState === "function") {
+      applyBleRemoteState(d.remote || {}, "remoteStatusBanner", "remoteCandidatesList", "btnForgetBleRemote");
+    }
     if (typeof handleMiscRepairState === "function") handleMiscRepairState(d.miscRepair);
 
     if (otaPendingRestart && !d.ota?.busy && d.ota?.state !== "restarting") {
@@ -884,7 +904,10 @@
       }
 
       if ($("actShort")) $("actShort").value = cfg.input?.actionShort || "assistant";
-      if ($("actLong")) $("actLong").value = cfg.input?.actionLong || "led_cycle";
+      if ($("actLong")) {
+        const al = cfg.input?.actionLong || "scrub";
+        $("actLong").value = (al === "dj_mode") ? "scrub" : al;
+      }
       if ($("rotaryInvert")) $("rotaryInvert").checked = !!cfg.input?.rotaryInvert;
       if ($("rotaryStep")) $("rotaryStep").value = cfg.input?.rotaryStep ?? 1;
       if ($("devHost")) $("devHost").value = cfg.deviceHostname || "station-max";
@@ -1990,23 +2013,149 @@
     });
   }
 
-  // BLE Remote Pair / Find, Matrix Recovery, Startup Show
-  async function triggerPairRemote() {
+  // BLE Remote Pair / Find / Forget, Live Status & Candidates
+  function applyBleRemoteState(rem, bannerId, listId, forgetBtnId) {
+    const r = rem || {};
+    const bonded = !!r.bonded;
+    const connected = !!r.connected;
+    const scanning = !!r.scanning;
+    const name = r.name || "Yandex Пульт";
+    const bat = typeof r.batteryPct === "number" && r.batteryPct >= 0 ? r.batteryPct : -1;
+    const scanState = r.scanState || "idle";
+    const scanDetail = r.scanDetail || "";
+    const cands = Array.isArray(r.candidates) ? r.candidates : [];
+
+    const banner = $(bannerId);
+    if (banner) {
+      let msg = "Пульт не подключён. Зажмите ОК + Громкость− на пульте и нажмите «Автопоиск пульта».";
+      let cls = "status-banner";
+      if (connected) {
+        const batTxt = bat >= 0 ? ` · ${bat}%` : "";
+        msg = `✓ Подключён: ${name}${batTxt}`;
+        cls = "status-banner ok";
+      } else if (scanning) {
+        msg = `📡 ${scanDetail || "Идёт BLE-поиск пульта... Зажмите ОК + Громкость−"}`;
+        cls = "status-banner live";
+      } else if (bonded) {
+        msg = `⚠️ ${name} сохранён, но не подключён — нажмите кнопку на пульте или «Забыть пульт»`;
+        cls = "status-banner warn";
+      } else if (scanState === "error") {
+        msg = `❌ ${scanDetail || "Ошибка BLE-сканирования"}`;
+        cls = "status-banner err";
+      } else if (scanState === "not_found") {
+        msg = `⚠️ ${scanDetail || "Пульт не обнаружен рядом"}`;
+        cls = "status-banner warn";
+      } else if (scanDetail) {
+        msg = scanDetail;
+      }
+      banner.textContent = msg;
+      banner.className = cls;
+    }
+
+    const forgetBtn = $(forgetBtnId);
+    if (forgetBtn) {
+      forgetBtn.style.display = bonded ? "" : "none";
+    }
+
+    const listEl = $(listId);
+    if (listEl) {
+      if (cands.length === 0) {
+        listEl.style.display = "none";
+        if (listEl.dataset.candSig) {
+          listEl.dataset.candSig = "";
+          listEl.replaceChildren();
+        }
+      } else {
+        listEl.style.display = "block";
+        const sig = cands.map((c) => `${c.address || ""}:${c.name || ""}:${c.rssi ?? ""}:${!!c.bonded}`).join("|");
+        if (listEl.dataset.candSig !== sig) {
+          listEl.dataset.candSig = sig;
+          const nodes = cands.map((c) => {
+            const row = document.createElement("div");
+            row.className = "row-between";
+            row.style.cssText = "padding:8px 12px;margin-bottom:6px;border-radius:12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);gap:10px;";
+
+            const info = document.createElement("div");
+            info.style.cssText = "font-size:0.86rem;color:#e2e8f0;";
+            const rssiTxt = typeof c.rssi === "number" ? ` · ${c.rssi} dBm` : "";
+            const tagTxt = c.bonded ? " · сохранён" : "";
+            info.textContent = `${c.name || "Yandex Пульт"} (${c.address || ""}${rssiTxt}${tagTxt})`;
+
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn btn-sm btn-accent";
+            btn.textContent = "Подключить";
+            btn.addEventListener("click", () => triggerPairRemote({ address: c.address || "", forceRescan: true }));
+
+            row.appendChild(info);
+            row.appendChild(btn);
+            return row;
+          });
+          listEl.replaceChildren(...nodes);
+        }
+      }
+    }
+  }
+
+  async function refreshRemoteTelemetry() {
     try {
-      const r = await api("/api/remote/pair", "POST", {});
-      showToast(r.ok !== false ? "Запущен автопоиск штатного BLE-пульта YNDX..." : (r.error || "Не удалось запустить поиск"), r.ok === false);
+      const s = await api("/api/status");
+      if (s) applyTelemetry(s, false);
+    } catch (_) {}
+  }
+
+  async function triggerPairRemote(opts = {}) {
+    try {
+      const body = {};
+      if (opts && typeof opts.address === "string" && opts.address) body.address = opts.address;
+      if (opts && opts.forceRescan) body.forceRescan = true;
+      const r = await api("/api/remote/pair", "POST", body);
+      if (r.remote) {
+        applyBleRemoteState(r.remote, "remoteStatusBanner", "remoteCandidatesList", "btnForgetBleRemote");
+        applyBleRemoteState(r.remote, "wizRemoteBanner", "wizRemoteCandidates", "btnWizForgetBle");
+      }
+      if (r.ok === false) {
+        showToast(r.error || r.message || "Не удалось запустить поиск пульта", true);
+      } else {
+        showToast(r.message || "Запущен автопоиск штатного BLE-пульта YNDX...");
+      }
+      setTimeout(refreshRemoteTelemetry, 900);
     } catch (e) { showToast("Ошибка BLE-поиска: " + e.message, true); }
   }
+
   async function triggerFindRemote() {
     try {
       const r = await api("/api/remote/find", "POST", {});
-      showToast(r.ok !== false ? "Отправлен звуковой сигнал поиска на BLE-пульт" : (r.error || "Пульт не подключён"), r.ok === false);
+      if (r.remote) {
+        applyBleRemoteState(r.remote, "remoteStatusBanner", "remoteCandidatesList", "btnForgetBleRemote");
+        applyBleRemoteState(r.remote, "wizRemoteBanner", "wizRemoteCandidates", "btnWizForgetBle");
+      }
+      if (r.ok === false) {
+        showToast(r.error || r.message || "Пульт не подключён", true);
+      } else {
+        showToast(r.message || "Отправлен звуковой сигнал поиска на BLE-пульт");
+      }
     } catch (e) { showToast("Ошибка поиска пульта: " + e.message, true); }
   }
-  if ($("btnPairBleRemote")) $("btnPairBleRemote").addEventListener("click", triggerPairRemote);
-  if ($("btnWizPairBle")) $("btnWizPairBle").addEventListener("click", triggerPairRemote);
+
+  async function triggerForgetRemote() {
+    try {
+      const r = await api("/api/remote/forget", "POST", {});
+      if (r.remote) {
+        applyBleRemoteState(r.remote, "remoteStatusBanner", "remoteCandidatesList", "btnForgetBleRemote");
+        applyBleRemoteState(r.remote, "wizRemoteBanner", "wizRemoteCandidates", "btnWizForgetBle");
+      }
+      showToast(r.ok === false ? (r.error || r.message || "Не удалось удалить пульт") : (r.message || "Привязка пульта удалена"), r.ok === false);
+      setTimeout(refreshRemoteTelemetry, 400);
+    } catch (e) { showToast("Ошибка удаления пульта: " + e.message, true); }
+  }
+
+  if ($("btnPairBleRemote")) $("btnPairBleRemote").addEventListener("click", () => triggerPairRemote({ forceRescan: true }));
+  if ($("btnWizPairBle")) $("btnWizPairBle").addEventListener("click", () => triggerPairRemote({ forceRescan: true }));
   if ($("btnFindBleRemote")) $("btnFindBleRemote").addEventListener("click", triggerFindRemote);
   if ($("btnWizFindBle")) $("btnWizFindBle").addEventListener("click", triggerFindRemote);
+  if ($("btnForgetBleRemote")) $("btnForgetBleRemote").addEventListener("click", triggerForgetRemote);
+  if ($("btnWizForgetBle")) $("btnWizForgetBle").addEventListener("click", triggerForgetRemote);
   if ($("btnRemoteBtToggle")) $("btnRemoteBtToggle").addEventListener("click", () => $("btnQuickBt")?.click());
 
   if ($("btnRecoverScreen")) {
@@ -2026,6 +2175,40 @@
     });
   }
 
+  async function probeHttpStatus() {
+    if (httpPollInFlight) return false;
+    httpPollInFlight = true;
+    try {
+      const s = await api("/api/status", "GET", null, { timeoutMs: 4000 });
+      setConn(true);
+      applyTelemetry(s, state === null);
+      return true;
+    } catch {
+      setConn(false);
+      return false;
+    } finally {
+      httpPollInFlight = false;
+    }
+  }
+
+  function stopHttpFallbackPoll() {
+    if (httpPollTimer) {
+      clearInterval(httpPollTimer);
+      httpPollTimer = null;
+    }
+  }
+
+  function startHttpFallbackPoll() {
+    if (httpPollTimer) return;
+    httpPollTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        stopHttpFallbackPoll();
+        return;
+      }
+      probeHttpStatus();
+    }, 2500);
+  }
+
   function connectWs() {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
@@ -2042,13 +2225,23 @@
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     ws = new WebSocket(proto + location.host + "/ws");
     ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+      wsReconnectFailures = 0;
+      setConn(true);
+      stopHttpFallbackPoll();
+    };
     ws.onerror = () => {
       try { ws?.close(); } catch {}
     };
     ws.onclose = () => {
-      setConn(false);
+      wsReconnectFailures += 1;
+      const delay = Math.min(10000, 2000 + Math.max(0, wsReconnectFailures - 1) * 1500);
       if (!wsReconnectTimer) {
-        wsReconnectTimer = setTimeout(connectWs, 2000);
+        wsReconnectTimer = setTimeout(connectWs, delay);
+      }
+      startHttpFallbackPoll();
+      if (Date.now() - lastHttpOkMs > 4500) {
+        probeHttpStatus();
       }
     };
     ws.onmessage = (ev) => {
@@ -2056,7 +2249,10 @@
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "telemetry") {
+            wsReconnectFailures = 0;
+            lastHttpOkMs = Date.now();
             setConn(true);
+            stopHttpFallbackPoll();
             applyTelemetry(msg.data, state === null);
           } else if (msg.type === "alarm_fired" || msg.type === "timer_fired") {
             showToast(msg.type === "alarm_fired"
@@ -2562,6 +2758,9 @@
       const dnsLabel = dnsMode === "hostname" && dnsHost ? `DNS: ${dnsHost}` : "DNS: авто";
       $("wizNetBanner").textContent = `✓ Автономный режим · IP: ${d.ip || "local"} · ${dnsLabel}`;
     }
+    if (typeof applyBleRemoteState === "function") {
+      applyBleRemoteState(d.remote || {}, "wizRemoteBanner", "wizRemoteCandidates", "btnWizForgetBle");
+    }
 
     const ota = d.ota || {};
     if ($("wizOtaLiveText")) {
@@ -3029,7 +3228,6 @@
   });
 
   // ===================== Связь со станцией и мини-плеер =====================
-  let connFails = 0;
   function setConn(ok) {
     connFails = ok ? 0 : connFails + 1;
     const off = !ok && connFails >= 2;
@@ -3037,7 +3235,15 @@
     if ($("connBannerSub")) $("connBannerSub").textContent = `Переподключаемся… попытка ${connFails} · ${location.host}`;
     document.body.classList.toggle("offline", off);
   }
-  if ($("btnConnRetry")) $("btnConnRetry").addEventListener("click", () => { connectWs(); init(); });
+  async function retryConnection() {
+    wsReconnectFailures = 0;
+    const ok = await probeHttpStatus();
+    if (ok && !state) {
+      loadApps();
+    }
+    connectWs();
+  }
+  if ($("btnConnRetry")) $("btnConnRetry").addEventListener("click", retryConnection);
 
   document.querySelectorAll("[data-mini-cmd]").forEach((b) => {
     b.addEventListener("click", () => {
@@ -3553,6 +3759,7 @@
       loadApps();
     } catch {
       setConn(false);
+      startHttpFallbackPoll();
       showToast("Нет связи со станцией, переподключение...", true);
     }
     connectWs();

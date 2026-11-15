@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "hw/track_scrub.hpp"
 #include "utils/json_min.hpp"
 
 #include <array>
@@ -58,6 +59,7 @@ public:
                            uint8_t b = 255,
                            int duration_ms = 5500,
                            const std::string& custom_pixels = "");
+    void set_scrub_visual(const ScrubVisualSnapshot& sv);
     void force_recover_screen();
     // Calibration helper: idx >= 0 highlights a single physical LED (before ring_offset)
     // and idx == -2 runs RGB byte-order test ([0..7]=R, [8..15]=G, [16..23]=B).
@@ -127,12 +129,14 @@ private:
     std::string scr_override_text_;
     Rgb scr_override_color_{0, 212, 255};
     std::chrono::steady_clock::time_point scr_override_start_{};
+    std::chrono::steady_clock::time_point scr_override_pause_tp_{};
     bool scr_override_one_shot_ = false;
     double scr_override_speed_ = 22.0;
 
     bool music_playing_ = false;
     std::string music_track_title_;
     std::chrono::steady_clock::time_point music_stop_grace_until_{};
+    ScrubVisualSnapshot scrub_visual_{};
     std::chrono::steady_clock::time_point weather_until_{};
     std::chrono::steady_clock::time_point weather_start_{};
     int weather_temp_c_ = 0;

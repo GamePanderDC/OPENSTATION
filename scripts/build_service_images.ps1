@@ -794,48 +794,56 @@ rm -rf \
 
 find "$MNT" -name '*:Zone.Identifier*' -exec rm -f {} + 2>/dev/null || true
 
-# Безопасное обновление ключей в vendor/build.prop
+# Удаление вендорной блоатвари (Live TV / Subtitle; сохраняем все BT/Wi-Fi/audio HAL)
+rm -rf "$MNT/app/DroidLiveTv" "$MNT/app/SubTitle"
+
+# Расширение zram0 256 MB -> 640 MB для 2 GB RAM (комфортный фоновый запас под видео/Алису)
+FST="$MNT/etc/fstab.amlogic"
+if [ -f "$FST" ] && grep -q 'zramsize=268435456' "$FST" 2>/dev/null; then
+    sed 's/zramsize=268435456/zramsize=671088640/g' "$FST" > "$BUILD/fstab.tmp"
+    chown 0:0 "$BUILD/fstab.tmp"
+    chmod 644 "$BUILD/fstab.tmp"
+    mv -f "$BUILD/fstab.tmp" "$FST"
+    chcon u:object_r:vendor_configs_file:s0 "$FST" 2>/dev/null || true
+fi
+
+# Безопасное обновление ключей в vendor/build.prop (вкл. ART JIT, dex2oat-4, HWUI, FIFO UI)
 BP="$MNT/build.prop"
 [ -f "$BP" ] || { echo "Missing vendor build.prop" >&2; exit 1; }
 : > "$BUILD/vendor_bp.tmp"
-seen_adb=0
-seen_tv=0
-seen_inp=0
-seen_set=0
-seen_ver=0
 while IFS= read -r line || [ -n "$line" ]; do
     cl=$(printf '%s' "$line" | tr -d '\r')
     case "$cl" in
-        service.adb.tcp.port=*)
-            printf 'service.adb.tcp.port=5555\n' >> "$BUILD/vendor_bp.tmp"
-            seen_adb=1
-            ;;
-        yndx.intercept.tv.key=*)
-            printf 'yndx.intercept.tv.key=com.openstation.launcher\n' >> "$BUILD/vendor_bp.tmp"
-            seen_tv=1
-            ;;
-        yndx.intercept.input.key=*)
-            printf 'yndx.intercept.input.key=com.openstation.launcher,com.yandex.tv.live\n' >> "$BUILD/vendor_bp.tmp"
-            seen_inp=1
-            ;;
-        yndx.intercept.settings.key=*)
-            printf 'yndx.intercept.settings.key=com.yandex.tv.settings\n' >> "$BUILD/vendor_bp.tmp"
-            seen_set=1
-            ;;
-        ro.openstation.version=*)
-            printf 'ro.openstation.version=__VER__\n' >> "$BUILD/vendor_bp.tmp"
-            seen_ver=1
+        service.adb.tcp.port=*|yndx.intercept.tv.key=*|yndx.intercept.input.key=*|yndx.intercept.settings.key=*|ro.openstation.version=*|\
+        dalvik.vm.jit.codecachesize=*|dalvik.vm.dex2oat-threads=*|dalvik.vm.boot-dex2oat-threads=*|dalvik.vm.image-dex2oat-threads=*|\
+        dalvik.vm.dex2oat-minidebuginfo=*|pm.dexopt.install=*|pm.dexopt.bg-dexopt=*|sys.use_fifo_ui=*|ro.sys.fw.bg_apps_limit=*|\
+        debug.hwui.use_buffer_age=*|debug.hwui.use_partial_updates=*|debug.hwui.skip_empty_damage=*)
+            continue
             ;;
         *)
             printf '%s\n' "$cl" >> "$BUILD/vendor_bp.tmp"
             ;;
     esac
 done < "$BP"
-[ "$seen_adb" -eq 1 ] || printf 'service.adb.tcp.port=5555\n' >> "$BUILD/vendor_bp.tmp"
-[ "$seen_tv"  -eq 1 ] || printf 'yndx.intercept.tv.key=com.openstation.launcher\n' >> "$BUILD/vendor_bp.tmp"
-[ "$seen_inp" -eq 1 ] || printf 'yndx.intercept.input.key=com.openstation.launcher,com.yandex.tv.live\n' >> "$BUILD/vendor_bp.tmp"
-[ "$seen_set" -eq 1 ] || printf 'yndx.intercept.settings.key=com.yandex.tv.settings\n' >> "$BUILD/vendor_bp.tmp"
-[ "$seen_ver" -eq 1 ] || printf 'ro.openstation.version=__VER__\n' >> "$BUILD/vendor_bp.tmp"
+cat <<'EOVP' >> "$BUILD/vendor_bp.tmp"
+service.adb.tcp.port=5555
+yndx.intercept.tv.key=com.openstation.launcher
+yndx.intercept.input.key=com.openstation.launcher,com.yandex.tv.live
+yndx.intercept.settings.key=com.yandex.tv.settings
+ro.openstation.version=__VER__
+dalvik.vm.jit.codecachesize=4m
+dalvik.vm.dex2oat-threads=4
+dalvik.vm.boot-dex2oat-threads=4
+dalvik.vm.image-dex2oat-threads=4
+dalvik.vm.dex2oat-minidebuginfo=false
+pm.dexopt.install=speed-profile
+pm.dexopt.bg-dexopt=speed
+sys.use_fifo_ui=1
+ro.sys.fw.bg_apps_limit=16
+debug.hwui.use_buffer_age=true
+debug.hwui.use_partial_updates=true
+debug.hwui.skip_empty_damage=true
+EOVP
 cp -f "$BUILD/vendor_bp.tmp" "$BP"
 chown 0:0 "$BP"
 chmod 644 "$BP"
@@ -1071,6 +1079,14 @@ rm -rf \
     "$MNT/system/app/YandexDaydream" \
     "$MNT/system/app/YandexPrebuiltStub" \
     "$MNT/system/app/Kinopoisk" \
+    "$MNT/system/app/SecureElement" \
+    "$MNT/system/app/WAPPushManager" \
+    "$MNT/system/app/WallpaperBackup" \
+    "$MNT/system/priv-app/CalendarProvider" \
+    "$MNT/system/priv-app/OneTimeInitializer" \
+    "$MNT/system/priv-app/StatementService" \
+    "$MNT/system/priv-app/BackupRestoreConfirmation" \
+    "$MNT/system/priv-app/SharedStorageBackup" \
     "$MNT/system/openstation"
 
 find "$MNT" -name '*:Zone.Identifier*' -exec rm -f {} + 2>/dev/null || true
@@ -1136,6 +1152,8 @@ s_tv=0
 s_inp=0
 s_set=0
 s_ver=0
+s_mdeb=0
+s_bgdex=0
 while IFS= read -r line || [ -n "$line" ]; do
     cl=$(printf '%s' "$line" | tr -d '\r')
     case "$cl" in
@@ -1150,6 +1168,14 @@ while IFS= read -r line || [ -n "$line" ]; do
         service.adb.tcp.port=*)
             printf 'service.adb.tcp.port=5555\n' >> "$BUILD/prop_default.tmp"
             s_sadb=1
+            ;;
+        dalvik.vm.dex2oat-minidebuginfo=*)
+            printf 'dalvik.vm.dex2oat-minidebuginfo=false\n' >> "$BUILD/prop_default.tmp"
+            s_mdeb=1
+            ;;
+        pm.dexopt.bg-dexopt=*)
+            printf 'pm.dexopt.bg-dexopt=speed\n' >> "$BUILD/prop_default.tmp"
+            s_bgdex=1
             ;;
         yndx.intercept.tv.key=*)
             printf 'yndx.intercept.tv.key=com.openstation.launcher\n' >> "$BUILD/prop_default.tmp"
@@ -1175,6 +1201,8 @@ done < "$PD"
 [ "$s_pusb" -eq 1 ] || printf 'persist.sys.usb.config=adb\n' >> "$BUILD/prop_default.tmp"
 [ "$s_padb" -eq 1 ] || printf 'persist.adb.tcp.port=5555\n' >> "$BUILD/prop_default.tmp"
 [ "$s_sadb" -eq 1 ] || printf 'service.adb.tcp.port=5555\n' >> "$BUILD/prop_default.tmp"
+[ "$s_mdeb" -eq 1 ] || printf 'dalvik.vm.dex2oat-minidebuginfo=false\n' >> "$BUILD/prop_default.tmp"
+[ "$s_bgdex" -eq 1 ] || printf 'pm.dexopt.bg-dexopt=speed\n' >> "$BUILD/prop_default.tmp"
 [ "$s_tv"   -eq 1 ] || printf 'yndx.intercept.tv.key=com.openstation.launcher\n' >> "$BUILD/prop_default.tmp"
 [ "$s_inp"  -eq 1 ] || printf 'yndx.intercept.input.key=com.openstation.launcher,com.yandex.tv.live\n' >> "$BUILD/prop_default.tmp"
 [ "$s_set"  -eq 1 ] || printf 'yndx.intercept.settings.key=com.yandex.tv.settings\n' >> "$BUILD/prop_default.tmp"

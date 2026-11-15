@@ -360,6 +360,16 @@ object AliceOrbFrames {
         loaded = true
         Log.i(TAG, "Loaded $count orb frames across ${decoded.size} GPU sheets (${tSize}px)")
     }
+
+    /** Releases decoded orb sprite sheets under memory pressure while backgrounded; reloaded lazily via preloadAsync. */
+    fun release() {
+        synchronized(lock) {
+            if (!loaded || loading) return
+            loaded = false
+            sheets = emptyArray()
+            srcRects = emptyArray()
+        }
+    }
 }
 
 /**
@@ -386,6 +396,38 @@ class AliceOrbView @JvmOverloads constructor(
         if (running) {
             Choreographer.getInstance().postFrameCallback(this)
         }
+    }
+    private val idleStepRunnable = Runnable {
+        if (running) {
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+    private val orbStateListener = LiveOrbState.StateListener {
+        if (running) {
+            val st = LiveOrbState.assistantState
+            val musicOn = LiveOrbState.musicPlaying || LiveOrbState.musicOverall > 0.045f
+            if (st != "idle" || musicOn || System.currentTimeMillis() < LiveOrbState.previewUntilMs) {
+                wakeAnimation()
+            }
+        }
+    }
+
+    private fun isEffectivelyVisible(): Boolean {
+        if (!isShown) return false
+        var cur: View? = this
+        while (cur != null) {
+            if (cur.visibility != VISIBLE || cur.alpha <= 0.015f) return false
+            cur = cur.parent as? View
+        }
+        return true
+    }
+
+    fun wakeAnimation() {
+        if (!running || !isAttachedToWindow) return
+        removeCallbacks(wakeCheckRunnable)
+        removeCallbacks(idleStepRunnable)
+        Choreographer.getInstance().removeFrameCallback(this)
+        Choreographer.getInstance().postFrameCallback(this)
     }
 
     // 0f on Screen 0 hero, 0..1f during morph -> 1f in docked/overlay bar for luminous gem visibility
@@ -445,6 +487,7 @@ class AliceOrbView @JvmOverloads constructor(
     private var curSat = 1.05f
     private var curBright = 1.0f
     private var curGlowColor = Color.parseColor("#38BDF8")
+    private var levitatePhase = 0f
 
     // Preallocated Paint/Matrix/LRU Shader objects (zero per-frame allocations in steady state)
     private val bmpPaint0 = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -509,13 +552,17 @@ class AliceOrbView @JvmOverloads constructor(
         if (running) return
         running = true
         lastNs = 0L
+        LiveOrbState.addListener(orbStateListener)
         removeCallbacks(wakeCheckRunnable)
+        removeCallbacks(idleStepRunnable)
         Choreographer.getInstance().postFrameCallback(this)
     }
 
     private fun stopAnim() {
         running = false
+        LiveOrbState.removeListener(orbStateListener)
         removeCallbacks(wakeCheckRunnable)
+        removeCallbacks(idleStepRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
     }
 
@@ -524,8 +571,9 @@ class AliceOrbView @JvmOverloads constructor(
         val disp = display
         val displayOff = disp != null && disp.state == Display.STATE_OFF
         val interactive = powerManager?.isInteractive ?: true
-        if (!isShown || displayOff || !interactive) {
+        if (!isEffectivelyVisible() || displayOff || !interactive) {
             lastNs = 0L
+            removeCallbacks(idleStepRunnable)
             removeCallbacks(wakeCheckRunnable)
             postDelayed(wakeCheckRunnable, 450L)
             return
@@ -535,26 +583,27 @@ class AliceOrbView @JvmOverloads constructor(
         val morphing = abs(boost - lastBoost) > 0.004f
         val st = LiveOrbState.assistantState
         val musicOn = LiveOrbState.musicPlaying || LiveOrbState.musicOverall > 0.045f
-        val activeNow = (st != "idle") || musicOn || morphing
+        val previewOn = System.currentTimeMillis() < LiveOrbState.previewUntilMs
+        val activeNow = (st != "idle") || musicOn || morphing || previewOn
         if (activeNow) {
             activeHoldUntilNs = frameTimeNanos + 1_200_000_000L
         }
         val highRate = activeNow || frameTimeNanos < activeHoldUntilNs
-        if (!highRate && lastNs != 0L) {
-            val minStepNs = if (boost > 0.85f) 110_000_000L else 85_000_000L
-            if ((frameTimeNanos - lastNs) < minStepNs) {
-                // Calm idle: ~11.8 Hz hero orb, ~9 Hz docked miniature (zero idle GPU churn)
-                Choreographer.getInstance().postFrameCallback(this)
-                return
-            }
-        }
 
         lastBoost = boost
-        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.14f)
+        val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.25f)
         lastNs = frameTimeNanos
         stepPhysics(dt)
         invalidate()
-        Choreographer.getInstance().postFrameCallback(this)
+
+        removeCallbacks(idleStepRunnable)
+        if (highRate) {
+            Choreographer.getInstance().postFrameCallback(this)
+        } else {
+            // Avoid 60Hz MainThread Choreographer churn when idle: calm ambient ~11 Hz hero / ~2.5 Hz dock gem.
+            val delayMs = if (boost > 0.85f) 400L else 90L
+            postDelayed(idleStepRunnable, delayMs)
+        }
     }
 
     private fun stepPhysics(dt: Float) {
@@ -740,6 +789,7 @@ class AliceOrbView @JvmOverloads constructor(
         if (framePhase < 0f) framePhase += nFrames
 
         rotDeg = (rotDeg + dt * (5f + curSpeed * 9f)) % 360f
+        levitatePhase = (levitatePhase + dt * 1.18f) % (2f * Math.PI.toFloat())
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -748,9 +798,11 @@ class AliceOrbView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 4f || h <= 4f) return
 
-        val cx = w * 0.5f
-        val cy = h * 0.5f
         val baseDim = min(w, h)
+        // Subtle calm breathing levitation (~4.8dp hero amplitude) without disturbing outer view translation
+        val levitateAmp = if (compactGlowBoost > 0.85f) 0f else min(baseDim * 0.018f, resources.displayMetrics.density * 4.8f)
+        val cx = w * 0.5f
+        val cy = h * 0.5f + sin(levitatePhase) * levitateAmp
         // Outer aura expands softly around the sphere inside view bounds (sphere itself ~85% of view dim)
         val orbDiameter = baseDim * 0.85f * curScale
         val halfOrb = orbDiameter * 0.5f
@@ -831,11 +883,12 @@ class AliceOrbView @JvmOverloads constructor(
         canvas.rotate(rotDeg, cx, cy)
         val sphereAlphaScale = ((1f - morphProgress) * 255f).toInt().coerceIn(0, 255)
         if (sphereAlphaScale > 0) {
-            val idleSnap = if (LiveOrbState.assistantState == "idle" &&
+            val calmIdle = LiveOrbState.assistantState == "idle" &&
                 !LiveOrbState.musicPlaying &&
-                LiveOrbState.musicOverall <= 0.045f) 0.22f else 0.14f
-            if (boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
-                // Single-layer fast path (docked miniature orb or dominant keyframe -> halves Mali-G31 fillrate)
+                LiveOrbState.musicOverall <= 0.045f
+            val idleSnap = if (calmIdle) 0.22f else 0.14f
+            if (calmIdle || boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
+                // Single-layer fast path (calm idle, miniature orb, or dominant keyframe -> halves Mali-G31 fillrate)
                 val fi = if (blend >= 0.5f) f1 else f0
                 val s = AliceOrbFrames.sheets[fi / perSheet]
                 if (s != null && !s.isRecycled) {

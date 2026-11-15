@@ -46,6 +46,7 @@ class YandexMusicPlayer(private val context: Context) {
     private var isBuffering = false
     private var assistantDucked = false
     private var focusDucked = false
+    private var scrubDucked = false
     private var pausedByTransientFocus = false
 
     private var sourceType = "idle"
@@ -186,7 +187,7 @@ class YandexMusicPlayer(private val context: Context) {
                 playing = isPlaying && !isPaused,
                 paused = isPaused,
                 buffering = isBuffering,
-                ducked = assistantDucked,
+                ducked = combineDuckState(assistantDucked, scrubDucked),
                 sourceType = sourceType,
                 sourceLabel = sourceLabel,
                 waveMood = waveMood,
@@ -336,17 +337,39 @@ class YandexMusicPlayer(private val context: Context) {
 
     private fun applyPlayerVolumeLocked() {
         val mp = mediaPlayer ?: return
-        val g = (if (assistantDucked) 0.16f else 1.0f) * (if (focusDucked) 0.25f else 1.0f)
+        val g = (if (assistantDucked) 0.16f else 1.0f) *
+            (if (focusDucked) 0.25f else 1.0f) *
+            (if (scrubDucked) 0.0f else 1.0f)
         try {
             mp.setVolume(g, g)
         } catch (_: Throwable) {}
     }
 
     fun setDuck(ducked: Boolean) {
+        var changed = false
         synchronized(lock) {
             if (assistantDucked == ducked) return
             assistantDucked = ducked
             applyPlayerVolumeLocked()
+            changed = true
+        }
+        if (changed) emitSnapshot(forceDaemon = false)
+    }
+
+    fun setScrubDuck(ducked: Boolean) {
+        var changed = false
+        synchronized(lock) {
+            if (scrubDucked == ducked) return
+            scrubDucked = ducked
+            applyPlayerVolumeLocked()
+            changed = true
+        }
+        if (changed) emitSnapshot(forceDaemon = false)
+    }
+
+    fun hasActiveOrPausedTrack(): Boolean {
+        synchronized(lock) {
+            return (mediaPlayer != null || isPaused) && currentTrack != null
         }
     }
 
@@ -756,6 +779,36 @@ class YandexMusicPlayer(private val context: Context) {
         }
     }
 
+    fun seekBy(deltaMs: Long) {
+        if (deltaMs == 0L) return
+        worker.submit {
+            var updated = false
+            synchronized(lock) {
+                val mp = mediaPlayer
+                if (mp != null) {
+                    try {
+                        val cur = mp.currentPosition.toLong().coerceAtLeast(0L)
+                        val dur = mp.duration.toLong()
+                        val tgt = computeClampedSeekTargetMs(cur, dur, deltaMs)
+                        mp.seekTo(tgt.toInt())
+                        updateMediaSessionLocked()
+                        updated = true
+                    } catch (_: Throwable) {}
+                } else if (isPaused && currentTrack != null) {
+                    val dur = lastReportedDurMs.coerceAtLeast(currentTrack?.durationMs ?: 0L)
+                    val tgt = computeClampedSeekTargetMs(savedPausedPosMs, dur, deltaMs)
+                    savedPausedPosMs = tgt
+                    savedPausedTrackId = currentTrack?.id ?: ""
+                    updateMediaSessionLocked()
+                    updated = true
+                }
+            }
+            if (updated) {
+                emitSnapshot(forceDaemon = true)
+            }
+        }
+    }
+
     fun seekTo(posMs: Long) {
         worker.submit {
             var updated = false
@@ -778,7 +831,7 @@ class YandexMusicPlayer(private val context: Context) {
                 }
             }
             if (updated) {
-                emitSnapshot(forceDaemon = false)
+                emitSnapshot(forceDaemon = true)
             }
         }
     }
@@ -951,15 +1004,17 @@ class YandexMusicPlayer(private val context: Context) {
                             updateMediaSessionLocked()
                         }
                         startProgressTicker()
+                        lastTickerTrackId = track.id
                         emitSnapshot(forceDaemon = true)
-                        if (track.id != lastTickerTrackId) {
-                            lastTickerTrackId = track.id
-                            pushTickerToDaemon("♪ ${track.artists} - ${track.title}")
-                        }
                         if (sid.isNotEmpty()) {
                             enqueueRotorFeedback(sid, "trackStarted", track)
                         }
                         loadCoverForMediaSession(track, tok)
+                    }
+                    mp.setOnSeekCompleteListener {
+                        if (playTokenGen.get() == tok && !released) {
+                            emitSnapshot(forceDaemon = true)
+                        }
                     }
                     mp.setOnCompletionListener {
                         if (playTokenGen.get() != tok || released) return@setOnCompletionListener
@@ -1175,4 +1230,32 @@ class YandexMusicPlayer(private val context: Context) {
             conn.disconnect()
         } catch (_: Throwable) {}
     }
+}
+
+internal fun combineDuckState(assistantDucked: Boolean, scrubDucked: Boolean): Boolean =
+    assistantDucked || scrubDucked
+
+internal fun computeClampedSeekTargetMs(curPosMs: Long, durationMs: Long, deltaMs: Long): Long {
+    val base = curPosMs.coerceAtLeast(0L) + deltaMs
+    return if (durationMs > 0L) {
+        base.coerceIn(0L, (durationMs - 800L).coerceAtLeast(0L))
+    } else {
+        base.coerceAtLeast(0L)
+    }
+}
+
+internal fun formatSeekDelta(deltaMs: Int): String {
+    if (deltaMs == 0) return ""
+    val sign = if (deltaMs >= 0) "+" else "-"
+    val totalSec = kotlin.math.abs(deltaMs) / 1000
+    val m = totalSec / 60
+    val s = totalSec % 60
+    return "$sign$m:${"%02d".format(s)}"
+}
+
+internal fun formatTimeMs(ms: Long): String {
+    val totalSec = (ms.coerceAtLeast(0L) / 1000L).toInt()
+    val m = totalSec / 60
+    val s = totalSec % 60
+    return "$m:${"%02d".format(s)}"
 }

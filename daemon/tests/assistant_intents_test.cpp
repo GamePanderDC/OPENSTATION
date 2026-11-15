@@ -19,6 +19,21 @@ int main() {
     assert(openstation::normalize_device_power_action("restart") == "restart_daemon");
     assert(openstation::normalize_device_power_action("reboot_daemon") == "restart_daemon");
     assert(openstation::normalize_device_power_action("wake") == "screen_wake");
+    assert(openstation::normalize_device_power_action("tv_on") == "screen_wake");
     assert(openstation::normalize_device_power_action("sleep") == "screen_sleep");
+    assert(openstation::normalize_device_power_action("screen_off") == "screen_sleep");
+    assert(openstation::normalize_device_power_action("standby") == "screen_sleep");
     assert(openstation::normalize_device_power_action("reboot") == "reboot");
+
+    assert(openstation::parse_local_screen_power_intent("выключи экран") == "screen_sleep");
+    assert(openstation::parse_local_screen_power_intent("погаси экран пожалуйста") == "screen_sleep");
+    assert(openstation::parse_local_screen_power_intent("алиса выключи телевизор") == "screen_sleep");
+    assert(openstation::parse_local_screen_power_intent("выруби телик") == "screen_sleep");
+    assert(openstation::parse_local_screen_power_intent("выключи тв") == "screen_sleep");
+    assert(openstation::parse_local_screen_power_intent("включи экран") == "screen_wake");
+    assert(openstation::parse_local_screen_power_intent("включи телевизор") == "screen_wake");
+    assert(openstation::parse_local_screen_power_intent("выключись").empty());
+    assert(openstation::parse_local_screen_power_intent("не выключай экран").empty());
+    assert(openstation::parse_local_screen_power_intent("выключи подсветку").empty());
+    assert(openstation::parse_local_screen_power_intent("выключи bluetooth").empty());
 }
