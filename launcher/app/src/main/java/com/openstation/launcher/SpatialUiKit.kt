@@ -2,6 +2,7 @@ package com.openstation.launcher
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -11,6 +12,7 @@ import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.animation.Interpolator
 import android.view.animation.PathInterpolator
 
@@ -95,6 +97,16 @@ object SpatialUiKit {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             view.defaultFocusHighlightEnabled = false
         }
+    }
+
+    fun clipRounded(view: View, radiusDp: Int) {
+        val radius = dp(view.context, radiusDp).toFloat()
+        view.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, radius)
+            }
+        }
+        view.clipToOutline = true
     }
 
     fun makeGlassSurface(

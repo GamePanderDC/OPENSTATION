@@ -104,7 +104,7 @@ class TimersScreen(
             baseTint = Color.parseColor("#D6080D18"),
             focusTint = Color.parseColor("#E010182C"),
             normalStroke = Color.parseColor("#2AFFFFFF"),
-            focusStroke = Color.parseColor("#AAFFFFFF"),
+            focusStroke = Color.parseColor("#8C7DB8D6"),
             refractStrength = 1.05f
         )
         addView(root, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -146,7 +146,7 @@ class TimersScreen(
             baseTint = Color.parseColor("#880B1323"),
             focusTint = Color.parseColor("#880B1323"),
             normalStroke = Color.parseColor("#22FFFFFF"),
-            focusStroke = Color.parseColor("#22FFFFFF")
+            focusStroke = Color.parseColor("#8C7DB8D6")
         )
 
         val kinds = LinearLayout(context).apply {

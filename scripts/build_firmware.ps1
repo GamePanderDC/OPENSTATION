@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.7",
-    [string]$Changelog = "OpenStation Max v1.6.7: статичные обои, видеозаставка 1080p60 и исправления интерфейса.",
+    [string]$Version = "1.6.8",
+    [string]$Changelog = "OpenStation Max v1.6.8: главный экран по центру, музыка слева, станция справа; исправлены скругления и подсветка.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

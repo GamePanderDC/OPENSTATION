@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.LinearGradient
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -363,6 +364,15 @@ object LiquidGlassKit {
 
         override fun isStateful(): Boolean = true
 
+        override fun getOutline(outline: Outline) {
+            val b = bounds
+            if (b.isEmpty) {
+                outline.setEmpty()
+                return
+            }
+            outline.setRoundRect(b, min(radiusPx, min(b.width(), b.height()) * 0.5f))
+        }
+
         override fun onStateChange(state: IntArray): Boolean {
             var foc = false
             var prs = false
@@ -517,7 +527,7 @@ object LiquidGlassKit {
 
             // 5. Delicate hairline crystal edge (pearl white glow on focus, zero heavy yellow wireframe)
             borderPaint.color = when {
-                isPressedState -> Color.parseColor("#E6FFFFFF")
+                isPressedState -> Color.parseColor("#A07DB8D6")
                 isFocusedState -> focusStroke
                 else -> normalStroke
             }

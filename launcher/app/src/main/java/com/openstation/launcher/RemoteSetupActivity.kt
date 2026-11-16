@@ -62,7 +62,7 @@ class RemoteSetupActivity : Activity() {
             baseTint = Color.parseColor("#6A09111E"),
             focusTint = Color.parseColor("#6A09111E"),
             normalStroke = Color.parseColor("#2AFFFFFF"),
-            focusStroke = Color.parseColor("#2AFFFFFF")
+            focusStroke = Color.parseColor("#8C7DB8D6")
         )
 
         val badgeRow = LinearLayout(this).apply {

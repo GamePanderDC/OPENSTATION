@@ -166,8 +166,6 @@ class MainActivity : Activity() {
     private lateinit var page0View: FrameLayout
     private lateinit var page1Scroll: ScrollView
     private lateinit var page2Scroll: ScrollView
-    private lateinit var tabViews: Array<TextView>
-    private lateinit var tabBgShapes: Array<GradientDrawable>
 
     // Persistent morphing Alice Sphere + Hero Response Card + Bottom Dock Bar
     private lateinit var heroOrbView: AliceOrbView
@@ -212,7 +210,6 @@ class MainActivity : Activity() {
     private var homeCustomOpen = false
     private var appContextOpen = false
     private var appInfoOpen = false
-    private var isProgrammaticPageFocus = false
     private var activeAppEntries: List<AppEntry> = emptyList()
     private val drawerTileViews = LinkedHashMap<String, View>()
     private val screen1TileViews = LinkedHashMap<String, View>()
@@ -233,7 +230,7 @@ class MainActivity : Activity() {
     private lateinit var btnDockHome: LinearLayout
 
     private var currentPage = 0
-    private var currentPagePos = 0f
+    private var currentPagePos = 1f
     private var pageAnimator: ValueAnimator? = null
     private lateinit var swipeDetector: GestureDetector
 
@@ -427,11 +424,9 @@ class MainActivity : Activity() {
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
                 if (abs(dx) > dp(72) && abs(dx) > abs(dy) * 1.35f && abs(velocityX) > 250f) {
-                    if (dx < 0 && currentPage < 2) {
-                        setPage(currentPage + 1, animate = true)
-                        return true
-                    } else if (dx > 0 && currentPage > 0) {
-                        setPage(currentPage - 1, animate = true)
+                    val next = HomePageOrder.adjacent(currentPage, if (dx < 0) 1 else -1)
+                    if (next != null) {
+                        setPage(next, animate = true)
                         return true
                     }
                 }
@@ -481,8 +476,7 @@ class MainActivity : Activity() {
                 settleFromExternalAppIfNeeded()
                 btnHeroOrbClick.post {
                     if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
-                        isProgrammaticPageFocus = true
-                        try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
+                        btnHeroOrbClick.requestFocus()
                     }
                 }
             }
@@ -584,8 +578,7 @@ class MainActivity : Activity() {
                 setPage(0, animate = true)
                 btnHeroOrbClick.post {
                     if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
-                        isProgrammaticPageFocus = true
-                        try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
+                        btnHeroOrbClick.requestFocus()
                     }
                 }
             }
@@ -688,45 +681,13 @@ class MainActivity : Activity() {
                     }
                 }
                 KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_PAGE_DOWN -> {
-                    if (currentPage < 2) {
-                        setPage(currentPage + 1, animate = true)
-                        return true
-                    }
+                    HomePageOrder.adjacent(currentPage, 1)?.let { setPage(it, animate = true); return true }
                 }
                 KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_PAGE_UP -> {
-                    if (currentPage > 0) {
-                        setPage(currentPage - 1, animate = true)
-                        return true
-                    }
+                    HomePageOrder.adjacent(currentPage, -1)?.let { setPage(it, animate = true); return true }
                 }
                 else -> {
                     val cur = currentFocus
-                    if (::tabViews.isInitialized) {
-                        val tabIdx = tabViews.indexOfFirst { it === cur }
-                        if (tabIdx >= 0) {
-                            when (event.keyCode) {
-                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                    if (tabIdx < 2) switchToPageTabFocused(tabIdx + 1)
-                                    else nudgeView(tabViews[tabIdx], dx = -dp(8).toFloat(), dy = 0f)
-                                    return true
-                                }
-                                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                    if (tabIdx > 0) switchToPageTabFocused(tabIdx - 1)
-                                    else nudgeView(tabViews[tabIdx], dx = dp(8).toFloat(), dy = 0f)
-                                    return true
-                                }
-                                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                    if (tabIdx == 0) {
-                                        btnHeroOrbClick.requestFocus()
-                                    } else {
-                                        focusPageControlDirect(currentPage)
-                                    }
-                                    return true
-                                }
-                            }
-                        }
-                    }
-
                     if (currentPage == 0 && ::eqWidgetController.isInitialized && eqWidgetController.handleKeyEvent(event, cur)) {
                         return true
                     }
@@ -767,16 +728,7 @@ class MainActivity : Activity() {
                                 } else {
                                     FocusFinder.getInstance().findNextFocus(scrollRoot, cur, View.FOCUS_UP)
                                 }
-                                if (upNext == null && ::tabViews.isInitialized) {
-                                    isProgrammaticPageFocus = true
-                                    try {
-                                        tabViews[currentPage].requestFocus()
-                                    } finally {
-                                        isProgrammaticPageFocus = false
-                                    }
-                                    updateTabsAppearance(focusedIdx = currentPage)
-                                    return true
-                                }
+                                if (upNext == null) return true
                             }
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
@@ -785,7 +737,7 @@ class MainActivity : Activity() {
                                     btnHeroOrbClick.requestFocus()
                                     return true
                                 }
-                                switchToPageTabFocused(1)
+                                switchToPage(2)
                                 return true
                             } else if (currentPage == 1) {
                                 val next = if (cur == null || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather ||
@@ -796,7 +748,7 @@ class MainActivity : Activity() {
                                     FocusFinder.getInstance().findNextFocus(page1Scroll, cur, View.FOCUS_RIGHT)
                                 }
                                 if (next == null) {
-                                    switchToPageTabFocused(2)
+                                    switchToPage(0)
                                     return true
                                 }
                             }
@@ -809,7 +761,7 @@ class MainActivity : Activity() {
                                     btnHeroOrbClick.requestFocus()
                                     return true
                                 }
-                                nudgeView(page0View, dx = dp(14).toFloat(), dy = 0f)
+                                switchToPage(1)
                                 return true
                             } else if (currentPage == 2) {
                                 val next = if (cur == null || cur === bottomDockBar || cur === tvStatusLine || cur === tvTopWeather) {
@@ -818,7 +770,7 @@ class MainActivity : Activity() {
                                     FocusFinder.getInstance().findNextFocus(page2Scroll, cur, View.FOCUS_LEFT)
                                 }
                                 if (next == null) {
-                                    switchToPageTabFocused(1)
+                                    switchToPage(0)
                                     return true
                                 }
                             } else if (currentPage == 1) {
@@ -831,7 +783,6 @@ class MainActivity : Activity() {
                                     FocusFinder.getInstance().findNextFocus(page1Scroll, cur, View.FOCUS_LEFT)
                                 }
                                 if (next == null) {
-                                    switchToPageTabFocused(0)
                                     return true
                                 }
                             }
@@ -959,7 +910,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#2A0A101C"),
                 focusTint = Color.parseColor("#66203048"),
                 normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#B0FFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 0.7f
             )
             visibility = View.GONE
@@ -981,65 +932,6 @@ class MainActivity : Activity() {
         topLeft.addView(tvTopDate)
         topLeft.addView(tvTopWeather)
 
-        // Center: Spatial Glass Pill Switcher
-        val tabsPillGroup = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#38080D18"),
-                focusTint = Color.parseColor("#54101B2E"),
-                normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#88FFFFFF"),
-                refractStrength = 0.9f
-            )
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        val tabTitles = arrayOf("Сфера", "Музыка и ТВ", "Станция")
-        val tmpTabs = ArrayList<TextView>(3)
-        val tmpShapes = ArrayList<GradientDrawable>(3)
-        tabTitles.forEachIndexed { idx, title ->
-            val shape = GradientDrawable().apply {
-                cornerRadius = dp(999).toFloat()
-                setColor(Color.TRANSPARENT)
-            }
-            tmpShapes.add(shape)
-            val tv = TextView(this).apply {
-                text = title
-                textSize = 12f
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setTextColor(Color.parseColor("#CBD5E1"))
-                gravity = Gravity.CENTER
-                setPadding(dp(16), dp(5), dp(16), dp(5))
-                background = shape
-                isFocusable = true
-                isClickable = true
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
-                    if (hasFocus && !isProgrammaticPageFocus && currentPage != idx) {
-                        setPage(idx, animate = true)
-                    } else {
-                        updateTabsAppearance(focusedIdx = if (hasFocus) idx else -1)
-                    }
-                }
-                setOnClickListener { setPage(idx, animate = true) }
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    if (idx < 2) marginEnd = dp(4)
-                }
-            }
-            tmpTabs.add(tv)
-            tabsPillGroup.addView(tv)
-        }
-        tabViews = tmpTabs.toTypedArray()
-        tabBgShapes = tmpShapes.toTypedArray()
-
         // Right: Compact Status Pill (Optical Spatial Glass)
         tvStatusLine = TextView(this).apply {
             text = "○ Подключение..."
@@ -1054,7 +946,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#2A080D18"),
                 focusTint = Color.parseColor("#58172338"),
                 normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 0.8f
             )
             isFocusable = true
@@ -1068,7 +960,6 @@ class MainActivity : Activity() {
         }
 
         topBar.addView(topLeft)
-        topBar.addView(tabsPillGroup)
         topBar.addView(tvStatusLine)
         shellCol.addView(topBar)
 
@@ -1203,7 +1094,7 @@ class MainActivity : Activity() {
 
         screensaverOverlay = SpatialScreensaverOverlay(this) {
             screensaverOverlay.close()
-            heroOrbView.setAnimationEnabled(true)
+            heroOrbView.setAnimationEnabled(heroOrbView.alpha > 0.01f)
         }
         rootFrame.addView(screensaverOverlay.rootOverlay)
 
@@ -1225,8 +1116,7 @@ class MainActivity : Activity() {
         setPage(0, animate = false)
         btnHeroOrbClick.post {
             if (currentPage == 0 && !appsDrawerOpen && !homeCustomOpen && !appContextOpen && !appInfoOpen) {
-                isProgrammaticPageFocus = true
-                try { btnHeroOrbClick.requestFocus() } finally { isProgrammaticPageFocus = false }
+                btnHeroOrbClick.requestFocus()
             }
         }
     }
@@ -1304,7 +1194,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#44080D18"),
                 focusTint = Color.parseColor("#66111B2E"),
                 normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 0.95f
             )
             setPadding(dp(20), dp(9), dp(20), dp(10))
@@ -1600,7 +1490,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#54090E1A"),
                 focusTint = Color.parseColor("#76131D30"),
                 normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 1.0f
             )
             clipToOutline = true
@@ -1719,7 +1609,7 @@ class MainActivity : Activity() {
         ivHomeCover = ImageView(this).apply {
             setImageResource(R.drawable.sprite_ym_emblem)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            clipToOutline = true
+            SpatialUiKit.clipRounded(this, 14)
             layoutParams = FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER_VERTICAL)
         }
         viewHomeCoverBorder = View(this).apply {
@@ -1870,7 +1760,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#54090E1A"),
                 focusTint = Color.parseColor("#76131D30"),
                 normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 1.0f
             )
             elevation = dp(6).toFloat()
@@ -2019,9 +1909,7 @@ class MainActivity : Activity() {
             setBackgroundResource(R.drawable.bg_pill_gold)
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { openSetupWizard(manual = true) }
         }
         val telemetryRow = LinearLayout(this).apply {
@@ -2040,9 +1928,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 marginEnd = dp(6)
             }
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.07f else 1f).scaleY(if (hasFocus) 1.07f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { openOtaDialog() }
         }
         telemetryRow.addView(tvStationTelemetry)
@@ -2062,7 +1948,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#54090E1A"),
                 focusTint = Color.parseColor("#76131D30"),
                 normalStroke = Color.parseColor("#18FFFFFF"),
-                focusStroke = Color.parseColor("#A8FFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 1.0f
             )
             elevation = dp(6).toFloat()
@@ -2146,11 +2032,9 @@ class MainActivity : Activity() {
                     baseTint = Color.parseColor("#5C0B1324"),
                     focusTint = Color.parseColor("#99192948"),
                     normalStroke = Color.parseColor("#24FFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
+                    focusStroke = Color.parseColor("#8C7DB8D6")
                 )
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(90).start()
-                }
+
                 setOnClickListener { onClick() }
                 addView(tv)
             }
@@ -2256,9 +2140,7 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(8), dp(14), dp(8))
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.012f else 1f).scaleY(if (hasFocus) 1.012f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { triggerAlice() }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2348,20 +2230,8 @@ class MainActivity : Activity() {
     // -----------------------------------------------------------------------------------------
     // SMOOTH PAGE TRANSITION & CONTINUOUS SPHERE MORPHING MATH
     // -----------------------------------------------------------------------------------------
-    private fun switchToPageTabFocused(targetPage: Int) {
-        val clamped = targetPage.coerceIn(0, 2)
-        isProgrammaticPageFocus = true
-        try {
-            if (clamped == 0 && ::btnHeroOrbClick.isInitialized) {
-                btnHeroOrbClick.requestFocus()
-            } else if (::tabViews.isInitialized) {
-                tabViews[clamped].requestFocus()
-            }
-            setPage(clamped, animate = true)
-        } finally {
-            isProgrammaticPageFocus = false
-        }
-        updateTabsAppearance(focusedIdx = if (clamped == 0) -1 else clamped)
+    private fun switchToPage(targetPage: Int) {
+        setPage(targetPage, animate = true)
     }
 
     private fun setPage(targetIdx: Int, animate: Boolean) {
@@ -2372,7 +2242,6 @@ class MainActivity : Activity() {
         // Drop the old end-listener first: cancel() would fire it and snap to the new page mid-slide
         pageAnimator?.removeAllListeners()
         pageAnimator?.cancel()
-        updateTabsAppearance()
 
         if (clamped == 1) {
             renderMusicSnapshot(latestMusicSnap, forceViews = true)
@@ -2390,22 +2259,22 @@ class MainActivity : Activity() {
         page1Scroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
         page2Scroll.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
 
-        // Move focus off outgoing page synchronously BEFORE finalizing visibility,
-        // otherwise hiding the previously focused view triggers Android fallback focus to tabViews[0]!
+        // Move focus before hiding the outgoing page.
         if (clamped != prevPage) {
             focusInitialControlOnPage(clamped, immediate = true)
         }
 
-        if (!animate || abs(clamped - currentPagePos) < 0.005f) {
-            currentPagePos = clamped.toFloat()
+        val targetPos = HomePageOrder.position(clamped).toFloat()
+        if (!animate || abs(targetPos - currentPagePos) < 0.005f) {
+            currentPagePos = targetPos
             applyPageVisuals(currentPagePos)
             focusInitialControlOnPage(clamped, immediate = true)
             finalizePageVisibility()
             return
         }
 
-        pageAnimator = ValueAnimator.ofFloat(currentPagePos, clamped.toFloat()).apply {
-            duration = if (abs(clamped - prevPage) > 1) 480L else 420L
+        pageAnimator = ValueAnimator.ofFloat(currentPagePos, targetPos).apply {
+            duration = if (abs(HomePageOrder.position(clamped) - HomePageOrder.position(prevPage)) > 1) 480L else 420L
             interpolator = easeOutCubic
             addUpdateListener { anim ->
                 currentPagePos = anim.animatedValue as Float
@@ -2413,7 +2282,7 @@ class MainActivity : Activity() {
             }
             addListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
-                    currentPagePos = currentPage.toFloat()
+                    currentPagePos = HomePageOrder.position(currentPage).toFloat()
                     applyPageVisuals(currentPagePos)
                     focusInitialControlOnPage(currentPage, immediate = true)
                     finalizePageVisibility()
@@ -2438,28 +2307,18 @@ class MainActivity : Activity() {
 
     private fun focusPageControlDirect(idx: Int) {
         if (appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen) return
-        isProgrammaticPageFocus = true
-        try {
-            when (idx) {
-                0 -> if (::btnHeroOrbClick.isInitialized) btnHeroOrbClick.requestFocus()
-                1 -> if (::btnHomeWave.isInitialized) btnHomeWave.requestFocus()
-                2 -> if (::tileRing.isInitialized) tileRing.root.requestFocus()
-            }
-        } finally {
-            isProgrammaticPageFocus = false
+        when (idx) {
+            0 -> if (::btnHeroOrbClick.isInitialized) btnHeroOrbClick.requestFocus()
+            1 -> if (::btnHomeWave.isInitialized) btnHomeWave.requestFocus()
+            2 -> if (::tileRing.isInitialized) tileRing.root.requestFocus()
         }
     }
 
     private fun focusInitialControlOnPage(idx: Int, immediate: Boolean = false) {
-        val cur = currentFocus
-        // Keep focus on tab switcher only if user switched screens via top tabs
-        if (cur != null && ::tabViews.isInitialized && tabViews.any { it === cur }) return
         if (immediate) {
             focusPageControlDirect(idx)
         } else {
             handler.post {
-                val nowCur = currentFocus
-                if (nowCur != null && ::tabViews.isInitialized && tabViews.any { it === nowCur }) return@post
                 focusPageControlDirect(idx)
             }
         }
@@ -2471,17 +2330,18 @@ class MainActivity : Activity() {
         val topBarBottom = max(dp(46).toFloat(), topBar.bottom.toFloat())
 
         // 1. Horizontal slide + depth alpha across the 3 screens
-        page0View.translationX = (0f - pagePos) * w
-        page1Scroll.translationX = (1f - pagePos) * w
+        page0View.translationX = (1f - pagePos) * w
+        page1Scroll.translationX = (0f - pagePos) * w
         page2Scroll.translationX = (2f - pagePos) * w
 
-        page0View.alpha = (1f - pagePos * 1.15f).coerceIn(0f, 1f)
-        page1Scroll.alpha = (1f - abs(pagePos - 1f) * 0.45f).coerceIn(0f, 1f)
+        page0View.alpha = (1f - abs(pagePos - 1f) * 1.15f).coerceIn(0f, 1f)
+        page1Scroll.alpha = (1f - abs(pagePos) * 0.45f).coerceIn(0f, 1f)
         page2Scroll.alpha = (1f - abs(pagePos - 2f) * 0.45f).coerceIn(0f, 1f)
 
         // 2. Bottom Dock Bar fade + rise into view ONLY when Alice is actively engaged on Screens 1 & 2
         val dockActive = (LiveOrbState.assistantState != "idle")
-        val dockAlpha = if (dockActive) ((pagePos - 0.14f) / 0.86f).coerceIn(0f, 1f) else 0f
+        val distanceFromHome = abs(pagePos - 1f)
+        val dockAlpha = if (dockActive) ((distanceFromHome - 0.14f) / 0.86f).coerceIn(0f, 1f) else 0f
         bottomDockBar.alpha = dockAlpha
         bottomDockBar.translationY = (1f - dockAlpha) * dp(44).toFloat()
         if (dockAlpha > 0.01f) {
@@ -2491,7 +2351,7 @@ class MainActivity : Activity() {
         }
 
         // 3. Persistent Alice Sphere Morph: shrinks into dock when busy, smoothly dissolves on idle page slide
-        val dockT = pagePos.coerceIn(0f, 1f)
+        val dockT = distanceFromHome.coerceIn(0f, 1f)
         val heroSize = dp(320).toFloat()
         val dockSize = dp(56).toFloat()
 
@@ -2506,37 +2366,15 @@ class MainActivity : Activity() {
 
         heroOrbView.compactGlowBoost = dockT
         heroOrbView.alpha = if (dockActive) 1f else (1f - dockT * 1.65f).coerceIn(0f, 1f)
+        heroOrbView.setAnimationEnabled(
+            heroOrbView.alpha > 0.01f && (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)
+        )
         heroOrbView.pivotX = heroSize * 0.5f
         heroOrbView.pivotY = heroSize * 0.5f
         heroOrbView.scaleX = sc
         heroOrbView.scaleY = sc
         heroOrbView.translationX = cx - heroSize * 0.5f
         heroOrbView.translationY = cy - heroSize * 0.5f
-    }
-
-    private fun updateTabsAppearance(focusedIdx: Int = -1) {
-        tabViews.forEachIndexed { idx, tv ->
-            val selected = (idx == currentPage)
-            val focused = (idx == focusedIdx)
-            val shape = tabBgShapes[idx]
-            when {
-                selected -> {
-                    shape.setColor(Color.parseColor(if (focused) "#48FFFFFF" else "#28FFFFFF"))
-                    shape.setStroke(dp(1), Color.parseColor(if (focused) "#CCFFFFFF" else "#48FFFFFF"))
-                    tv.setTextColor(Color.WHITE)
-                }
-                focused -> {
-                    shape.setColor(Color.parseColor("#38FFFFFF"))
-                    shape.setStroke(dp(1), Color.parseColor("#B8FFFFFF"))
-                    tv.setTextColor(Color.WHITE)
-                }
-                else -> {
-                    shape.setColor(Color.TRANSPARENT)
-                    shape.setStroke(0, Color.TRANSPARENT)
-                    tv.setTextColor(Color.parseColor("#8A99AD"))
-                }
-            }
-        }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2745,11 +2583,10 @@ class MainActivity : Activity() {
     private fun makeIconBtn(iconRes: Int, tintColor: Int?, onClick: () -> Unit): IconBtnViews {
         val box = FrameLayout(this).apply {
             setBackgroundResource(R.drawable.bg_pill)
+            SpatialUiKit.disableSystemHighlight(this)
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.08f else 1f).scaleY(if (hasFocus) 1.08f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { onClick() }
         }
         val iv = ImageView(this).apply {
@@ -2769,11 +2606,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(4), dp(14), dp(4))
             setBackgroundResource(if (gold) R.drawable.bg_pill_gold else R.drawable.bg_pill)
+            SpatialUiKit.disableSystemHighlight(this)
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.06f else 1f).scaleY(if (hasFocus) 1.06f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { onClick() }
 
             val iv = ImageView(this@MainActivity).apply {
@@ -2807,14 +2643,12 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#3A0A1120"),
                 focusTint = Color.parseColor("#7A1A2B48"),
                 normalStroke = Color.parseColor("#16FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 0.85f
             )
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(95).start()
-            }
+
             setOnClickListener { onClick() }
 
             val iv = ImageView(this@MainActivity).apply {
@@ -3058,7 +2892,7 @@ class MainActivity : Activity() {
                     isPinnedApps -> Color.parseColor("#447DD3FC")
                     else -> Color.parseColor("#18FFFFFF")
                 },
-                focusStroke = Color.parseColor("#CCFFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = if (isPinnedApps) 1.05f else 0.9f
             )
             elevation = dp(if (isMoving || isPinnedApps) 8 else 4).toFloat()
@@ -4136,9 +3970,7 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(10), dp(14), dp(10))
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(110).start()
-            }
+
             setOnClickListener { onClick() }
         }
     }
@@ -4672,7 +4504,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#D4080D18"),
                 focusTint = Color.parseColor("#E010182C"),
                 normalStroke = Color.parseColor("#24FFFFFF"),
-                focusStroke = Color.parseColor("#AAFFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 1.05f
             )
             elevation = dp(28).toFloat()
@@ -4756,16 +4588,14 @@ class MainActivity : Activity() {
                     baseTint = Color.parseColor("#44090E18"),
                     focusTint = Color.parseColor("#78162338"),
                     normalStroke = if (theme.id == LiquidGlassKit.currentThemeId) Color.parseColor("#99FFFFFF") else Color.parseColor("#1AFFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
+                    focusStroke = Color.parseColor("#8C7DB8D6")
                 )
                 layoutParams = GridLayout.LayoutParams().apply {
                     width = tileW
                     height = dp(52)
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(90).start()
-                }
+
             }
             if (idx == 0) firstWallpaperBtn = card
 
@@ -4864,16 +4694,14 @@ class MainActivity : Activity() {
                     baseTint = Color.parseColor("#44090E18"),
                     focusTint = Color.parseColor("#78162338"),
                     normalStroke = Color.parseColor("#1AFFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF")
+                    focusStroke = Color.parseColor("#8C7DB8D6")
                 )
                 layoutParams = GridLayout.LayoutParams().apply {
                     width = wCardW
                     height = dp(48)
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(90).start()
-                }
+
             }
             val txtCol = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -5063,7 +4891,7 @@ class MainActivity : Activity() {
             baseTint = Color.parseColor("#D8080D18"),
             focusTint = Color.parseColor("#E010182C"),
             normalStroke = Color.parseColor("#2AFFFFFF"),
-            focusStroke = Color.parseColor("#AAFFFFFF"),
+            focusStroke = Color.parseColor("#8C7DB8D6"),
             refractStrength = 1.05f
         )
         elevation = dp(28).toFloat()
@@ -5135,9 +4963,7 @@ class MainActivity : Activity() {
             ).apply {
                 marginEnd = dp(6)
             }
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.05f else 1f).scaleY(if (hasFocus) 1.05f else 1f).setDuration(90).start()
-            }
+
             setOnClickListener { onClick() }
         }
 
@@ -5514,7 +5340,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#D8090E1A"),
                 focusTint = Color.parseColor("#E4121D32"),
                 normalStroke = Color.parseColor("#28FFFFFF"),
-                focusStroke = Color.parseColor("#CCFFFFFF"),
+                focusStroke = Color.parseColor("#8C7DB8D6"),
                 refractStrength = 1.05f
             )
             elevation = dp(32).toFloat()
@@ -5592,7 +5418,7 @@ class MainActivity : Activity() {
                     baseTint = Color.parseColor("#320E1526"),
                     focusTint = Color.parseColor("#90223452"),
                     normalStroke = Color.parseColor("#18FFFFFF"),
-                    focusStroke = Color.parseColor("#CCFFFFFF"),
+                    focusStroke = Color.parseColor("#8C7DB8D6"),
                     refractStrength = 0.75f
                 )
                 layoutParams = LinearLayout.LayoutParams(
@@ -5601,9 +5427,7 @@ class MainActivity : Activity() {
                 ).apply {
                     bottomMargin = dp(4)
                 }
-                setOnFocusChangeListener { v, hasFocus ->
-                    v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(80).start()
-                }
+
                 setOnClickListener {
                     closeAnchoredAppMenu(immediate = true, restoreFocus = false)
                     onAction()

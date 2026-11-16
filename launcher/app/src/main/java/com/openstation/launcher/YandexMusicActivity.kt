@@ -435,7 +435,7 @@ class YandexMusicActivity : Activity() {
         ivCover = ImageView(this).apply {
             setImageResource(R.drawable.sprite_ym_emblem)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            clipToOutline = true
+            SpatialUiKit.clipRounded(this, 16)
             background = null
             layoutParams = FrameLayout.LayoutParams(dp(164), dp(164), Gravity.CENTER_VERTICAL).apply {
                 marginStart = dp(6)
