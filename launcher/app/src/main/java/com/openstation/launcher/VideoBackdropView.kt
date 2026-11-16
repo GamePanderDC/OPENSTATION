@@ -7,7 +7,7 @@ import android.net.Uri
 import android.view.Surface
 import android.view.TextureView
 
-/** Muted looping wallpaper; the static wallpaper remains underneath as fallback. */
+/** Muted hardware-decoded screensaver video. */
 class VideoBackdropView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
     private var player: MediaPlayer? = null
     private var surface: Surface? = null
@@ -22,10 +22,14 @@ class VideoBackdropView(context: Context) : TextureView(context), TextureView.Su
     fun setRunning(enabled: Boolean) {
         running = enabled
         visibility = if (enabled) VISIBLE else GONE
+        if (!enabled) {
+            releasePlayer()
+            return
+        }
         val p = player
         if (p != null && prepared) {
-            try { if (enabled) p.start() else p.pause() } catch (_: IllegalStateException) { releasePlayer() }
-        } else if (enabled && isAvailable && surfaceTexture != null && p == null) {
+            try { p.start() } catch (_: IllegalStateException) { releasePlayer() }
+        } else if (isAvailable && surfaceTexture != null && p == null) {
             createPlayer(surfaceTexture!!)
         }
     }
@@ -40,7 +44,7 @@ class VideoBackdropView(context: Context) : TextureView(context), TextureView.Su
             p.setSurface(output)
             p.setVolume(0f, 0f)
             p.isLooping = true
-            p.setDataSource(context, Uri.parse("android.resource://${context.packageName}/${R.raw.live_sky}"))
+            p.setDataSource(context, Uri.parse("android.resource://${context.packageName}/${R.raw.saver_earth}"))
             p.setOnPreparedListener {
                 if (it !== player) return@setOnPreparedListener
                 prepared = true

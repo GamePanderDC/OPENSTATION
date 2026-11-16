@@ -47,8 +47,8 @@ object LiquidGlassKit {
     val THEMES: List<WallpaperTheme> = listOf(
         WallpaperTheme(
             id = "obsidian_gold",
-            title = "Титан и обсидиан",
-            subtitle = "Глубокий OLED",
+            title = "Сумеречные горы",
+            subtitle = "Озеро и горы",
             baseDarkHex = "#030509",
             primaryHex = "#94A3B8",
             secondaryHex = "#3B82F6",
@@ -122,6 +122,7 @@ object LiquidGlassKit {
         private set
 
     private var stagePhotoCache: Bitmap? = null
+    private var stagePhotoResId: Int = 0
 
     fun currentTheme(): WallpaperTheme =
         THEMES.firstOrNull { it.id == currentThemeId } ?: THEMES.first()
@@ -158,16 +159,17 @@ object LiquidGlassKit {
         return theme
     }
 
-    private fun getStagePhotoScaled(ctx: Context, w: Int, h: Int): Bitmap? {
+    private fun getStagePhotoScaled(ctx: Context, w: Int, h: Int, resId: Int): Bitmap? {
         stagePhotoCache?.let { cached ->
-            if (!cached.isRecycled && cached.width == w && cached.height == h) return cached
+            if (stagePhotoResId == resId && !cached.isRecycled && cached.width == w && cached.height == h) return cached
         }
         return try {
             val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-            val raw = BitmapFactory.decodeResource(ctx.resources, R.drawable.bg_tv_stage, opts) ?: return null
+            val raw = BitmapFactory.decodeResource(ctx.resources, resId, opts) ?: return null
             val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
             if (scaled !== raw) raw.recycle()
             stagePhotoCache = scaled
+            stagePhotoResId = resId
             scaled
         } catch (_: Throwable) {
             null
@@ -186,6 +188,14 @@ object LiquidGlassKit {
         val c3 = Color.parseColor(theme.highlightHex)
 
         c.drawColor(base)
+        val photoRes = when (theme.id) {
+            "abyssal_cyan", "deep_emerald" -> R.drawable.wall_aurora_lagoon
+            "solar_amber" -> R.drawable.wall_desert_dusk
+            else -> R.drawable.wall_alpine_twilight
+        }
+        getStagePhotoScaled(ctx, w, h, photoRes)?.let { photo ->
+            c.drawBitmap(photo, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+        }
 
         // Silky OLED spatial studio ambient blooms (zero wireframe lines, zero brown photo wash)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
@@ -429,9 +439,9 @@ object LiquidGlassKit {
             innerRimPaint.shader = LinearGradient(
                 0f, 0f, w, h,
                 intArrayOf(
-                    Color.argb(if (isFocusedState) 170 else 64, 255, 255, 255),
+                    Color.argb(if (isFocusedState) 65 else 40, 255, 255, 255),
                     Color.argb(14, 255, 255, 255),
-                    Color.argb(if (isFocusedState) 84 else 26, 255, 255, 255)
+                    Color.argb(if (isFocusedState) 42 else 20, 255, 255, 255)
                 ),
                 floatArrayOf(0f, 0.45f, 1f),
                 Shader.TileMode.CLAMP
@@ -544,7 +554,7 @@ object LiquidGlassKit {
         baseTint: Int = Color.parseColor("#44090E18"),
         focusTint: Int = Color.parseColor("#72172338"),
         normalStroke: Int = Color.parseColor("#18FFFFFF"),
-        focusStroke: Int = Color.parseColor("#A8FFFFFF"),
+        focusStroke: Int = Color.parseColor("#667DB8D6"),
         refractStrength: Float = 1.0f,
         glassAlpha: Int = 225
     ): RefractiveGlassDrawable {
@@ -562,6 +572,7 @@ object LiquidGlassKit {
             glassAlpha = glassAlpha
         )
         view.background = dr
+        SpatialUiKit.disableSystemHighlight(view)
         return dr
     }
 

@@ -175,7 +175,7 @@ class MarketActivity : Activity() {
             if (wall != null && !wall.isRecycled) {
                 setImageBitmap(wall)
             } else {
-                setImageResource(R.drawable.bg_tv_stage)
+                setImageResource(R.drawable.wall_alpine_twilight)
             }
             scaleType = ImageView.ScaleType.CENTER_CROP
             layoutParams = FrameLayout.LayoutParams(

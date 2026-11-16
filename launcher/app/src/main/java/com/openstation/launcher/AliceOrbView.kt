@@ -376,9 +376,8 @@ class AliceOrbView @JvmOverloads constructor(
     private var totalTime = 0f
     private var rotDeg = 0f
     private var lastNs = 0L
-    private var activeHoldUntilNs = 0L
-    private var lastBoost = 0f
     private var running = false
+    private var animationEnabled = true
     private val powerManager: PowerManager? by lazy(LazyThreadSafetyMode.NONE) {
         context.getSystemService(Context.POWER_SERVICE) as? PowerManager
     }
@@ -507,7 +506,7 @@ class AliceOrbView @JvmOverloads constructor(
     }
 
     private fun startAnim() {
-        if (running) return
+        if (running || !animationEnabled) return
         running = true
         lastNs = 0L
         removeCallbacks(wakeCheckRunnable)
@@ -518,6 +517,13 @@ class AliceOrbView @JvmOverloads constructor(
         running = false
         removeCallbacks(wakeCheckRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
+    }
+
+    fun setAnimationEnabled(enabled: Boolean) {
+        if (animationEnabled == enabled) return
+        animationEnabled = enabled
+        if (enabled && isAttachedToWindow && isShown && windowVisibility == VISIBLE) startAnim()
+        else if (!enabled) stopAnim()
     }
 
     override fun doFrame(frameTimeNanos: Long) {
@@ -532,25 +538,6 @@ class AliceOrbView @JvmOverloads constructor(
             return
         }
 
-        val boost = compactGlowBoost
-        val morphing = abs(boost - lastBoost) > 0.004f
-        val st = LiveOrbState.assistantState
-        val musicOn = LiveOrbState.musicPlaying || LiveOrbState.musicOverall > 0.045f
-        val activeNow = (st != "idle") || musicOn || morphing
-        if (activeNow) {
-            activeHoldUntilNs = frameTimeNanos + 1_200_000_000L
-        }
-        val highRate = activeNow || frameTimeNanos < activeHoldUntilNs
-        if (!highRate && lastNs != 0L) {
-            val minStepNs = if (boost > 0.85f) 110_000_000L else 85_000_000L
-            if ((frameTimeNanos - lastNs) < minStepNs) {
-                // Calm idle: ~11.8 Hz hero orb, ~9 Hz docked miniature (zero idle GPU churn)
-                Choreographer.getInstance().postFrameCallback(this)
-                return
-            }
-        }
-
-        lastBoost = boost
         val dt = if (lastNs == 0L) 0.016f else ((frameTimeNanos - lastNs) * 1e-9f).coerceIn(0.004f, 0.14f)
         lastNs = frameTimeNanos
         stepPhysics(dt)
@@ -834,10 +821,7 @@ class AliceOrbView @JvmOverloads constructor(
         canvas.rotate(rotDeg, cx, cy)
         val sphereAlphaScale = ((1f - morphProgress) * 255f).toInt().coerceIn(0, 255)
         if (sphereAlphaScale > 0) {
-            val idleSnap = if (LiveOrbState.assistantState == "idle" &&
-                !LiveOrbState.musicPlaying &&
-                LiveOrbState.musicOverall <= 0.045f) 0.22f else 0.14f
-            if (boost > 0.78f || blend < idleSnap || blend > (1f - idleSnap)) {
+            if (boost > 0.78f || blend < 0.01f || blend > 0.99f) {
                 // Single-layer fast path (docked miniature orb or dominant keyframe -> halves Mali-G31 fillrate)
                 val fi = if (blend >= 0.5f) f1 else f0
                 val s = AliceOrbFrames.sheets[fi / perSheet]

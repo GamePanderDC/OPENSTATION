@@ -236,7 +236,7 @@ class YandexMusicActivity : Activity() {
 
         // Wallpaper Backdrop + subtle dark acoustic scrim
         val ivBg = ImageView(this).apply {
-            setImageResource(R.drawable.bg_tv_stage)
+            setImageResource(R.drawable.wall_alpine_twilight)
             scaleType = ImageView.ScaleType.CENTER_CROP
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

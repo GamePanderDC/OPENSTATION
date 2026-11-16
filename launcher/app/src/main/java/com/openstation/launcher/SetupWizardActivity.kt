@@ -323,7 +323,7 @@ class SetupWizardActivity : Activity() {
         rootFrame = FrameLayout(this)
 
         val ivBg = ImageView(this).apply {
-            setImageResource(R.drawable.bg_tv_stage)
+            setImageResource(R.drawable.wall_alpine_twilight)
             scaleType = ImageView.ScaleType.CENTER_CROP
             alpha = 0.14f
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)

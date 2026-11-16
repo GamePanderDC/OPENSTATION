@@ -147,8 +147,7 @@ class MainActivity : Activity() {
         val now = java.util.Date()
         screensaverOverlay.updateClockAndWeather(timeFmt.format(now), fullDateFmt.format(now), null)
         screensaverOverlay.updateMusic(latestMusicSnap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
-        if (::livingWallpaper.isInitialized) livingWallpaper.setRunning(false)
-        if (::videoBackdrop.isInitialized) videoBackdrop.setRunning(false)
+        if (::heroOrbView.isInitialized) heroOrbView.setAnimationEnabled(false)
         screensaverOverlay.open()
         handler.removeCallbacks(saverIdleRunnable)
     }
@@ -157,8 +156,6 @@ class MainActivity : Activity() {
 
     // Root stage & multi-screen morph architecture
     private lateinit var rootFrame: FrameLayout
-    private lateinit var livingWallpaper: LivingWallpaperView
-    private lateinit var videoBackdrop: VideoBackdropView
     private lateinit var screensaverOverlay: SpatialScreensaverOverlay
     private lateinit var ivBg: ImageView
     private lateinit var shellCol: LinearLayout
@@ -495,10 +492,6 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         scheduleScreensaver()
-        if (::livingWallpaper.isInitialized && (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)) livingWallpaper.setRunning(true)
-        if (::videoBackdrop.isInitialized && (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)) {
-            videoBackdrop.setRunning(getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true))
-        }
         AnimatedSpriteHelper.syncAll(windowActive = true)
         if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostResume()
         StationAudioService.setLauncherForegroundState(true)
@@ -530,8 +523,6 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         handler.removeCallbacks(saverIdleRunnable)
-        if (::livingWallpaper.isInitialized) livingWallpaper.setRunning(false)
-        if (::videoBackdrop.isInitialized) videoBackdrop.setRunning(false)
         AnimatedSpriteHelper.syncAll(windowActive = false)
         if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostPause()
         handler.removeCallbacks(okLongPressRunnable)
@@ -882,7 +873,7 @@ class MainActivity : Activity() {
             if (wall != null && !wall.isRecycled) {
                 setImageBitmap(wall)
             } else {
-                setImageResource(R.drawable.bg_tv_stage)
+                setImageResource(R.drawable.wall_alpine_twilight)
             }
             scaleType = ImageView.ScaleType.CENTER_CROP
             layoutParams = FrameLayout.LayoutParams(
@@ -907,11 +898,6 @@ class MainActivity : Activity() {
         bgLayerHost.addView(ivBg)
         bgLayerHost.addView(scrimView)
         rootFrame.addView(bgLayerHost)
-        videoBackdrop = VideoBackdropView(this)
-        rootFrame.addView(videoBackdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        videoBackdrop.alpha = 0.48f
-        livingWallpaper = LivingWallpaperView(this)
-        rootFrame.addView(livingWallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Main vertical container: Top Bar + 3-Screen Morphing Stage
         shellCol = LinearLayout(this).apply {
@@ -1217,8 +1203,7 @@ class MainActivity : Activity() {
 
         screensaverOverlay = SpatialScreensaverOverlay(this) {
             screensaverOverlay.close()
-            livingWallpaper.setRunning(true)
-            videoBackdrop.setRunning(getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true))
+            heroOrbView.setAnimationEnabled(true)
         }
         rootFrame.addView(screensaverOverlay.rootOverlay)
 
@@ -2264,7 +2249,7 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#78080D18"),
                 focusTint = Color.parseColor("#92121D32"),
                 normalStroke = Color.parseColor("#24FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
+                focusStroke = Color.parseColor("#667DB8D6"),
                 refractStrength = 1.0f
             )
             elevation = dp(10).toFloat()
@@ -2730,14 +2715,11 @@ class MainActivity : Activity() {
                 baseTint = Color.parseColor("#3A0A1120"),
                 focusTint = Color.parseColor("#7A1A2B48"),
                 normalStroke = Color.parseColor("#16FFFFFF"),
-                focusStroke = Color.parseColor("#B8FFFFFF"),
+                focusStroke = Color.parseColor("#667DB8D6"),
                 refractStrength = 0.85f
             )
             isFocusable = true
             isClickable = true
-            setOnFocusChangeListener { v, hasFocus ->
-                v.animate().scaleX(if (hasFocus) 1.03f else 1f).scaleY(if (hasFocus) 1.03f else 1f).setDuration(90).start()
-            }
             setOnClickListener { onClick() }
         }
         val iv = ImageView(this).apply {
@@ -4744,26 +4726,6 @@ class MainActivity : Activity() {
             scheduleScreensaver()
         }
         body.addView(saverDelay)
-
-        val videoToggle = makeTextIconPill(R.drawable.ic_settings, "Видеофон", gold = false) { }
-        fun updateVideoLabel() {
-            val enabled = getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true)
-            (videoToggle.getChildAt(1) as TextView).text = if (enabled) "Видеофон: включён" else "Видеофон: выключен"
-        }
-        updateVideoLabel()
-        videoToggle.setOnClickListener {
-            val prefs = getSharedPreferences("openstation_ui", MODE_PRIVATE)
-            val enabled = !prefs.getBoolean("video_wallpaper", true)
-            prefs.edit().putBoolean("video_wallpaper", enabled).apply()
-            videoBackdrop.setRunning(enabled)
-            updateVideoLabel()
-        }
-        body.addView(videoToggle)
-        body.addView(TextView(this).apply {
-            text = "Видео: Sparkus Design / Wikimedia Commons · CC BY 2.0"
-            textSize = 10f
-            setTextColor(Color.LTGRAY)
-        })
 
         body.addView(makeSectionTitle("Обои рабочего стола", R.drawable.ic_wave))
 
