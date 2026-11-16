@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.15";
+constexpr const char* kFirmwareVersion = "1.6.16";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1482,6 +1482,9 @@ int main(int argc, char** argv) {
 
     uinput.init();
     leds.start(cfg.led_ring, cfg.led_screen);
+    if (!read_first_line(kPostOtaWizardPath).empty()) {
+        leds.trigger_task_icon("check", 255, 255, 255, 6500);
+    }
 
     std::mutex vol_apply_mu;
     int last_applied_woo = -1;
@@ -5862,6 +5865,12 @@ int main(int argc, char** argv) {
         start_cfg = cfg;
     }
     ota.start(kFirmwareVersion, start_cfg.ota, [&](const json::Value& st) {
+        const auto* state_value = st.get("state");
+        const auto* percent_value = st.get("progressPct");
+        const std::string state = state_value ? state_value->as_str() : "";
+        const bool updating = state == "downloading" || state == "verifying" ||
+                              state == "installing" || state == "restarting";
+        leds.set_ota_progress(updating, percent_value ? percent_value->as_int() : 0);
         if (http.ws_client_count() > 0) {
             json::Value msg = json::Value::make_obj();
             msg["type"] = json::Value::make_str("ota");

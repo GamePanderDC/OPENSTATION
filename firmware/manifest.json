@@ -1,40 +1,40 @@
 {
-  "name": "OpenStation Max",
-  "device": "yandexstation_2",
-  "version": "1.6.15",
-  "autonomous": true,
-  "changelog": "Исправлена лишняя загрузка лаунчера, сокращено ожидание диалога и уточнено понимание речи.",
-  "buildTimeUtc": "2026-11-16T19:26:13Z",
-  "files": {
-    "daemon": {
-      "fileName": "openstationd",
-      "size": 3157824,
-      "sha256": "76fc0e2e6640d5c853f5c5c2c7421da100e548fa7e40b6342a239173e63dc606"
-    },
-    "bootlogod": {
-      "fileName": "bootlogod",
-      "size": 657728,
-      "sha256": "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9"
-    },
-    "launcher": {
-      "fileName": "OpenStationLauncher.apk",
-      "size": 28412147,
-      "sha256": "60c565be6d55c37d451e2c37755d8c426531ff862a332926691a1440580ea8f9"
-    },
-    "ime": {
-      "fileName": "OpenStationIME.apk",
-      "size": 808866,
-      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-    },
-    "bootanimation": {
-      "fileName": "bootanimation.zip",
-      "size": 6725707,
-      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
-    },
-    "bootlogo": {
-      "fileName": "logo.img",
-      "size": 2252608,
-      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-    }
-  }
+    "name":  "OpenStation Max",
+    "device":  "yandexstation_2",
+    "version":  "1.6.16",
+    "autonomous":  true,
+    "changelog":  "OpenStation Max v1.6.16: экран и индикатор установки обновления, автоматическая перезагрузка и приветствие после обновления.",
+    "buildTimeUtc":  "2026-11-16T19:41:05Z",
+    "files":  {
+                  "daemon":  {
+                                 "fileName":  "openstationd",
+                                 "size":  3163024,
+                                 "sha256":  "4b31d58292b7099eaef25276b0150f056c30080ae0fedd9a0dc9b3ad0bd71a73"
+                             },
+                  "bootlogod":  {
+                                    "fileName":  "bootlogod",
+                                    "size":  657728,
+                                    "sha256":  "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9"
+                                },
+                  "launcher":  {
+                                   "fileName":  "OpenStationLauncher.apk",
+                                   "size":  28414519,
+                                   "sha256":  "244ff95f6606d20ab84a3abe1bf54e9581ae3b90a6041f03c7e8c799ed228a8d"
+                               },
+                  "ime":  {
+                              "fileName":  "OpenStationIME.apk",
+                              "size":  808866,
+                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
+                          },
+                  "bootanimation":  {
+                                        "fileName":  "bootanimation.zip",
+                                        "size":  6725707,
+                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+                                    },
+                  "bootlogo":  {
+                                   "fileName":  "logo.img",
+                                   "size":  2252608,
+                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+                               }
+              }
 }

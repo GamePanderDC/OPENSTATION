@@ -3646,6 +3646,13 @@ class MainActivity : Activity() {
         val cur = ota ?: otaLatestJson ?: return
         val avail = cur.optBoolean("updateAvailable", false)
         val busy = cur.optBoolean("busy", false)
+        val otaState = cur.optString("state")
+        if (otaState in setOf("downloading", "verifying", "installing", "restarting") && !isFinishing) {
+            try {
+                otaDialog?.dismiss()
+                startActivity(Intent(this, OtaProgressActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            } catch (_: Exception) {}
+        }
         val latestVer = cur.optString("latestVersion", "")
         val pct = cur.optInt("progressPct", 0)
         val key = "$avail|$busy|$latestVer|${if (busy) pct else -1}"

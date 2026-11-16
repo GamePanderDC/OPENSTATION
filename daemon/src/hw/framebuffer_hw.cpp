@@ -454,6 +454,14 @@ void FramebufferHw::trigger_weather(int temp_c, const std::string& cond_code, in
     cv_.notify_all();
 }
 
+void FramebufferHw::set_ota_progress(bool active, int percent) {
+    std::lock_guard<std::mutex> lk(mu_);
+    ota_active_ = active;
+    ota_percent_ = std::clamp(percent, 0, 100);
+    ++wake_seq_;
+    cv_.notify_one();
+}
+
 void FramebufferHw::trigger_volume_osd(int percent) {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -1006,6 +1014,8 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     std::array<float, 24> spec{};
     bool osd_active = false;
     int osd_pct = 0;
+    bool ota_active = false;
+    int ota_pct = 0;
     bool startup_active = false;
     double startup_elapsed = 0.0;
     bool bt_active = false;
@@ -1037,6 +1047,8 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         spec = spectrum_;
         osd_active = now < osd_until_;
         osd_pct = osd_volume_pct_;
+        ota_active = ota_active_;
+        ota_pct = ota_percent_;
         if (now < startup_until_) {
             startup_active = true;
             startup_elapsed = std::chrono::duration<double>(now - startup_start_).count();
@@ -1080,7 +1092,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         double norm = std::clamp(std::log10(lux + 1.0) / 2.4, 0.05, 1.0);
         bl = std::clamp(static_cast<int>(norm * max_bl), 1, max_bl);
     }
-    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || startup_active || bt_active || task_active || weather_active || music_vis_active) &&
+    if ((vstate != VoiceVisualState::Idle || scr_override_active || osd_active || startup_active || bt_active || task_active || weather_active || music_vis_active || ota_active) &&
         bl < std::max(1, max_bl / 3)) {
         bl = std::max(1, max_bl / 3);
     }
@@ -1101,7 +1113,9 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     }
 
     std::string scene_key;
-    if (osd_active) {
+    if (ota_active) {
+        scene_key = "ota";
+    } else if (osd_active) {
         scene_key = "osd";
     } else if (startup_active) {
         scene_key = "startup";
@@ -1657,7 +1671,24 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
     Rgb col = parse_hex_color(cfg.color, Rgb{255, 255, 255});
     int top_y = H > 7 ? static_cast<int>((H - 7) / 2) : 0;
 
-    if (osd_active) {
+    if (!ota_active) ota_display_percent_ = 0.0f;
+    if (ota_active) {
+        ota_display_percent_ += (ota_pct - ota_display_percent_) * std::min(1.0, dt_sec * 5.0);
+        const int pct = std::clamp(static_cast<int>(ota_display_percent_ + 0.5f), 0, 100);
+        const std::string value = std::to_string(pct);
+        const int text_w = static_cast<int>(value.size()) * 4 - 1;
+        int x = (static_cast<int>(W) - text_w) / 2;
+        for (char ch : value) { draw_digit_3x5(ch - '0', x, 2, Rgb{240, 240, 240}); x += 4; }
+        const int left = 2, right = static_cast<int>(W) - 3;
+        const int y = static_cast<int>(H) - 4;
+        for (int px = left; px <= right; ++px) {
+            pset(px, y, Rgb{45, 45, 45});
+            pset(px, y + 2, Rgb{45, 45, 45});
+            const float fill = std::clamp((ota_display_percent_ / 100.0f) * (right - left + 1) - (px - left), 0.0f, 1.0f);
+            const uint8_t level = static_cast<uint8_t>(45 + fill * 210);
+            pset(px, y + 1, Rgb{level, level, level});
+        }
+    } else if (osd_active) {
         Rgb vcol = (osd_pct == 0)
                        ? Rgb{255, 48, 64}
                        : (osd_pct <= 65 ? Rgb{0, 232, 255}
@@ -2560,13 +2591,13 @@ void FramebufferHw::worker_loop() {
                                     (now < osd_until_) || (now < flash_until_) ||
                                     (now < cal_until_) || (now < scr_text_until_) ||
                                     startup_active_lk || bt_active_lk || task_active_lk ||
-                                    trans_active || weather_active || music_active;
+                                    trans_active || weather_active || music_active || ota_active_;
             bool ring_static = (rcfg.mode == "off" || rcfg.mode == "solid");
             bool scr_has = fb5_present_.load();
             bool clock_smooth = (scfg.mode == "clock" &&
                                  (scfg.clock_style == "neon" || scfg.clock_style == "seconds" || scfg.clock_style == "binary"));
             bool scr_static = (!scr_has || scfg.mode == "off" || (scfg.mode == "clock" && !clock_smooth));
-            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk) ? 25 : 55;
+            int sleep_ms = (music_active || trans_active || weather_active || startup_active_lk || bt_active_lk || task_active_lk || ota_active_) ? 25 : 55;
             if (!transient_active && ring_static && scr_static) {
                 sleep_ms = (scr_has && scfg.mode == "clock") ? 200 : 500;
             }

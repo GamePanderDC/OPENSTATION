@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Сборка и упаковка автономной прошивки OpenStation Max в папку firmware/ с manifest.json и SHA-256.
 .EXAMPLE
@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.15",
-    [string]$Changelog = "OpenStation Max v1.6.15: исправлена лишняя загрузка лаунчера, улучшено понимание речи и завершение диалога.",
+    [string]$Version = "1.6.16",
+    [string]$Changelog = "OpenStation Max v1.6.16: экран и индикатор установки обновления, автоматическая перезагрузка и приветствие после обновления.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

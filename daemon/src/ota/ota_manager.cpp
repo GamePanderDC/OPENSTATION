@@ -903,7 +903,8 @@ bool OtaManager::download_verified_artifact(const OtaArtifactInfo& art,
                                              const std::vector<std::string>& urls,
                                              const std::string& dst_path,
                                              uint32_t file_mode,
-                                             std::string& out_err) {
+                                             std::string& out_err,
+                                             int progress_start, int progress_end) {
     out_err = "Нет ответа от GitHub";
     for (const auto& u : urls) {
         if (stop_req_.load()) {
@@ -918,6 +919,24 @@ bool OtaManager::download_verified_artifact(const OtaArtifactInfo& art,
         req.max_body_bytes = kMaxArtifactBytes;
         req.verify_tls = true;
         req.abort_req = &stop_req_;
+        if (progress_start >= 0 && art.size > 0) {
+            req.on_body_progress = [this, &art, progress_start, progress_end](size_t received) {
+                const auto bounded = std::min<int64_t>(static_cast<int64_t>(received), art.size);
+                const int pct = progress_start + static_cast<int>((progress_end - progress_start) * bounded / art.size);
+                bool changed = false;
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    if (state_ == "downloading" && pct > progress_pct_) {
+                        progress_pct_ = pct;
+                        progress_text_ = "Скачивание " + art.file_name + ": " +
+                            std::to_string(bounded / (1024 * 1024)) + " из " +
+                            std::to_string((art.size + 1024 * 1024 - 1) / (1024 * 1024)) + " МБ";
+                        changed = true;
+                    }
+                }
+                if (changed) emit_status();
+            };
+        }
         HttpClientResponse r = http_perform(req);
         if (!r.ok || r.status_code != 200) {
             out_err = !r.error.empty() ? r.error : ("HTTP " + std::to_string(r.status_code));
@@ -1542,7 +1561,8 @@ void OtaManager::run_install_sync(bool force) {
         std::string dst_path = std::string(kOtaTmpDir) + "/" + art.file_name;
         uint32_t mode = (art.key == "daemon") ? 0755u : 0644u;
         std::string dl_err;
-        if (!download_verified_artifact(art, urls, dst_path, mode, dl_err)) {
+        if (!download_verified_artifact(art, urls, dst_path, mode, dl_err, pct_start,
+                                        10 + static_cast<int>(((idx + 1) * 65) / std::max<size_t>(1, downloads.size())))) {
             run_shell_capture("rm -rf /data/local/openstation/ota_tmp", 5, dummy_rc, dummy_out);
             fail_ota("Ошибка скачивания " + art.file_name + ": " + dl_err);
             return;
@@ -1586,7 +1606,7 @@ void OtaManager::run_install_sync(bool force) {
     }
     emit_status();
 
-    bool reboot_after_apply = false;
+    bool reboot_after_apply = true;
 
     // 1. Install IME synchronously if changed
     if (need_ime) {
@@ -1659,13 +1679,18 @@ void OtaManager::run_install_sync(bool force) {
             }
         }
 
-        if (rename(tmp_manifest_path.c_str(), kLocalManifestPath) != 0) {
-            write_file_atomic(kLocalManifestPath, raw_manifest.data(), raw_manifest.size(), 0644);
+        if (rename(tmp_manifest_path.c_str(), kLocalManifestPath) != 0 &&
+            !write_file_atomic(kLocalManifestPath, raw_manifest.data(), raw_manifest.size(), 0644)) {
+            fail_ota("Не удалось сохранить сведения об обновлении");
+            return;
         }
         chmod(kLocalManifestPath, 0644);
         {
             const std::string wiz_ver = target_ver + "\n";
-            write_file_atomic(kPostOtaWizardPath, wiz_ver.data(), wiz_ver.size(), 0644);
+            if (!write_file_atomic(kPostOtaWizardPath, wiz_ver.data(), wiz_ver.size(), 0644)) {
+                fail_ota("Не удалось сохранить сведения для приветствия после обновления");
+                return;
+            }
         }
         run_shell_capture("rm -rf /data/local/openstation/ota_tmp && sync", 5, dummy_rc, dummy_out);
 
@@ -1674,7 +1699,7 @@ void OtaManager::run_install_sync(bool force) {
                 std::lock_guard<std::mutex> lk(mu_);
                 state_ = "restarting";
                 progress_pct_ = 98;
-                progress_text_ = "Перезагрузка для завершения замены системного APK...";
+                progress_text_ = "Обновление установлено. Перезагрузка станции...";
             }
             emit_status();
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1724,10 +1749,8 @@ void OtaManager::run_install_sync(bool force) {
     script += "  sleep 1\n";
     script += "done\n";
     script += "killall -9 openstationd 2>/dev/null || true\n";
-    script += "chmod 755 /data/local/openstation/ota_tmp/openstationd\n";
-    script += "mv -f /data/local/openstation/ota_tmp/openstationd /data/local/openstation/openstationd\n";
-    script += "mv -f /data/local/openstation/ota_tmp/manifest.json /data/local/openstation/firmware_manifest.json\n";
-    script += "chmod 644 /data/local/openstation/firmware_manifest.json\n";
+    script += "chmod 755 /data/local/openstation/ota_tmp/openstationd || exit 1\n";
+    script += "mv -f /data/local/openstation/ota_tmp/openstationd /data/local/openstation/openstationd || exit 1\n";
     script += "sync\n";
     script += "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64\n";
     script += "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1\n";
@@ -1752,7 +1775,11 @@ void OtaManager::run_install_sync(bool force) {
         script += "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true\n";
     }
     script += "if [ \"$LAUNCH_OK\" = 1 ]; then\n";
-    script += "  printf '%s\\n' " + escape_sh_single(target_ver) + " > " + kPostOtaWizardPath + "\n";
+    script += "  mv -f /data/local/openstation/ota_tmp/manifest.json /data/local/openstation/firmware_manifest.json || LAUNCH_OK=0\n";
+    script += "  chmod 644 /data/local/openstation/firmware_manifest.json || LAUNCH_OK=0\n";
+    script += "fi\n";
+    script += "if [ \"$LAUNCH_OK\" = 1 ]; then\n";
+    script += "  printf '%s\\n' " + escape_sh_single(target_ver) + " > " + kPostOtaWizardPath + " || LAUNCH_OK=0\n";
     script += "  chmod 644 " + std::string(kPostOtaWizardPath) + " 2>/dev/null || true\n";
     script += "fi\n";
     if (need_launcher)
@@ -1760,7 +1787,7 @@ void OtaManager::run_install_sync(bool force) {
     script += "rm -rf /data/local/openstation/ota_tmp\n";
     script += "rm -f /data/local/openstation/ota_apply.sh\n";
     if (reboot_after_apply) {
-        script += "sync && sleep 1 && /system/bin/reboot\n";
+        script += "if [ \"$LAUNCH_OK\" = 1 ]; then sync && sleep 2 && /system/bin/reboot; else echo 'Update incomplete; reboot cancelled'; fi\n";
     }
     script += "echo \"=== OpenStation OTA Completed ===\"\n";
 

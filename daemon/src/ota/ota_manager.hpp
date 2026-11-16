@@ -66,7 +66,8 @@ private:
                                     const std::vector<std::string>& urls,
                                     const std::string& dst_path,
                                     uint32_t file_mode,
-                                    std::string& out_err);
+                                    std::string& out_err,
+                                    int progress_start = -1, int progress_end = -1);
     void repair_mismatched_apks_on_boot();
     void run_check_sync();
     void run_install_sync(bool force);

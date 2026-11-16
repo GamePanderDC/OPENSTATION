@@ -42,6 +42,7 @@ public:
     void set_mic_muted(bool muted);
     void set_music_playing(bool playing);
     void set_music_track_title(const std::string& title);
+    void set_ota_progress(bool active, int percent);
     void trigger_volume_osd(int percent);
     void update_volume_osd_if_active(int percent);
     void trigger_flash(uint8_t r, uint8_t g, uint8_t b, int duration_ms = 600);
@@ -116,6 +117,9 @@ private:
     VoiceVisualState voice_state_ = VoiceVisualState::Idle;
     std::chrono::steady_clock::time_point voice_state_start_{};
     bool mic_muted_ = false;
+    bool ota_active_ = false;
+    int ota_percent_ = 0;
+    float ota_display_percent_ = 0.0f;
 
     std::chrono::steady_clock::time_point osd_until_{};
     int osd_volume_pct_ = 0;

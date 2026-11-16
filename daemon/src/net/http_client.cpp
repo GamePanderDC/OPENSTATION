@@ -665,6 +665,8 @@ HttpClientResponse perform_single(const HttpClientRequest& req) {
             int n = read_some(buf, sizeof(buf), rerr);
             if (n > 0) {
                 body_raw.append(reinterpret_cast<const char*>(buf), static_cast<size_t>(n));
+                if (req.on_body_progress && resp.status_code == 200 && !is_chunked)
+                    req.on_body_progress(body_raw.size());
                 continue;
             }
             if (n == -2 || n == 0) break;

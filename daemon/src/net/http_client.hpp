@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 
@@ -17,6 +18,7 @@ struct HttpClientRequest {
     size_t max_body_bytes = 512 * 1024;
     bool verify_tls = true;
     const std::atomic<bool>* abort_req = nullptr;
+    std::function<void(size_t)> on_body_progress;
 };
 
 struct HttpClientResponse {

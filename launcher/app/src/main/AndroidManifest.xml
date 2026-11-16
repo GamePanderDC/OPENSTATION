@@ -67,6 +67,8 @@
             android:exported="false"
             android:launchMode="singleTask" />
 
+        <activity android:name=".OtaProgressActivity" android:exported="false" android:excludeFromRecents="true" android:launchMode="singleTask" />
+
         <activity android:name=".UpdateCompleteActivity"
             android:exported="false"
             android:excludeFromRecents="true"
