@@ -11,13 +11,14 @@ android {
         applicationId = "com.openstation.launcher"
         minSdk = 26
         targetSdk = 28
-        versionCode = 19
-        versionName = "1.6.3"
+        versionCode = 22
+        versionName = "1.6.3-screensaver"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

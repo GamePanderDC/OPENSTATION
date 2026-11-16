@@ -133,6 +133,7 @@ class MainActivity : Activity() {
 
     // Root stage & multi-screen morph architecture
     private lateinit var rootFrame: FrameLayout
+    private lateinit var screensaverOverlay: SpatialScreensaverOverlay
     private lateinit var ivBg: ImageView
     private lateinit var shellCol: LinearLayout
     private lateinit var blurCurtainHost: FrameLayout
@@ -467,6 +468,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        AnimatedSpriteHelper.syncAll(windowActive = true)
+        if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostResume()
         StationAudioService.setLauncherForegroundState(true)
         StationAudioService.ensureStarted(this)
         LiveOrbState.addListener(orbStateListener)
@@ -495,6 +498,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        AnimatedSpriteHelper.syncAll(windowActive = false)
+        if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostPause()
         handler.removeCallbacks(okLongPressRunnable)
         LiveOrbState.removeListener(orbStateListener)
         StationAudioService.setLauncherForegroundState(false)
@@ -507,6 +512,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (::screensaverOverlay.isInitialized) screensaverOverlay.release()
         if (activeInstance === this) activeInstance = null
         handler.removeCallbacks(okLongPressRunnable)
         LiveOrbState.removeListener(orbStateListener)
@@ -539,6 +545,7 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen && screensaverOverlay.handleKeyEvent(event)) return true
         if (event.keyCode == KeyEvent.KEYCODE_HOME) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 handler.removeCallbacks(okLongPressRunnable)
@@ -716,9 +723,10 @@ class MainActivity : Activity() {
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (currentPage == 0) {
                                 if (cur === btnHeroOrbClick || cur == null) {
-                                    if (!focusFirstVisibleHomeWidget()) {
-                                        nudgeView(heroOrbView, dx = 0f, dy = -dp(12).toFloat())
-                                    }
+                                    val now = java.util.Date()
+                                    screensaverOverlay.updateClockAndWeather(timeFmt.format(now), fullDateFmt.format(now), null)
+                                    screensaverOverlay.updateMusic(latestMusicSnap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
+                                    screensaverOverlay.open()
                                     return true
                                 }
                             } else if (currentPage == 1 || currentPage == 2) {
@@ -1168,6 +1176,9 @@ class MainActivity : Activity() {
             elevation = dp(34).toFloat()
         }
         rootFrame.addView(weatherOverlay)
+
+        screensaverOverlay = SpatialScreensaverOverlay(this) { screensaverOverlay.close() }
+        rootFrame.addView(screensaverOverlay.rootOverlay)
 
         setContentView(rootFrame)
 
@@ -3186,6 +3197,9 @@ class MainActivity : Activity() {
         shortDateFmt.timeZone = tz
         fullDateFmt.timeZone = tz
         clockDate.time = System.currentTimeMillis()
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            screensaverOverlay.updateClockAndWeather(timeFmt.format(clockDate), fullDateFmt.format(clockDate), null)
+        }
 
         val style = LiveOrbState.clockStyle
         val timeStr = when (style) {
@@ -3597,6 +3611,9 @@ class MainActivity : Activity() {
 
     private fun renderMusicSnapshot(snap: YmPlayerSnapshot, forceViews: Boolean = false) {
         latestMusicSnap = snap
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            screensaverOverlay.updateMusic(snap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
+        }
         LiveOrbState.musicPlaying = snap.playing
 
         val tr = snap.currentTrack
