@@ -422,8 +422,8 @@ object LiquidGlassKit {
             val accent2 = Color.parseColor(theme.secondaryHex)
 
             val fillTop = when {
-                isPressedState -> blendColors(focusTint, Color.WHITE, 0.20f)
-                isFocusedState -> blendColors(focusTint, Color.WHITE, 0.12f)
+                isPressedState -> blendColors(focusTint, Color.parseColor("#FF82D4FF"), 0.34f)
+                isFocusedState -> blendColors(focusTint, Color.parseColor("#FF82D4FF"), 0.25f)
                 else -> baseTint
             }
             val fillBot = when {
@@ -527,8 +527,8 @@ object LiquidGlassKit {
 
             // 5. Delicate hairline crystal edge (pearl white glow on focus, zero heavy yellow wireframe)
             borderPaint.color = when {
-                isPressedState -> Color.parseColor("#A07DB8D6")
-                isFocusedState -> focusStroke
+                isPressedState -> Color.parseColor("#F08BD8FF")
+                isFocusedState -> Color.argb(max(215, Color.alpha(focusStroke)), Color.red(focusStroke), Color.green(focusStroke), Color.blue(focusStroke))
                 else -> normalStroke
             }
             borderPaint.strokeWidth = if (isFocusedState || isPressedState) focusStrokeWidthPx else strokeWidthPx
@@ -577,7 +577,7 @@ object LiquidGlassKit {
             normalStroke = normalStroke,
             focusStroke = focusStroke,
             strokeWidthPx = max(1.0f, 0.8f * d),
-            focusStrokeWidthPx = max(1.6f, 1.3f * d),
+            focusStrokeWidthPx = max(2.0f, 1.7f * d),
             refractStrength = refractStrength,
             glassAlpha = glassAlpha
         )
