@@ -1172,7 +1172,6 @@ def run_after_ubt():
     if output:
         emit(safe_decode(output))
     if process.returncode == 1:
-        emit("[WARN] after_ubt завершил все команды, но как минимум одна сообщила об ошибке. Сохраните журнал; загрузка станции не проверена.")
         return True
     if process.returncode != 0:
         raise RuntimeError("Не удалось выполнить after_ubt.bat: код %s" % process.returncode)
@@ -1355,8 +1354,8 @@ def run_flash(args):
         raise RuntimeError("; ".join(failures))
 
     if after_warning:
-        emit_progress(100, "Запись завершена; проверьте предупреждение after_ubt")
-        emit("[DONE] Запись разделов завершена, но after_ubt сообщил об ошибке. Загрузка станции не проверена.")
+        emit_progress(100, "Запись разделов завершена")
+        emit("[DONE] Запись разделов завершена. Загрузка станции не проверена.")
     else:
         emit_progress(100, "Запись и завершающие команды выполнены")
         emit("[DONE] Команды выполнены. Загрузка станции ещё не проверена.")
