@@ -910,10 +910,10 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 
     {
         Value p = Value::make_obj();
-        p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"});
+        p["clock_style"] = make_enum_prop("Clock display style on LED matrix and TV", {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro", "matrix"});
         p["visualizer_style"] = make_enum_prop(
             "Music visualizer style (TV orb morph + front LED matrix)",
-            {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title"});
+            {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title", "stock_wave", "stock_pads", "stock_bricks", "stock_fluid"});
         p["auto_music_visualizer"] = make_prop("BOOLEAN", "Auto morph TV orb & LED display into visualizer when music plays");
         p["screen_color"] = make_prop("STRING", "Optional LED screen clock hex color like #00d4ff or #ffffff");
         decls.push(make_func_decl(

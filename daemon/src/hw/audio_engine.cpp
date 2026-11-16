@@ -1,4 +1,5 @@
 #include "hw/audio_engine.hpp"
+#include "hw/loopback_channels.hpp"
 #include "utils/logger.hpp"
 
 #include <aaudio/AAudio.h>
@@ -369,11 +370,12 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
     // Check if speaker loopback channels have active signal before running 16 kHz NLMS AEC
     bool use_aec = cfg_copy.aec_enable && tracked_ch >= 10 &&
                    cfg_copy.loopback_channel >= 0 && cfg_copy.loopback_channel < tracked_ch;
-    const bool has_stereo_lb = (cfg_copy.loopback_channel == 8 && tracked_ch >= 10);
+    const int lb_ch = cfg_copy.loopback_channel;
+    const bool has_stereo_lb = is_stereo_loopback(lb_ch, tracked_ch);
     if (use_aec && frames > 0) {
         const double lb_sq = has_stereo_lb
-                                 ? 0.5 * (ch_sq[8] + ch_sq[9])
-                                 : ch_sq[cfg_copy.loopback_channel];
+                                 ? 0.5 * (ch_sq[lb_ch] + ch_sq[lb_ch + 1])
+                                 : ch_sq[lb_ch];
         if (lb_sq > static_cast<double>(frames) * 25.0) {
             aec_hangover_ = 30; // ~600 ms hangover after playback stops
             aec_x_clean_ = false;
@@ -431,8 +433,8 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
 
             if (use_aec) {
                 ref48[f] = has_stereo_lb
-                               ? 0.5f * (samp[8] + samp[9])
-                               : samp[cfg_copy.loopback_channel];
+                               ? 0.5f * (samp[lb_ch] + samp[lb_ch + 1])
+                               : samp[lb_ch];
             }
         }
     }

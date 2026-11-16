@@ -166,10 +166,10 @@ void DaemonConfig::sanitize_and_validate() {
     if (!is_one_of(led_screen.mode, {"off", "clock", "text", "spectrum", "snake"})) {
         led_screen.mode = "clock";
     }
-    if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro"})) {
+    if (!is_one_of(led_screen.clock_style, {"classic", "minimal", "bold", "seconds", "binary", "neon", "retro", "matrix"})) {
         led_screen.clock_style = "classic";
     }
-    if (!is_one_of(led_screen.visualizer_style, {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title"})) {
+    if (!is_one_of(led_screen.visualizer_style, {"pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title", "stock_wave", "stock_pads", "stock_bricks", "stock_fluid"})) {
         led_screen.visualizer_style = "pulse_bars";
     }
     if (led_screen.text.size() > 256) led_screen.text.resize(256);

@@ -38,8 +38,8 @@ struct LedRingConfig {
 
 struct LedScreenConfig {
     std::string mode = "clock";          // off, clock, text, spectrum, snake
-    std::string clock_style = "classic"; // classic, minimal, bold, seconds, binary, neon, retro
-    std::string visualizer_style = "pulse_bars"; // pulse_bars, beat_wave, bass_nova, mirror_meter, spark_burst, vu_plasma, track_title
+    std::string clock_style = "classic"; // classic, minimal, bold, seconds, binary, neon, retro, matrix
+    std::string visualizer_style = "pulse_bars"; // pulse_bars, beat_wave, bass_nova, mirror_meter, spark_burst, vu_plasma, track_title, stock_wave, stock_pads, stock_bricks, stock_fluid
     bool auto_music_visualizer = true;   // smooth auto morph orb + LED screen when music plays
     std::string text = "OPEN STATION MAX";
     std::string color = "#ffffff";

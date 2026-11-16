@@ -1241,6 +1241,46 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         static uint32_t s_rng = 0x5A17C0DEu;
         const float dt_f = static_cast<float>(dt_sec);
 
+        // Monochrome, spectrum-driven patterns for the front matrix.
+        if (vis_style == "stock_wave" || vis_style == "stock_pads" ||
+            vis_style == "stock_bricks" || vis_style == "stock_fluid") {
+            const int width = static_cast<int>(W);
+            const int height = static_cast<int>(H);
+            auto band = [&](int x) {
+                const size_t i = std::min<size_t>(23, static_cast<size_t>(x) * 24 / std::max(1, width));
+                return std::clamp(spec[i], 0.0f, 1.0f);
+            };
+            const Rgb white{230, 230, 230};
+            if (vis_style == "stock_wave" || vis_style == "stock_fluid") {
+                for (int x = 0; x < width; ++x) {
+                    const float smooth = band(std::max(0, x - 1)) * 0.25f + band(x) * 0.5f +
+                                         band(std::min(width - 1, x + 1)) * 0.25f;
+                    if (smooth < 0.025f) continue;
+                    const int half = std::clamp(static_cast<int>(std::lround(smooth * (height - 1) * 0.5f)), 0, (height - 1) / 2);
+                    const int center = (height - 1) / 2;
+                    for (int y = std::max(0, center - half); y <= std::min(height - 1, center + half); ++y) {
+                        if (vis_style == "stock_fluid" || y == center - half || y == center + half)
+                            pset(x, y, white);
+                    }
+                }
+            } else {
+                const int columns = std::max(1, (width + 1) / 3);
+                for (int c = 0; c < columns; ++c) {
+                    const int x = c * 3;
+                    const float level = band(std::min(width - 1, x + 1));
+                    const int rows = std::clamp(static_cast<int>(std::lround(level * height / 3.0f)), 0, (height + 2) / 3);
+                    for (int row = 0; row < rows; ++row) {
+                        const int y = height - 1 - row * 3;
+                        for (int dx = 0; dx < 2 && x + dx < width; ++dx) {
+                            pset(x + dx, y, white);
+                            if (vis_style == "stock_pads" && y > 0) pset(x + dx, y - 1, white);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         if (vis_style == "track_title") {
             const std::string title = music_track_txt.empty()
                 ? std::string("\xD0\x9C\xD0\xA3\xD0\x97\xD0\xAB\xD0\x9A\xD0\x90")
@@ -2173,7 +2213,24 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         float colon_k = 0.25f + 0.75f * (0.5f + 0.5f * std::cos(static_cast<float>(t_sec * kPi * 2.0)));
         const std::string& cs = cfg.clock_style;
 
-        if (cs == "binary" && W >= 22 && H >= 12) {
+        if (cs == "matrix" && W >= 19 && H >= 14) {
+            const int sx = static_cast<int>((W - 19) / 2);
+            const int sy = static_cast<int>((H - 14) / 2);
+            auto digit = [&](int n, int x) {
+                for (int cx = 0; cx < 3; ++cx) {
+                    const uint8_t bits = kFontDigits3x7[n][cx];
+                    for (int cy = 0; cy < 7; ++cy) {
+                        if (bits & (1u << cy)) {
+                            pset(x + cx, sy + cy * 2, col);
+                            pset(x + cx, sy + cy * 2 + 1, col);
+                        }
+                    }
+                }
+            };
+            digit(h / 10, sx); digit(h % 10, sx + 4);
+            digit(m / 10, sx + 12); digit(m % 10, sx + 16);
+            for (int y : {sy + 4, sy + 5, sy + 9, sy + 10}) pset(sx + 9, y, col);
+        } else if (cs == "binary" && W >= 22 && H >= 12) {
             const int digits[6] = {h / 10, h % 10, m / 10, m % 10, s / 10, s % 10};
             const int xs[6] = {2, 5, 10, 13, 18, 21};
             const Rgb cols[6] = {

@@ -3925,6 +3925,10 @@ class MainActivity : Activity() {
     }
 
     private val visualizerStyles = listOf(
+        "stock_wave" to "Волна Макс",
+        "stock_pads" to "Плитки Макс",
+        "stock_bricks" to "Кирпичики Макс",
+        "stock_fluid" to "Жидкость Макс",
         "pulse_bars" to "Эквалайзер",
         "beat_wave" to "Аудио-волна",
         "bass_nova" to "Бас-нова",

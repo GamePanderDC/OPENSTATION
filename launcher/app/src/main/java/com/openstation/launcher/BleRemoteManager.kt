@@ -53,6 +53,7 @@ class BleRemoteManager(private val context: Context) {
     private var activeScanCallback: ScanCallback? = null
     private var scanTimeoutRunnable: Runnable? = null
     private var bondReceiver: BroadcastReceiver? = null
+    private var bondTimeoutRunnable: Runnable? = null
     private var reconnectActive = false
     @Volatile private var hidConnectedAddress: String? = null
     private var hidReceiverRegistered = false
@@ -72,7 +73,10 @@ class BleRemoteManager(private val context: Context) {
                     }
                 }
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
-                    if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) != BluetoothAdapter.STATE_ON) {
+                    if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) == BluetoothAdapter.STATE_ON) {
+                        reconnectDelay = 5000L
+                        scheduleReconnect(1000L)
+                    } else {
                         hidConnectedAddress = null
                     }
                 }
@@ -361,9 +365,16 @@ class BleRemoteManager(private val context: Context) {
             }
         }
         bondReceiver = br
-        context.registerReceiver(br, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
-
         try {
+            context.registerReceiver(br, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED))
+            val timeout = Runnable {
+                if (bondReceiver === br) {
+                    unregisterBondReceiver()
+                    onStatus("error", "Пульт не завершил сопряжение. Повторите поиск и снова включите режим сопряжения.")
+                }
+            }
+            bondTimeoutRunnable = timeout
+            handler.postDelayed(timeout, 30000L)
             onStatus("pairing", "Сопрягаю пульт $label...")
             if (!device.createBond()) {
                 unregisterBondReceiver()
@@ -614,6 +625,8 @@ class BleRemoteManager(private val context: Context) {
     }
 
     private fun unregisterBondReceiver() {
+        bondTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        bondTimeoutRunnable = null
         bondReceiver?.let {
             try { context.unregisterReceiver(it) } catch (_: Throwable) {}
         }

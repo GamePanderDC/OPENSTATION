@@ -25,9 +25,18 @@ int main() {
     assert(defaults.assistant.gemini_model == "gemini-3.8-live");
     assert(defaults.led_screen.visualizer_style == "pulse_bars");
 
-    // All 7 v1.6.3 visualizer styles preserve cleanly, legacy styles migrate to "pulse_bars".
+    {
+        DaemonConfig cc;
+        json::Value patch = json::Value::make_obj();
+        patch["ledScreen"]["clockStyle"] = json::Value::make_str("matrix");
+        cc.from_json(patch);
+        cc.sanitize_and_validate();
+        assert(cc.led_screen.clock_style == "matrix");
+    }
+    // Supported visualizer styles survive validation; unknown styles fall back.
     const std::vector<std::string> valid_vis = {
-        "pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title"
+        "pulse_bars", "beat_wave", "bass_nova", "mirror_meter", "spark_burst", "vu_plasma", "track_title",
+        "stock_wave", "stock_pads", "stock_bricks", "stock_fluid"
     };
     for (const auto& style : valid_vis) {
         DaemonConfig vc;

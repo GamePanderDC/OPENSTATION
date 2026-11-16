@@ -544,13 +544,14 @@ bool is_valid_eq_preset(const std::string& p) {
 
 bool is_valid_clock_style(const std::string& s) {
     return s == "classic" || s == "minimal" || s == "bold" || s == "seconds" ||
-           s == "binary" || s == "neon" || s == "retro";
+           s == "binary" || s == "neon" || s == "retro" || s == "matrix";
 }
 
 bool is_valid_visualizer_style(const std::string& s) {
     return s == "pulse_bars" || s == "beat_wave" || s == "bass_nova" ||
            s == "mirror_meter" || s == "spark_burst" || s == "vu_plasma" ||
-           s == "track_title";
+           s == "track_title" || s == "stock_wave" || s == "stock_pads" ||
+           s == "stock_bricks" || s == "stock_fluid";
 }
 
 std::string url_decode_str(const std::string& s) {
