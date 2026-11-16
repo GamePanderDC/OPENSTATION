@@ -11,8 +11,8 @@ android {
         applicationId = "com.openstation.launcher"
         minSdk = 26
         targetSdk = 28
-        versionCode = 29
-        versionName = "1.6.12"
+        versionCode = 30
+        versionName = "1.6.13"
     }
 
     buildTypes {

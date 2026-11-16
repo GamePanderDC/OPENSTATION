@@ -1938,8 +1938,8 @@ class MainActivity : Activity() {
         tileRing = makeHwTile(R.drawable.ic_hw_ring, "Кольцо: Спектр") { cycleRingMode() }
         tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
-        tileEq = makeHwTile(R.drawable.sprite_sys_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileVis = makeHwTile(R.drawable.sprite_sys_display, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
+        tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
+        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
         tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
 
         val hwGrid = LinearLayout(this).apply {
@@ -2540,16 +2540,10 @@ class MainActivity : Activity() {
             setOnClickListener { onClick() }
         }
         val iv = ImageView(this).apply {
-            val isSprite = iconRes == R.drawable.sprite_sys_eq || iconRes == R.drawable.sprite_sys_display
-            if (isSprite) {
-                setImageBitmap(BitmapFactory.decodeResource(resources, iconRes,
-                    BitmapFactory.Options().apply { inSampleSize = 8 }))
-            } else {
-                setImageResource(iconRes)
-                setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
-            }
+            setImageResource(iconRes)
+            setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(if (isSprite) 22 else 16), dp(if (isSprite) 22 else 16)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply {
                 marginEnd = dp(8)
             }
         }
