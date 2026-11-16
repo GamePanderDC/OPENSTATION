@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 28
         versionCode = 22
-        versionName = "1.6.3-screensaver"
+        versionName = "1.6.5"
     }
 
     buildTypes {

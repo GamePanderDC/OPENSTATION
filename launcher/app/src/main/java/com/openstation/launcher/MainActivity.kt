@@ -128,11 +128,37 @@ class MainActivity : Activity() {
     )
 
     private val handler = Handler(Looper.getMainLooper())
+    private val saverIdleRunnable = Runnable {
+        if (::screensaverOverlay.isInitialized && !screensaverOverlay.isOpen) {
+            if (appsDrawerOpen || homeCustomOpen || appContextOpen || appInfoOpen ||
+                LiveOrbState.assistantState in setOf("connecting", "listening", "thinking", "speaking") ||
+                (::weatherOverlay.isInitialized && weatherOverlay.visibility == View.VISIBLE)) scheduleScreensaver()
+            else openScreensaver()
+        }
+    }
+
+    private fun scheduleScreensaver() {
+        handler.removeCallbacks(saverIdleRunnable)
+        val minutes = getSharedPreferences("openstation_ui", MODE_PRIVATE).getInt("screensaver_idle_minutes", ScreensaverIdlePolicy.DEFAULT_MINUTES)
+        ScreensaverIdlePolicy.delayMillis(minutes)?.let { handler.postDelayed(saverIdleRunnable, it) }
+    }
+
+    private fun openScreensaver() {
+        val now = java.util.Date()
+        screensaverOverlay.updateClockAndWeather(timeFmt.format(now), fullDateFmt.format(now), null)
+        screensaverOverlay.updateMusic(latestMusicSnap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
+        if (::livingWallpaper.isInitialized) livingWallpaper.setRunning(false)
+        if (::videoBackdrop.isInitialized) videoBackdrop.setRunning(false)
+        screensaverOverlay.open()
+        handler.removeCallbacks(saverIdleRunnable)
+    }
     private val miscRepairHelper by lazy { MiscRepairDialogHelper(this, handler) }
     private val easeOutCubic = PathInterpolator(0.22f, 1f, 0.36f, 1f)
 
     // Root stage & multi-screen morph architecture
     private lateinit var rootFrame: FrameLayout
+    private lateinit var livingWallpaper: LivingWallpaperView
+    private lateinit var videoBackdrop: VideoBackdropView
     private lateinit var screensaverOverlay: SpatialScreensaverOverlay
     private lateinit var ivBg: ImageView
     private lateinit var shellCol: LinearLayout
@@ -468,6 +494,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        scheduleScreensaver()
+        if (::livingWallpaper.isInitialized && (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)) livingWallpaper.setRunning(true)
+        if (::videoBackdrop.isInitialized && (!::screensaverOverlay.isInitialized || !screensaverOverlay.isOpen)) {
+            videoBackdrop.setRunning(getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true))
+        }
         AnimatedSpriteHelper.syncAll(windowActive = true)
         if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostResume()
         StationAudioService.setLauncherForegroundState(true)
@@ -498,6 +529,9 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        handler.removeCallbacks(saverIdleRunnable)
+        if (::livingWallpaper.isInitialized) livingWallpaper.setRunning(false)
+        if (::videoBackdrop.isInitialized) videoBackdrop.setRunning(false)
         AnimatedSpriteHelper.syncAll(windowActive = false)
         if (::screensaverOverlay.isInitialized) screensaverOverlay.onHostPause()
         handler.removeCallbacks(okLongPressRunnable)
@@ -538,6 +572,7 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev?.action == MotionEvent.ACTION_DOWN) scheduleScreensaver()
         if (ev != null && swipeDetector.onTouchEvent(ev)) {
             return true
         }
@@ -545,6 +580,7 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) scheduleScreensaver()
         if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen && screensaverOverlay.handleKeyEvent(event)) return true
         if (event.keyCode == KeyEvent.KEYCODE_HOME) {
             if (event.action == KeyEvent.ACTION_DOWN) {
@@ -723,10 +759,7 @@ class MainActivity : Activity() {
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             if (currentPage == 0) {
                                 if (cur === btnHeroOrbClick || cur == null) {
-                                    val now = java.util.Date()
-                                    screensaverOverlay.updateClockAndWeather(timeFmt.format(now), fullDateFmt.format(now), null)
-                                    screensaverOverlay.updateMusic(latestMusicSnap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
-                                    screensaverOverlay.open()
+                                    openScreensaver()
                                     return true
                                 }
                             } else if (currentPage == 1 || currentPage == 2) {
@@ -874,6 +907,11 @@ class MainActivity : Activity() {
         bgLayerHost.addView(ivBg)
         bgLayerHost.addView(scrimView)
         rootFrame.addView(bgLayerHost)
+        videoBackdrop = VideoBackdropView(this)
+        rootFrame.addView(videoBackdrop, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        videoBackdrop.alpha = 0.48f
+        livingWallpaper = LivingWallpaperView(this)
+        rootFrame.addView(livingWallpaper, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Main vertical container: Top Bar + 3-Screen Morphing Stage
         shellCol = LinearLayout(this).apply {
@@ -1177,7 +1215,11 @@ class MainActivity : Activity() {
         }
         rootFrame.addView(weatherOverlay)
 
-        screensaverOverlay = SpatialScreensaverOverlay(this) { screensaverOverlay.close() }
+        screensaverOverlay = SpatialScreensaverOverlay(this) {
+            screensaverOverlay.close()
+            livingWallpaper.setRunning(true)
+            videoBackdrop.setRunning(getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true))
+        }
         rootFrame.addView(screensaverOverlay.rootOverlay)
 
         setContentView(rootFrame)
@@ -4686,6 +4728,42 @@ class MainActivity : Activity() {
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
+
+        val saverDelay = makeTextIconPill(R.drawable.ic_settings, "Заставка", gold = false) { }
+        fun updateSaverDelayLabel() {
+            val minutes = getSharedPreferences("openstation_ui", MODE_PRIVATE).getInt("screensaver_idle_minutes", 10)
+            (saverDelay.getChildAt(1) as TextView).text = if (minutes == 0) "Заставка автоматически: выключена" else "Заставка через $minutes мин"
+        }
+        updateSaverDelayLabel()
+        saverDelay.setOnClickListener {
+            val prefs = getSharedPreferences("openstation_ui", MODE_PRIVATE)
+            val current = prefs.getInt("screensaver_idle_minutes", 10)
+            val next = ScreensaverIdlePolicy.nextMinutes(current)
+            prefs.edit().putInt("screensaver_idle_minutes", next).apply()
+            updateSaverDelayLabel()
+            scheduleScreensaver()
+        }
+        body.addView(saverDelay)
+
+        val videoToggle = makeTextIconPill(R.drawable.ic_settings, "Видеофон", gold = false) { }
+        fun updateVideoLabel() {
+            val enabled = getSharedPreferences("openstation_ui", MODE_PRIVATE).getBoolean("video_wallpaper", true)
+            (videoToggle.getChildAt(1) as TextView).text = if (enabled) "Видеофон: включён" else "Видеофон: выключен"
+        }
+        updateVideoLabel()
+        videoToggle.setOnClickListener {
+            val prefs = getSharedPreferences("openstation_ui", MODE_PRIVATE)
+            val enabled = !prefs.getBoolean("video_wallpaper", true)
+            prefs.edit().putBoolean("video_wallpaper", enabled).apply()
+            videoBackdrop.setRunning(enabled)
+            updateVideoLabel()
+        }
+        body.addView(videoToggle)
+        body.addView(TextView(this).apply {
+            text = "Видео: Sparkus Design / Wikimedia Commons · CC BY 2.0"
+            textSize = 10f
+            setTextColor(Color.LTGRAY)
+        })
 
         body.addView(makeSectionTitle("Обои рабочего стола", R.drawable.ic_wave))
 

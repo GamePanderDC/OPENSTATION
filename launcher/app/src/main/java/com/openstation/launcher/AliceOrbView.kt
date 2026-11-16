@@ -445,6 +445,7 @@ class AliceOrbView @JvmOverloads constructor(
     private var curSat = 1.05f
     private var curBright = 1.0f
     private var curGlowColor = Color.parseColor("#38BDF8")
+    private var levitatePhase = 0f
 
     // Preallocated Paint/Matrix/LRU Shader objects (zero per-frame allocations in steady state)
     private val bmpPaint0 = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -740,6 +741,7 @@ class AliceOrbView @JvmOverloads constructor(
         if (framePhase < 0f) framePhase += nFrames
 
         rotDeg = (rotDeg + dt * (5f + curSpeed * 9f)) % 360f
+        levitatePhase = (levitatePhase + dt * 1.18f) % (2f * Math.PI.toFloat())
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -749,8 +751,9 @@ class AliceOrbView @JvmOverloads constructor(
         if (w <= 4f || h <= 4f) return
 
         val cx = w * 0.5f
-        val cy = h * 0.5f
         val baseDim = min(w, h)
+        val levitateAmp = if (compactGlowBoost > 0.85f) 0f else min(baseDim * 0.018f, resources.displayMetrics.density * 4.8f)
+        val cy = h * 0.5f + sin(levitatePhase) * levitateAmp
         // Outer aura expands softly around the sphere inside view bounds (sphere itself ~85% of view dim)
         val orbDiameter = baseDim * 0.85f * curScale
         val halfOrb = orbDiameter * 0.5f
