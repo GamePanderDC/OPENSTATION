@@ -1,4 +1,5 @@
 #include "ota/ota_manager.hpp"
+#include "ota/apk_path.hpp"
 #include "net/http_client.hpp"
 #include "utils/logger.hpp"
 
@@ -1324,6 +1325,17 @@ void OtaManager::repair_mismatched_apks_on_boot() {
 
     bool repair_launcher = check_launcher && (!launcher_ok || (!launcher_ver.empty() && compare_semver(launcher_ver, manifest_ver) < 0));
     bool repair_ime = check_ime && !ime_ok;
+    if (repair_launcher && launcher_ok) {
+        int rc = -1;
+        std::string paths;
+        if (run_shell_capture("pm path com.openstation.launcher", 10, rc, paths) && rc == 0) {
+            const std::string base = base_apk_path_from_pm(paths);
+            if (!base.empty() && compute_file_sha256(base) == launcher_art.sha256) {
+                LOGI("OTA", "Installed launcher matches manifest SHA-256; no repair needed");
+                repair_launcher = false;
+            }
+        }
+    }
     if (!repair_launcher && !repair_ime) {
         return;
     }

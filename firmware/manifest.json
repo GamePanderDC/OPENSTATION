@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.14",
+  "version": "1.6.15",
   "autonomous": true,
-  "changelog": "Улучшена обработка тихой речи и сокращено ожидание продолжения диалога.",
-  "buildTimeUtc": "2026-11-16T19:14:17Z",
+  "changelog": "Исправлена лишняя загрузка лаунчера, сокращено ожидание диалога и уточнено понимание речи.",
+  "buildTimeUtc": "2026-11-16T19:26:13Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3156896,
-      "sha256": "712956b4189dd34d458097bd1804f16e1f0f9df138aac3705432b29f92419227"
+      "size": 3157824,
+      "sha256": "76fc0e2e6640d5c853f5c5c2c7421da100e548fa7e40b6342a239173e63dc606"
     },
     "bootlogod": {
       "fileName": "bootlogod",
