@@ -47,6 +47,31 @@ class FlashWorkflowTests(unittest.TestCase):
                 engine.run_flash(args)
             self.assertEqual(events, ["mmc dev 1", "vbmeta", "vendor", "system", "misc", "after_ubt.bat"])
 
+    def test_after_ubt_code_one_is_warning_but_other_errors_remain_errors(self):
+        for code, expect_warning in ((0, False), (1, True)):
+            proc = types.SimpleNamespace(returncode=code, communicate=lambda timeout: (b"", None))
+            with self.subTest(code=code), patch.object(engine.subprocess, "Popen", return_value=proc), patch.object(engine, "emit"):
+                self.assertEqual(engine.run_after_ubt(), expect_warning)
+        proc = types.SimpleNamespace(returncode=2, communicate=lambda timeout: (b"", None))
+        with patch.object(engine.subprocess, "Popen", return_value=proc), patch.object(engine, "emit"):
+            with self.assertRaisesRegex(RuntimeError, "код 2"):
+                engine.run_after_ubt()
+
+    def test_warning_finishes_after_successful_partition_writes(self):
+        with tempfile.TemporaryDirectory() as path:
+            for filename in engine.ROM_FILES:
+                open(os.path.join(path, filename), "wb").close()
+            args = types.SimpleNamespace(rom_dir=path, download_latest=False, revision="auto", keep_data=True)
+            with patch.object(engine, "check_worldcup_driver", return_value=True), \
+                 patch.object(engine, "verify_rom"), \
+                 patch.object(engine, "ensure_burn_mode", return_value=True), \
+                 patch.object(engine, "aml_bulkcmd"), \
+                 patch.object(engine, "flash_partition"), \
+                 patch.object(engine, "run_after_ubt", return_value=True), \
+                 patch.object(engine, "emit") as emit:
+                self.assertTrue(engine.run_flash(args))
+                self.assertTrue(any("не проверена" in call.args[0] for call in emit.call_args_list))
+
     def test_checksum_rejection_precedes_flash_commands(self):
         with tempfile.TemporaryDirectory() as path:
             for filename in engine.ROM_FILES:

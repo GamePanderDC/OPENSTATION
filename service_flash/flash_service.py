@@ -1171,8 +1171,12 @@ def run_after_ubt():
         raise RuntimeError("after_ubt.bat не завершился вовремя; состояние станции неизвестно")
     if output:
         emit(safe_decode(output))
+    if process.returncode == 1:
+        emit("[WARN] after_ubt завершил все команды, но как минимум одна сообщила об ошибке. Сохраните журнал; загрузка станции не проверена.")
+        return True
     if process.returncode != 0:
-        raise RuntimeError("Ошибка after_ubt.bat: код %s" % process.returncode)
+        raise RuntimeError("Не удалось выполнить after_ubt.bat: код %s" % process.returncode)
+    return False
 
 
 def ensure_burn_mode() -> bool:
@@ -1339,8 +1343,9 @@ def run_flash(args):
 
     emit_progress(95, "Обязательный завершающий этап after_ubt...")
     after_error = None
+    after_warning = False
     try:
-        run_after_ubt()
+        after_warning = run_after_ubt()
     except Exception as ex:
         after_error = ex
     if misc_error or after_error:
@@ -1349,8 +1354,13 @@ def run_flash(args):
         if after_error: failures.append("after_ubt: " + str(after_error))
         raise RuntimeError("; ".join(failures))
 
-    emit_progress(100, "Запись и завершающие команды выполнены")
-    emit("[DONE] Команды выполнены. Загрузка станции ещё не проверена.")
+    if after_warning:
+        emit_progress(100, "Запись завершена; проверьте предупреждение after_ubt")
+        emit("[DONE] Запись разделов завершена, но after_ubt сообщил об ошибке. Загрузка станции не проверена.")
+    else:
+        emit_progress(100, "Запись и завершающие команды выполнены")
+        emit("[DONE] Команды выполнены. Загрузка станции ещё не проверена.")
+    return bool(after_warning)
 
 
 def main():
@@ -1381,8 +1391,7 @@ def main():
             ok = install_driver()
             return 0 if ok else 1
         if args.flash:
-            run_flash(args)
-            return 0
+            return 3 if run_flash(args) else 0
         parser.print_help()
         return 0
     except Exception as ex:

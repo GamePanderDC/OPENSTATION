@@ -74,7 +74,7 @@ namespace OpenStationFlasher
     public class MainWindow : Window
     {
         private const string FW_VERSION = "v1.6.3";
-        private const string INSTALLER_VERSION = "1.3.1";
+        private const string INSTALLER_VERSION = "1.3.2";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -1037,12 +1037,13 @@ namespace OpenStationFlasher
                 }
             }
             int rc = RunPythonStream(engine, engineArgs);
-            if (rc != 0) throw new Exception("Операция остановлена (код " + rc + "). Сохраните журнал.");
-            SetProgress(100, "Запись и завершающие команды выполнены");
+            if (rc != 0 && rc != 3) throw new Exception("Операция остановлена (код " + rc + "). Сохраните журнал.");
+            bool warning = rc == 3;
+            SetProgress(100, warning ? "Запись завершена; проверьте предупреждение" : "Запись и завершающие команды выполнены");
             Dispatcher.Invoke(() => {
-                _statusDot.Fill = new SolidColorBrush(Color.FromRgb(52, 211, 153));
-                _txtHeroStatus.Text = "Запись завершена";
-                _txtHeroSub.Text = "Завершающие команды выполнены. Перезапустите питание станции.";
+                _statusDot.Fill = warning ? new SolidColorBrush(Color.FromRgb(251, 191, 36)) : new SolidColorBrush(Color.FromRgb(52, 211, 153));
+                _txtHeroStatus.Text = warning ? "Запись завершена с предупреждением" : "Запись завершена";
+                _txtHeroSub.Text = warning ? "Одна из завершающих команд сообщила об ошибке. Сохраните журнал; загрузка станции не проверена." : "Завершающие команды выполнены. Перезапустите питание станции.";
             });
         }
 
