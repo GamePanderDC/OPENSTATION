@@ -26,12 +26,14 @@ int main() {
     assert(defaults.led_screen.visualizer_style == "pulse_bars");
 
     {
-        DaemonConfig cc;
-        json::Value patch = json::Value::make_obj();
-        patch["ledScreen"]["clockStyle"] = json::Value::make_str("matrix");
-        cc.from_json(patch);
-        cc.sanitize_and_validate();
-        assert(cc.led_screen.clock_style == "matrix");
+        for (const char* style : {"matrix", "bold", "yandex1", "yandex2", "yandex3"}) {
+            DaemonConfig cc;
+            json::Value patch = json::Value::make_obj();
+            patch["ledScreen"]["clockStyle"] = json::Value::make_str(style);
+            cc.from_json(patch);
+            cc.sanitize_and_validate();
+            assert(cc.led_screen.clock_style == style);
+        }
     }
     // Supported visualizer styles survive validation; unknown styles fall back.
     const std::vector<std::string> valid_vis = {

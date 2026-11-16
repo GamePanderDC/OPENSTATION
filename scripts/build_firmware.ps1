@@ -7,7 +7,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = "1.6.13",
-    [string]$Changelog = "OpenStation Max v1.6.13: улучшена читаемость иконок быстрого управления.",
+    [string]$Changelog = "OpenStation Max v1.6.13: новые стили часов и улучшенная читаемость иконок быстрого управления.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

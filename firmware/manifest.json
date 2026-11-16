@@ -3,13 +3,13 @@
   "device": "yandexstation_2",
   "version": "1.6.13",
   "autonomous": true,
-  "changelog": "Улучшена читаемость иконок эквалайзера и экрана в быстром управлении.",
-  "buildTimeUtc": "2026-11-16T14:53:09Z",
+  "changelog": "Добавлены часы Bold и три штатных стиля часов. Улучшена читаемость иконок в быстром управлении.",
+  "buildTimeUtc": "2026-11-16T14:57:59Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3149664,
-      "sha256": "c622e07f4b8c5df0e6ac42f29807db8d4e171e2e0e7a6bb6f1f223b3e246af4d"
+      "size": 3156304,
+      "sha256": "b533fa62f818af24bf72813c64227fe07942b1a78bdbd36344bf32a67a550671"
     },
     "bootlogod": {
       "fileName": "bootlogod",

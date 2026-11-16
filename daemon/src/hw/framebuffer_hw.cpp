@@ -2213,7 +2213,7 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
         float colon_k = 0.25f + 0.75f * (0.5f + 0.5f * std::cos(static_cast<float>(t_sec * kPi * 2.0)));
         const std::string& cs = cfg.clock_style;
 
-        if (cs == "yandex1" || cs == "yandex2" || cs == "yandex3") {
+        if (cs == "bold" || cs == "yandex1" || cs == "yandex2" || cs == "yandex3") {
             // Glyphs transcribed from the clock GIF fonts in stock firmware 5000000921.
             static constexpr const char* large[10][9] = {
                 {".###.","#...#","#...#","#...#","#...#","#...#","#...#","#...#",".###."},
@@ -2246,8 +2246,8 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
                 {"###","#..","###","#.#","###"}, {"###","..#","..#","..#","..#"},
                 {"###","#.#","###","#.#","###"}, {"###","#.#","###","..#","###"}
             };
-            const int dw = cs == "yandex1" ? 5 : (cs == "yandex2" ? 4 : 3);
-            const int dh = cs == "yandex1" ? 9 : (cs == "yandex2" ? 7 : 5);
+            const int dw = cs == "yandex1" ? 5 : (cs == "yandex2" || cs == "bold" ? 4 : 3);
+            const int dh = cs == "yandex1" ? 9 : (cs == "yandex2" || cs == "bold" ? 7 : 5);
             // The 5x9 stock sample uses adjacent digits and a three-column colon gap.
             const int gap = dw == 5 ? 0 : 1;
             const int total = 4 * dw + 2 * gap + 3;
@@ -2344,7 +2344,6 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
             int sx = static_cast<int>((W - 23) / 2);
             int top_y_big = static_cast<int>((H - 10) / 2);
             bool is_neon = (cs == "neon");
-            bool is_bold = (cs == "bold");
             bool is_retro = (cs == "retro");
             auto draw_styled_4x10 = [&](int digit, int dx) {
                 if (digit < 0 || digit > 9) return;
@@ -2359,8 +2358,6 @@ void FramebufferHw::render_screen(double t_sec, const LedScreenConfig& cfg) {
                                 // Subtle 1px halo around active neon pixels
                                 padd(dx + cx - 1, top_y_big + cy, px_c.r * 0.16f, px_c.g * 0.16f, px_c.b * 0.16f);
                                 padd(dx + cx + 1, top_y_big + cy, px_c.r * 0.16f, px_c.g * 0.16f, px_c.b * 0.16f);
-                            } else if (is_bold) {
-                                px_c = lerp_rgb(col, Rgb{0, 215, 255}, static_cast<float>(cy) / 9.0f);
                             } else if (is_retro) {
                                 Rgb amber = Rgb{255, 168, 32};
                                 px_c = (cy % 2 == 0) ? amber : scale_rgb(amber, 0.78f);
