@@ -439,10 +439,16 @@ void AssistantManager::abort_active_session_locked() {
     }
 }
 
+bool AssistantManager::announce_update(const std::string& text) {
+    if (trim_str(text).empty()) return false;
+    return start_session_internal(TriggerSource::Text, text, "update_announcement");
+}
+
 bool AssistantManager::start_session_internal(TriggerSource src,
                                               const std::string& initial_text,
                                               const std::string& wake_kw) {
     if (!running_.load()) return false;
+    const bool announcement = src == TriggerSource::Text && wake_kw == "update_announcement";
 
     AssistantConfig c;
     {
@@ -458,15 +464,17 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         return false;
     }
     if (c.gemini_api_key.empty()) {
-        set_error("Не задан Gemini API ключ (настройте в Web UI -> Алиса)", true);
-        if (cb_.show_screen_text) cb_.show_screen_text("НЕТ КЛЮЧА", 255, 80, 80, 2800);
+        set_error("Не задан Gemini API ключ (настройте в Web UI -> Алиса)", !announcement);
+        if (!announcement && cb_.show_screen_text) cb_.show_screen_text("НЕТ КЛЮЧА", 255, 80, 80, 2800);
         return false;
     }
 
     std::lock_guard<std::mutex> ctrl_lk(session_ctrl_mu_);
     // stop() may have joined the session thread while we waited for the lock; don't spawn an unjoined one.
     if (!running_.load()) return false;
+    if (announcement && is_active()) return false;
     abort_active_session_locked();
+    if (announcement) c.follow_up_sec = 0;
 
     wake_word_.set_paused(true);
     session_abort_.store(false);
@@ -525,7 +533,7 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         emit_event("message", "user", initial_text);
     }
 
-    session_thread_ = std::thread(&AssistantManager::session_worker, this, sid, src, initial_text, c);
+    session_thread_ = std::thread(&AssistantManager::session_worker, this, sid, src, initial_text, c, announcement);
     return true;
 }
 
@@ -615,7 +623,7 @@ std::string AssistantManager::personalize_system_prompt(std::string custom_sp,
     return personalize_assistant_system_prompt(std::move(custom_sp), raw_name, is_male_voice);
 }
 
-json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
+json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool announcement) const {
     using json::Value;
     const bool ext_thinking = false; // gemini-3.8-live is locked for deterministic Live audio stability
     const bool nb = ext_thinking;
@@ -1223,7 +1231,7 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
     setup_obj["model"] = Value::make_str("models/gemini-3.8-live");
     setup_obj["generationConfig"] = std::move(gen_cfg);
     setup_obj["systemInstruction"] = std::move(sys_inst);
-    setup_obj["tools"] = std::move(tools);
+    if (!announcement) setup_obj["tools"] = std::move(tools);
     setup_obj["realtimeInputConfig"] = std::move(ric);
     Value iat = Value::make_obj();
     Value lcodes = Value::make_arr();
@@ -1259,7 +1267,8 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c) const {
 void AssistantManager::session_worker(uint64_t sid,
                                       TriggerSource src,
                                       std::string initial_text,
-                                      AssistantConfig cfg_snap) {
+                                      AssistantConfig cfg_snap,
+                                      bool announcement) {
     LOGI("Assistant", "Session #%llu started (src=%s, model=%s, voice=%s)",
          static_cast<unsigned long long>(sid),
          src == TriggerSource::WakeWord ? "wake" : (src == TriggerSource::Text ? "text" : "manual"),
@@ -1402,7 +1411,7 @@ void AssistantManager::session_worker(uint64_t sid,
     while (running_.load() && !session_abort_.load()) {
         AssistantConfig eff_cfg = cfg_snap;
         eff_cfg.google_search = cur_google_search;
-        const std::string setup_json_str = build_setup_json(eff_cfg).dump(-1);
+        const std::string setup_json_str = build_setup_json(eff_cfg, announcement).dump(-1);
         std::string connect_host = cur_use_proxy ? cfg_snap.gemini_proxy_host : "";
         err.clear();
         if (!ws.connect(kGeminiHost, kGeminiPort, ws_path, kCaBundlePath, err, 8000, connect_host)) {
@@ -1825,7 +1834,7 @@ void AssistantManager::session_worker(uint64_t sid,
 
             // 3. Send buffered 16 kHz PCM audio (chunked in ~100 ms frames)
             bool speaking_now = (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active());
-            if (!(src == TriggerSource::Text && !had_interaction)) {
+            if (!announcement && !(src == TriggerSource::Text && !had_interaction)) {
                 std::vector<int16_t> pcm_batch;
                 {
                     std::lock_guard<std::mutex> lk(tx_mu_);

@@ -834,8 +834,7 @@ class WizardHeroGlyphView(
     }
 
     private fun drawWifiHero(canvas: Canvas, cx: Float, cy: Float, sz: Float, r: Int, g: Int, b: Int) {
-        val dialDeg = (phase * 11f) % 360f
-        drawCenteredSprite(canvas, sprite(R.drawable.sprite_bork_dial_ring), cx, cy, sz * 0.88f, rotDeg = dialDeg, alpha = 205)
+        drawCenteredSprite(canvas, sprite(R.drawable.sprite_bork_dial_ring), cx, cy, sz * 0.88f, alpha = 205)
 
         ringPaint.strokeWidth = max(2.5f, sz * 0.020f)
         for (k in 0..1) {

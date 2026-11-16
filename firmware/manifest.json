@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.11",
+  "version": "1.6.12",
   "autonomous": true,
-  "changelog": "Новые часы и визуализаторы матрицы; улучшено восстановление связи с пультом и обработка аудиоканалов.",
-  "buildTimeUtc": "2026-11-16T12:05:28Z",
+  "changelog": "Новый экран и голосовое сообщение после обновления. Обновлены карточка станции и изображения в интерфейсе.",
+  "buildTimeUtc": "2026-11-16T12:31:49Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3145392,
-      "sha256": "bc33a77de0a13545a14a577dcd953e920948d69c33afb7871e91a0793b560551"
+      "size": 3149664,
+      "sha256": "e667923529e29eced09d0830ca76b2385136f178ad30169153f1e92587d18db9"
     },
     "bootlogod": {
       "fileName": "bootlogod",
@@ -18,8 +18,8 @@
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 19234119,
-      "sha256": "94bfa1a40746d3ef06e554df9532ccf5b21b17a32108e3b5d60068975eb12dfe"
+      "size": 28412291,
+      "sha256": "aea215ffb1bd7da1f4310c7848e05e65e1ec4e14fc7340d8608f365ad6bb5b6e"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",

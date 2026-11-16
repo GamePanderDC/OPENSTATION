@@ -1716,11 +1716,12 @@ void OtaManager::run_install_sync(bool force) {
     script += "mv -f /data/local/openstation/ota_tmp/openstationd /data/local/openstation/openstationd\n";
     script += "mv -f /data/local/openstation/ota_tmp/manifest.json /data/local/openstation/firmware_manifest.json\n";
     script += "chmod 644 /data/local/openstation/firmware_manifest.json\n";
-    script += "printf '%s\\n' " + escape_sh_single(target_ver) + " > " + kPostOtaWizardPath + "\n";
-    script += "chmod 644 " + std::string(kPostOtaWizardPath) + " 2>/dev/null || true\n";
     script += "sync\n";
     script += "export LD_LIBRARY_PATH=/data/local/openstation/lib:/vendor/lib64:/system/lib64\n";
     script += "/data/local/openstation/openstationd --daemon </dev/null >/data/local/openstation/boot.log 2>&1\n";
+    script += "LAUNCH_OK=1\n";
+    script += "i=0; while [ $i -lt 10 ]; do pidof openstationd >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done\n";
+    script += "pidof openstationd >/dev/null 2>&1 || { LAUNCH_OK=0; echo 'Daemon did not start'; }\n";
     if (need_launcher) {
         script += "LAUNCHER_APK=/data/local/openstation/ota_tmp/OpenStationLauncher.apk\n";
         script += "PM_OUT=$(/system/bin/pm install -r -g -d \"$LAUNCHER_APK\" 2>&1) || true\n";
@@ -1728,15 +1729,22 @@ void OtaManager::run_install_sync(bool force) {
         script += "case \"$PM_OUT\" in\n";
         script += "  *INSTALL_FAILED_UPDATE_INCOMPATIBLE*|*INCONSISTENT_CERTIFICATES*|*\"signatures do not match\"*)\n";
         script += "    /system/bin/pm uninstall com.openstation.launcher 2>&1 || true\n";
-        script += "    /system/bin/pm install -g -d \"$LAUNCHER_APK\" 2>&1 || true\n";
+        script += "    PM_OUT=$(/system/bin/pm install -g -d \"$LAUNCHER_APK\" 2>&1) || true\n";
+        script += "    echo \"$PM_OUT\"\n";
         script += "    ;;\n";
         script += "esac\n";
+        script += "case \"$PM_OUT\" in *Success*) ;; *) LAUNCH_OK=0; echo 'Launcher installation did not report success' ;; esac\n";
         script += "pm grant com.openstation.launcher android.permission.RECORD_AUDIO 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher RECORD_AUDIO allow 2>/dev/null || true\n";
         script += "appops set com.openstation.launcher SYSTEM_ALERT_WINDOW allow 2>/dev/null || true\n";
         script += "cmd package set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || pm set-home-activity com.openstation.launcher/.MainActivity 2>/dev/null || true\n";
-        script += "am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.openstation.launcher/.MainActivity\n";
     }
+    script += "if [ \"$LAUNCH_OK\" = 1 ]; then\n";
+    script += "  printf '%s\\n' " + escape_sh_single(target_ver) + " > " + kPostOtaWizardPath + "\n";
+    script += "  chmod 644 " + std::string(kPostOtaWizardPath) + " 2>/dev/null || true\n";
+    script += "fi\n";
+    if (need_launcher)
+        script += "am start -a android.intent.action.MAIN -c android.intent.category.HOME -n com.openstation.launcher/.MainActivity\n";
     script += "rm -rf /data/local/openstation/ota_tmp\n";
     script += "rm -f /data/local/openstation/ota_apply.sh\n";
     if (reboot_after_apply) {

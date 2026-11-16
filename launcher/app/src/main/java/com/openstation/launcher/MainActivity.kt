@@ -17,6 +17,7 @@ import android.content.pm.PackageManager
 import com.openstation.launcher.market.MarketInstaller
 import com.openstation.launcher.market.MarketPrefs
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -247,10 +248,6 @@ class MainActivity : Activity() {
     private lateinit var tvIpLine: TextView
     private lateinit var tvStationTelemetry: TextView
     private lateinit var ivQr: ImageView
-    private lateinit var ivStationRingGlow: View
-    private var stationRingGlowBg: GradientDrawable? = null
-    private lateinit var ivDialRing: ImageView
-    private var dialAnimator: ObjectAnimator? = null
     private lateinit var btnOtaUpdate: TextView
     @Volatile private var otaLatestJson: JSONObject? = null
     private var otaDialog: AlertDialog? = null
@@ -341,7 +338,6 @@ class MainActivity : Activity() {
     private var lastTelemetryText = ""
     private var lastOrbUiKey = ""
     private var lastPillsKey = ""
-    private var lastGlowStateKey = ""
     private var lastRenderedMicMuted: Boolean? = null
     private var lastMusicChipStr = ""
     private var lastDockMusicStr = ""
@@ -526,7 +522,6 @@ class MainActivity : Activity() {
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(widgetEqTickRunnable)
         vinylAnimator?.pause()
-        dialAnimator?.pause()
         super.onPause()
     }
 
@@ -537,7 +532,6 @@ class MainActivity : Activity() {
         LiveOrbState.removeListener(orbStateListener)
         pageAnimator?.cancel()
         vinylAnimator?.cancel()
-        dialAnimator?.cancel()
         handler.removeCallbacks(widgetEqTickRunnable)
         handler.removeCallbacks(otaDialogPollRunnable)
         try { otaDialog?.dismiss() } catch (_: Throwable) {}
@@ -1103,11 +1097,6 @@ class MainActivity : Activity() {
         // Subtle animations for Screen 1 Vinyl & Screen 2 Dial
         vinylAnimator = ObjectAnimator.ofFloat(ivHomeVinyl, View.ROTATION, 0f, 360f).apply {
             duration = 9000L
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-        }
-        dialAnimator = ObjectAnimator.ofFloat(ivDialRing, View.ROTATION, 0f, 360f).apply {
-            duration = 28000L
             repeatCount = ValueAnimator.INFINITE
             interpolator = LinearInterpolator()
         }
@@ -1750,10 +1739,8 @@ class MainActivity : Activity() {
             }
         }
 
-        // Left Card: Clock + QR + Clean Hardware Render
-        val stationCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
+        // Large station artwork is behind the card's controls, not a foreground widget.
+        val stationCardFrame = FrameLayout(this).apply {
             LiquidGlassKit.applyGlass(
                 this,
                 radiusDp = 22f,
@@ -1768,6 +1755,28 @@ class MainActivity : Activity() {
                 marginEnd = dp(14)
             }
         }
+
+        stationCardFrame.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, dp(22).toFloat())
+            }
+        }
+        stationCardFrame.clipToOutline = true
+        stationCardFrame.addView(ImageView(this).apply {
+            setImageBitmap(BitmapFactory.decodeResource(resources, R.drawable.sprite_station_hero,
+                BitmapFactory.Options().apply { inSampleSize = 2 }))
+            scaleType = ImageView.ScaleType.FIT_END
+            alpha = 0.55f
+        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        stationCardFrame.addView(View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xd9142141.toInt(), 0x77142141, 0x44142141))
+        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val stationCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        stationCardFrame.addView(stationCard, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val clockStationRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1850,37 +1859,7 @@ class MainActivity : Activity() {
         clockQrCol.addView(tvDate)
         clockQrCol.addView(qrRow)
 
-        val stationVisualBox = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(128), dp(128))
-        }
-        stationRingGlowBg = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(Color.parseColor("#24FFFFFF"), Color.parseColor("#1838BDF8"))
-        ).apply {
-            shape = GradientDrawable.OVAL
-        }
-        ivStationRingGlow = View(this).apply {
-            background = stationRingGlowBg
-            layoutParams = FrameLayout.LayoutParams(dp(102), dp(102), Gravity.CENTER)
-        }
-        ivDialRing = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_bork_dial_ring)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            visibility = View.GONE
-            alpha = 0f
-            layoutParams = FrameLayout.LayoutParams(dp(128), dp(128), Gravity.CENTER)
-        }
-        val ivStationHero = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_station_hero)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(116), dp(116), Gravity.CENTER)
-        }
-        stationVisualBox.addView(ivStationRingGlow)
-        stationVisualBox.addView(ivDialRing)
-        stationVisualBox.addView(ivStationHero)
-
         clockStationRow.addView(clockQrCol)
-        clockStationRow.addView(stationVisualBox)
         stationCard.addView(clockStationRow)
 
         val divider = View(this).apply {
@@ -1936,7 +1915,7 @@ class MainActivity : Activity() {
         telemetryRow.addView(btnWizard)
         stationCard.addView(divider)
         stationCard.addView(telemetryRow)
-        topSplit.addView(stationCard)
+        topSplit.addView(stationCardFrame)
 
         // Right Card: 6 Consumer Quick Controls (3 rows x 2 columns)
         val hwPanel = LinearLayout(this).apply {
@@ -1959,8 +1938,8 @@ class MainActivity : Activity() {
         tileRing = makeHwTile(R.drawable.ic_hw_ring, "Кольцо: Спектр") { cycleRingMode() }
         tileMute = makeHwTile(R.drawable.ic_hw_mic_on, "Мик: Вкл") { toggleMute() }
         tileRoute = makeHwTile(R.drawable.ic_hw_speaker, "Выход: Авто") { cycleOutputRoute() }
-        tileEq = makeHwTile(R.drawable.ic_hw_eq, "EQ: Баланс") { cycleEqPreset() }
-        tileVis = makeHwTile(R.drawable.ic_wave, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
+        tileEq = makeHwTile(R.drawable.sprite_sys_eq, "EQ: Баланс") { cycleEqPreset() }
+        tileVis = makeHwTile(R.drawable.sprite_sys_display, "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}") { cycleVisualizerStyle() }
         tileCec = makeHwTile(R.drawable.ic_hw_tv, "ТВ: Вкл/Выкл") { toggleCec() }
 
         val hwGrid = LinearLayout(this).apply {
@@ -2561,10 +2540,16 @@ class MainActivity : Activity() {
             setOnClickListener { onClick() }
         }
         val iv = ImageView(this).apply {
-            setImageResource(iconRes)
-            setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
+            val isSprite = iconRes == R.drawable.sprite_sys_eq || iconRes == R.drawable.sprite_sys_display
+            if (isSprite) {
+                setImageBitmap(BitmapFactory.decodeResource(resources, iconRes,
+                    BitmapFactory.Options().apply { inSampleSize = 8 }))
+            } else {
+                setImageResource(iconRes)
+                setColorFilter(Color.parseColor("#E2E8F0"), PorterDuff.Mode.SRC_IN)
+            }
             scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(16), dp(16)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(if (isSprite) 22 else 16), dp(if (isSprite) 22 else 16)).apply {
                 marginEnd = dp(8)
             }
         }
@@ -3179,6 +3164,7 @@ class MainActivity : Activity() {
                     fwVer = root.optString("firmwareVersion", fwVer).ifBlank { fwVer }
                     val postOtaPending = root.optBoolean("postOtaWizardPending", false)
                     val postOtaVer = root.optString("postOtaWizardVersion", "").trim()
+                    val postOtaNotes = root.optString("postOtaChangelog", "").trim()
                     ringMode = ringCfg?.optString("mode", ringMode) ?: ringMode
                     micMuted = audioCfg?.optBoolean("micMuted", micMuted) ?: micMuted
                     outputRoute = audioCfg?.optString("outputRoute", outputRoute) ?: outputRoute
@@ -3317,7 +3303,13 @@ class MainActivity : Activity() {
                         if (!wizardAutoOpenedThisRun) {
                             if (postOtaPending) {
                                 wizardAutoOpenedThisRun = true
-                                openSetupWizard(manual = false, postOtaVer = postOtaVer)
+                                startActivity(Intent(this, UpdateCompleteActivity::class.java).apply {
+                                    putExtra("version", postOtaVer)
+                                    putExtra("changelog", postOtaNotes)
+                                    putExtra("announce", assistantEnabled && assistantState == "idle" &&
+                                        astCfg?.optBoolean("geminiApiKeySet", false) == true &&
+                                        daemonMusic?.optBoolean("playing", false) != true)
+                                })
                             } else if (!setupDone) {
                                 val prefs = getSharedPreferences(SetupWizardActivity.PREFS_NAME, MODE_PRIVATE)
                                 val dismissedVer = prefs.getInt(SetupWizardActivity.KEY_WIZARD_DISMISSED_VER, 0)
@@ -3399,18 +3391,6 @@ class MainActivity : Activity() {
                 tileVis.label.text = "Экран: ${visualizerLabel(LiveOrbState.visualizerStyle)}"
             }
 
-            val astBusy = assistantState != "idle"
-            val glowKey = "$astBusy|$ringMode"
-            if (forceViews || glowKey != lastGlowStateKey) {
-                lastGlowStateKey = glowKey
-                val glowColors = when {
-                    astBusy -> intArrayOf(Color.parseColor("#4438BDF8"), Color.parseColor("#33818CF8"))
-                    ringMode == "off" -> intArrayOf(Color.parseColor("#0DFFFFFF"), Color.parseColor("#00FFFFFF"))
-                    ringMode == "solid" -> intArrayOf(Color.parseColor("#2AFFFFFF"), Color.parseColor("#1494A3B8"))
-                    else -> intArrayOf(Color.parseColor("#24FFFFFF"), Color.parseColor("#1838BDF8"))
-                }
-                stationRingGlowBg?.colors = glowColors
-            }
         }
         renderOrbAssistantUi()
         updateAnimationsState()
@@ -3426,14 +3406,6 @@ class MainActivity : Activity() {
             vinylAnimator?.let { if (it.isRunning) it.pause() }
         }
 
-        val runDial = (currentPage == 2) && (latestMusicSnap.playing || LiveOrbState.assistantState != "idle")
-        if (runDial) {
-            dialAnimator?.let {
-                if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
-            }
-        } else {
-            dialAnimator?.let { if (it.isRunning) it.pause() }
-        }
     }
 
     // -----------------------------------------------------------------------------------------

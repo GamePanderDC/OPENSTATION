@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.10";
+constexpr const char* kFirmwareVersion = "1.6.12";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1301,11 +1301,8 @@ int main(int argc, char** argv) {
     {
         const std::string prev_booted_fw = read_first_line(kLastBootedFwPath);
         if (prev_booted_fw != kFirmwareVersion) {
-            if (cfg.setup_completed) {
-                write_text_file_atomic(kPostOtaWizardPath, std::string(kFirmwareVersion) + "\n");
-                LOGI("Main", "Detected OTA upgrade (%s -> %s), scheduling post-OTA setup wizard",
-                     prev_booted_fw.empty() ? "legacy" : prev_booted_fw.c_str(), kFirmwareVersion);
-            }
+            LOGI("Main", "Firmware version changed (%s -> %s)",
+                 prev_booted_fw.empty() ? "legacy" : prev_booted_fw.c_str(), kFirmwareVersion);
             write_text_file_atomic(kLastBootedFwPath, std::string(kFirmwareVersion) + "\n");
         }
     }
@@ -4115,6 +4112,22 @@ int main(int argc, char** argv) {
             const std::string post_ota_wiz_ver = read_first_line(kPostOtaWizardPath);
             root["postOtaWizardVersion"] = Value::make_str(post_ota_wiz_ver);
             root["postOtaWizardPending"] = Value::make_bool(!post_ota_wiz_ver.empty());
+            if (!post_ota_wiz_ver.empty()) {
+                FILE* manifest = fopen("/data/local/openstation/firmware_manifest.json", "rb");
+                if (manifest) {
+                    std::string data(65536, '\0');
+                    const size_t n = fread(&data[0], 1, data.size(), manifest);
+                    fclose(manifest);
+                    data.resize(n);
+                    Value parsed;
+                    if (json::Parser::parse(data, parsed) && parsed.is_obj()) {
+                        const auto* version = parsed.get("version");
+                        const auto* notes = parsed.get("changelog");
+                        if (version && version->as_str() == post_ota_wiz_ver && notes && notes->is_str())
+                            root["postOtaChangelog"] = Value::make_str(notes->as_str());
+                    }
+                }
+            }
         }
         root["music"] = get_music_json();
         root["timers"] = timers.list_timers_json();
@@ -4762,6 +4775,19 @@ int main(int argc, char** argv) {
                 }
                 bool ok = assistant.send_text_prompt(v.get("text")->as_str());
                 return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}", ok ? 200 : 400);
+            }
+            if (req.method == "POST" && req.path == "/api/assistant/update_announcement") {
+                if (read_first_line(kPostOtaWizardPath).empty())
+                    return HttpResponse::json("{\"ok\":false}", 409);
+                json::Value v;
+                if (!json::Parser::parse(req.body, v) || !v.get("text") || !v.get("text")->is_str())
+                    return HttpResponse::json("{\"ok\":false}", 400);
+                const std::string text = v.get("text")->as_str();
+                if (text.empty() || text.size() > 1800)
+                    return HttpResponse::json("{\"ok\":false}", 400);
+                const std::string prompt = "Прочитай вслух только следующее сообщение, без дополнений: " + text;
+                bool ok = assistant.announce_update(prompt);
+                return HttpResponse::json(ok ? "{\"ok\":true}" : "{\"ok\":false}", ok ? 200 : 409);
             }
             if (req.method == "POST" && req.path == "/api/assistant/test") {
                 json::Value v;

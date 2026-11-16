@@ -1018,7 +1018,7 @@ class SetupWizardActivity : Activity() {
         val ringWrap = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(168), dp(168)).apply { bottomMargin = dp(8) }
         }
-        ringWrap.addView(makeSpriteView(R.drawable.sprite_bork_dial_ring, 168, spinSec = 36L, isFrameChild = true).apply {
+        ringWrap.addView(makeSpriteView(R.drawable.sprite_bork_dial_ring, 168, isFrameChild = true).apply {
             alpha = 0.85f
         })
         ledRingPreview = WizardLedRingPreviewView(this).apply {
@@ -1955,7 +1955,9 @@ class SetupWizardActivity : Activity() {
         isFrameChild: Boolean = false
     ): ImageView {
         val iv = ImageView(this).apply {
-            setImageResource(resId)
+            val sample = if (sizeDp <= 32) 8 else 4
+            setImageBitmap(android.graphics.BitmapFactory.decodeResource(resources, resId,
+                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }))
             scaleType = ImageView.ScaleType.FIT_CENTER
             layoutParams = if (isFrameChild) {
                 FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER)

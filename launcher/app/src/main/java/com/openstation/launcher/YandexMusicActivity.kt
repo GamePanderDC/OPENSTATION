@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -655,7 +656,8 @@ class YandexMusicActivity : Activity() {
                 setOnClickListener { startMyWave(mood.key) }
 
                 val iv = ImageView(this@YandexMusicActivity).apply {
-                    setImageResource(iconRes)
+                    setImageBitmap(BitmapFactory.decodeResource(resources, iconRes,
+                        BitmapFactory.Options().apply { inSampleSize = 8 }))
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply {
                         bottomMargin = dp(4)

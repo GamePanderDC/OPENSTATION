@@ -66,6 +66,7 @@ public:
     bool toggle_session();
     void stop_session(const std::string& reason = "stop");
     bool send_text_prompt(const std::string& text);
+    bool announce_update(const std::string& text);
 
     bool is_active() const;
     AssistantState state() const { return state_.load(); }
@@ -87,7 +88,8 @@ private:
     void session_worker(uint64_t sid,
                         TriggerSource src,
                         std::string initial_text,
-                        AssistantConfig cfg_snap);
+                        AssistantConfig cfg_snap,
+                        bool announcement);
     void abort_active_session_locked();
 
     void set_state(AssistantState st);
@@ -95,7 +97,7 @@ private:
     void emit_event(const std::string& kind, const std::string& role = "", const std::string& text = "");
     void set_error(const std::string& msg, bool play_chime = true);
 
-    json::Value build_setup_json(const AssistantConfig& c) const;
+    json::Value build_setup_json(const AssistantConfig& c, bool announcement = false) const;
     static WakeWordSettings to_ww_settings(const AssistantConfig& c, int mic_sensitivity);
 
     AssistantConfig cfg_;

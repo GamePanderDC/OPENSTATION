@@ -67,6 +67,11 @@
             android:exported="false"
             android:launchMode="singleTask" />
 
+        <activity android:name=".UpdateCompleteActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|uiMode" />
+
         <activity android:name=".RemoteSetupActivity" android:exported="false"
             android:excludeFromRecents="true" android:launchMode="singleTop" />
 
