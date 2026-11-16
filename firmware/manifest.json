@@ -4,12 +4,12 @@
   "version": "1.6.5",
   "autonomous": true,
   "changelog": "OpenStation Max v1.6.5: основа 1.6.3, настраиваемая заставка, живой фон и левитация сферы.",
-  "buildTimeUtc": "2026-11-16T04:38:10Z",
+  "buildTimeUtc": "2026-11-16T04:45:33Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3140864,
-      "sha256": "27f08dd5da6d87b5bfc1002139e29e69641d2ba4d5549bd3e151510abbfc5362"
+      "size": 3140480,
+      "sha256": "2ceb3303da168ba0f8d502db423b0af7820525706e23e6b1f14abb94d7a9a4b4"
     },
     "bootlogod": {
       "fileName": "bootlogod",

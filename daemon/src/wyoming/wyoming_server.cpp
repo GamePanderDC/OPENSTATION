@@ -87,7 +87,7 @@ void WyomingServer::trigger_button_session(int duration_ms) {
         std::lock_guard<std::mutex> lk(client_mu_);
         stream_until_ = now + std::chrono::milliseconds(duration_ms);
         last_voice_tp_ = now;
-        if (client_fd_ >= 0 && !streaming_active_.load()) {
+        if (client_fd_ >= 0 && remote_run_pipeline_.load() && !streaming_active_.load()) {
             json::Value pipe = json::Value::make_obj();
             pipe["start_stage"] = json::Value::make_str("asr");
             pipe["end_stage"] = json::Value::make_str("tts");
@@ -112,7 +112,7 @@ void WyomingServer::stop_session() {
         }
         audio_start_sent_ = false;
         streaming_active_.store(false);
-        remote_run_pipeline_.store(false);
+        stream_until_ = {};
     }
     if (state_cb_) state_cb_("idle");
 }
@@ -130,12 +130,12 @@ void WyomingServer::feed_audio_16k(const int16_t* samples, size_t count, float r
     std::string notify_state;
     {
         std::lock_guard<std::mutex> lk(client_mu_);
-        if (client_fd_ < 0) return;
+        if (client_fd_ < 0 || !remote_run_pipeline_.load()) return;
 
         auto now = std::chrono::steady_clock::now();
         bool want_stream = false;
 
-        if (c.always_stream || remote_run_pipeline_.load()) {
+        if (c.always_stream) {
             want_stream = true;
         } else if (now < stream_until_) {
             want_stream = true;
@@ -151,7 +151,7 @@ void WyomingServer::feed_audio_16k(const int16_t* samples, size_t count, float r
         if (want_stream) {
             if (!audio_start_sent_) {
                 json::Value pipe = json::Value::make_obj();
-                if (c.always_stream || remote_run_pipeline_.load()) {
+                if (c.always_stream) {
                     pipe["start_stage"] = json::Value::make_str("wake");
                     if (c.always_stream) pipe["restart_on_end"] = json::Value::make_bool(true);
                 } else {
@@ -341,14 +341,12 @@ void WyomingServer::handle_client(int cfd) {
         } else if (type == "run-satellite") {
             LOGI("Wyoming", "HA requested run-satellite");
             remote_run_pipeline_.store(true);
-            if (state_cb_) state_cb_("streaming");
         } else if (type == "pause-satellite") {
             LOGI("Wyoming", "HA requested pause-satellite");
             remote_run_pipeline_.store(false);
             stop_session();
         } else if (type == "detection") {
             LOGI("Wyoming", "Wake word detected by Home Assistant!");
-            remote_run_pipeline_.store(false);
             {
                 std::lock_guard<std::mutex> lk(client_mu_);
                 stream_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(5500);
