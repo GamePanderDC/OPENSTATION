@@ -357,6 +357,7 @@ object LiquidGlassKit {
 
         private var isFocusedState = false
         private var isPressedState = false
+        private var isSelectedState = false
         private var cachedW = -1f
         private var cachedH = -1f
         private var cachedThemeVer = -1
@@ -376,22 +377,29 @@ object LiquidGlassKit {
         override fun onStateChange(state: IntArray): Boolean {
             var foc = false
             var prs = false
+            var sel = false
             for (s in state) {
-                if (s == android.R.attr.state_focused || s == android.R.attr.state_selected) foc = true
+                if (s == android.R.attr.state_focused) foc = true
                 if (s == android.R.attr.state_pressed) prs = true
+                if (s == android.R.attr.state_selected) sel = true
             }
-            if (foc != isFocusedState || prs != isPressedState) {
+            if (foc != isFocusedState || prs != isPressedState || sel != isSelectedState) {
                 isFocusedState = foc
                 isPressedState = prs
+                isSelectedState = sel
                 cachedStateKey = -1
                 invalidateSelf()
+                // Repaint the backdrop under translucent glass when focus changes.
+                // On the station's renderer, updating only the child can leave the
+                // previous translucent fill composited over the next frame.
+                if (anchorView.isAttachedToWindow) anchorView.rootView.invalidate()
                 return true
             }
             return false
         }
 
         private fun rebuildShadersIfNeeded(w: Float, h: Float) {
-            val stateKey = (if (isFocusedState) 2 else 0) or (if (isPressedState) 1 else 0)
+            val stateKey = (if (isFocusedState) 2 else 0) or (if (isPressedState) 1 else 0) or (if (isSelectedState) 4 else 0)
             if (w == cachedW && h == cachedH && wallpaperVersion == cachedThemeVer && stateKey == cachedStateKey) {
                 return
             }
@@ -424,6 +432,7 @@ object LiquidGlassKit {
             val fillTop = when {
                 isPressedState -> blendColors(focusTint, Color.parseColor("#FF82D4FF"), 0.34f)
                 isFocusedState -> blendColors(focusTint, Color.parseColor("#FF82D4FF"), 0.25f)
+                isSelectedState -> blendColors(baseTint, focusTint, 0.30f)
                 else -> baseTint
             }
             val fillBot = when {
@@ -529,6 +538,7 @@ object LiquidGlassKit {
             borderPaint.color = when {
                 isPressedState -> Color.parseColor("#F08BD8FF")
                 isFocusedState -> Color.argb(max(215, Color.alpha(focusStroke)), Color.red(focusStroke), Color.green(focusStroke), Color.blue(focusStroke))
+                isSelectedState -> blendColors(normalStroke, focusStroke, 0.4f)
                 else -> normalStroke
             }
             borderPaint.strokeWidth = if (isFocusedState || isPressedState) focusStrokeWidthPx else strokeWidthPx

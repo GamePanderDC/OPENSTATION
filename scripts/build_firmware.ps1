@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.9",
-    [string]$Changelog = "OpenStation Max v1.6.9: более заметное выделение выбранных элементов без выхода за границы.",
+    [string]$Version = "1.6.10",
+    [string]$Changelog = "OpenStation Max v1.6.10: исправлена подсветка и перерисовка элементов при перемещении фокуса.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
