@@ -74,6 +74,7 @@ namespace OpenStationFlasher
     public class MainWindow : Window
     {
         private const string FW_VERSION = "v1.6.3";
+        private const string INSTALLER_VERSION = "1.3.1";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -120,7 +121,7 @@ namespace OpenStationFlasher
 
             ResolvePaths();
             BuildUi();
-            AppendLog("OpenStation USB готов к установке.");
+            AppendLog("OpenStation USB " + INSTALLER_VERSION + " готов к установке.");
             if (!string.IsNullOrEmpty(_toolsRoot))
                 AppendLog("Рабочая директория инструментов: " + _toolsRoot);
 
@@ -267,7 +268,7 @@ namespace OpenStationFlasher
             };
             verPill.Child = new TextBlock
             {
-                Text = FW_VERSION,
+                Text = "USB " + INSTALLER_VERSION,
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(226, 232, 240))

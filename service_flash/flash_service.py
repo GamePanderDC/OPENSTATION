@@ -896,7 +896,7 @@ def _parse_rom_manifest_files(manifest: dict) -> dict:
 def _resolve_latest_rom_release() -> dict:
     """Resolve the newest ROM release and manifest from GitHub Releases, or fall back cleanly."""
     headers = {"User-Agent": "OpenStationFlasher/1.6", "Accept": "application/vnd.github+json"}
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=10"
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100"
     req = urllib.request.Request(api_url, headers=headers)
     with urllib.request.urlopen(req, timeout=20) as resp:
         releases = json.loads(resp.read().decode("utf-8"))
@@ -1118,8 +1118,8 @@ def wait_for_usb_or_adb_reboot() -> None:
 
 ROM_FILES = {
     "vbmeta.img": (2097152, "9b5a0a3e9854d7ab67cf838e03a713063cbcb0727c253f6cb4bceaab3045efaa"),
-    "vendor.img": (536870912, "b58ecbe72eaff30d77161397fc6e2c23bd8fe52e8b70adbd0989f3ff6fd91718"),
-    "system.img": (1551892480, "7952ffe46b966c3bede38bb53801003c5ca32d60ea7ad88318e50d5821337088"),
+    "vendor.img": (536870912, "8a7d8f46446d90b7060afc1d634308541e84332e233d09df49517d2d57b2c406"),
+    "system.img": (1551892480, "f0806e1396b24993b9436509a6643b8b292f225e3685f4a784d32c40d1183519"),
 }
 
 
@@ -1140,8 +1140,12 @@ def verify_rom(rom_dir):
         with open(path, "rb") as f:
             for block in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(block)
-        if digest.hexdigest() != expected:
-            raise RuntimeError(f"Не совпадает SHA-256 {name}; запись не начата")
+        actual = digest.hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                f"Не совпадает SHA-256 {name} (ожидалось {expected[:12]}, получено {actual[:12]}); "
+                "запись не начата"
+            )
 
 
 def run_after_ubt():

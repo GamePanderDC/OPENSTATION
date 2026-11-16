@@ -10,6 +10,62 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import flash_service as f
 
 class TransportTests(unittest.TestCase):
+    def test_pinned_rom_fallback_matches_published_manifest(self):
+        import json
+        from pathlib import Path
+        manifest = json.loads((Path(f.REPO_ROOT) / 'rom' / 'rom_manifest.json').read_text(encoding='utf-8-sig'))
+        self.assertEqual(f.PINNED_ROM_VERSION, manifest['version'])
+        self.assertEqual(f.PINNED_ROM_NAME, manifest['archive']['fileName'])
+        self.assertEqual(f.PINNED_ROM_SIZE, manifest['archive']['size'])
+        self.assertEqual(f.PINNED_ROM_SHA256, manifest['archive']['sha256'])
+        self.assertEqual(f.ROM_FILES, f._parse_rom_manifest_files(manifest))
+
+    def test_rom_release_is_found_after_ten_newer_releases(self):
+        import io
+        import json
+        from pathlib import Path
+        manifest = (Path(f.REPO_ROOT) / 'rom' / 'rom_manifest.json').read_bytes()
+        releases = [{'tag_name': f'v1.9.{i}', 'assets': []} for i in range(10)]
+        releases.append({'tag_name': f.PINNED_ROM_TAG, 'assets': [
+            {'name': 'rom_manifest.json', 'browser_download_url': 'https://example.test/rom_manifest.json'},
+            {'name': f.PINNED_ROM_NAME, 'browser_download_url': 'https://example.test/rom.zip'},
+        ]})
+        requests = []
+        def urlopen(request, **kwargs):
+            url = request.full_url
+            requests.append(url)
+            return io.BytesIO(manifest if url.endswith('rom_manifest.json') else json.dumps(releases).encode())
+        with patch.object(f.urllib.request, 'urlopen', side_effect=urlopen):
+            result = f._resolve_latest_rom_release()
+        self.assertIn('per_page=100', requests[0])
+        self.assertEqual(result['version'], f.PINNED_ROM_VERSION)
+        self.assertEqual(result['files'], f.ROM_FILES)
+        self.assertEqual(result['manifest_bytes'], manifest)
+
+    def test_offline_rom_fallback_verifies_extracted_images(self):
+        import hashlib
+        import io
+        import zipfile
+        payloads = {'vbmeta.img': b'vbmeta', 'vendor.img': b'vendor', 'system.img': b'system'}
+        expected = {name: (len(data), hashlib.sha256(data).hexdigest()) for name, data in payloads.items()}
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive:
+            for name, data in payloads.items():
+                archive.writestr(name, data)
+        archive_bytes = stream.getvalue()
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(f, '_resolve_latest_rom_release', side_effect=OSError('offline')), \
+             patch.object(f, 'ROM_FILES', expected), \
+             patch.object(f, 'PINNED_ROM_SIZE', len(archive_bytes)), \
+             patch.object(f, 'PINNED_ROM_SHA256', hashlib.sha256(archive_bytes).hexdigest()), \
+             patch.object(f.urllib.request, 'urlopen', side_effect=lambda *args, **kw: io.BytesIO(archive_bytes)):
+            extracted = f.download_latest_rom(folder)
+            f.verify_rom(extracted)
+            with open(os.path.join(extracted, 'vendor.img'), 'wb') as image:
+                image.write(b'broken')
+            with self.assertRaisesRegex(RuntimeError, 'SHA-256 vendor.img'):
+                f.verify_rom(extracted)
+
     def test_direct_transfer_checks_status(self):
         class Device:
             def __init__(self): self.blocks = []; self.commands = []
