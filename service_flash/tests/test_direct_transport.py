@@ -10,6 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import flash_service as f
 
 class TransportTests(unittest.TestCase):
+    def setUp(self):
+        mocker = patch.object(f, 'prepare_base_partitions', return_value={name: name for name in f.BASE_PARTITION_FILES})
+        mocker.start()
+        self.addCleanup(mocker.stop)
+
     def test_pinned_rom_fallback_matches_published_manifest(self):
         import json
         from pathlib import Path
@@ -189,7 +194,7 @@ class TransportTests(unittest.TestCase):
             with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=flash), patch.object(f, 'run_after_ubt', side_effect=lambda: calls.append('after_ubt')):
                 with self.assertRaisesRegex(RuntimeError, 'misc failed'):
                     f.run_flash(argparse.Namespace(rom_dir=folder, revision='0008'))
-            self.assertEqual(calls, ['vbmeta', 'vendor', 'system', 'misc', 'after_ubt'])
+            self.assertEqual(calls, ['boot', 'dtbo', 'odm', 'product', 'vbmeta', 'vendor', 'system', 'misc', 'after_ubt'])
 
     def test_after_ubt_runs_only_after_all_partitions_succeed(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -199,7 +204,7 @@ class TransportTests(unittest.TestCase):
             calls = []
             with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=lambda name, *args: calls.append(name)), patch.object(f, 'run_after_ubt', side_effect=lambda: calls.append('after_ubt')):
                 f.run_flash(args)
-            self.assertEqual(calls, ['vbmeta', 'vendor', 'system', 'misc', 'after_ubt'])
+            self.assertEqual(calls, ['boot', 'dtbo', 'odm', 'product', 'vbmeta', 'vendor', 'system', 'misc', 'after_ubt'])
             with patch.object(f, 'check_worldcup_driver', return_value=True), patch.object(f, 'verify_rom'), patch.object(f, 'ensure_burn_mode', return_value=True), patch.object(f, 'aml_bulkcmd'), patch.object(f, 'flash_partition', side_effect=RuntimeError('failed')), patch.object(f, 'run_after_ubt') as finish:
                 with self.assertRaises(RuntimeError): f.run_flash(args)
                 finish.assert_not_called()

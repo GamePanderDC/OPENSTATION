@@ -9,7 +9,7 @@ Supports:
   - Auto-download latest OpenStationMax-ROM-*.zip from GitHub Releases
   - Reliable BootROM -> U-Boot handoff (pyamlboot_local + U-Boot stage detection + 40s re-enumeration wait)
   - Live U-Boot env unlock (silent=0, lock=10000000, avb2=0, saveenv)
-  - Full service partition flashing (vbmeta, vendor, system, misc) + data/cache erase
+  - Service partition flashing with the matched 1.99 base and after_ubt
 """
 
 import argparse
@@ -1122,6 +1122,50 @@ ROM_FILES = {
     "system.img": (1551892480, "f0806e1396b24993b9436509a6643b8b292f225e3685f4a784d32c40d1183519"),
 }
 
+BASE_PARTITION_FILES = {
+    "boot.img": (16777216, "d4d761b2dc1437a069363c5c8fa1415c4d286ead67bcbbc0ec7ab52a543c2261"),
+    "dtbo.img": (8388608, "29a07bd6132186d223dfae0f7be4a66aa22f05a00b5e3f4df40c63c4c939f4dd"),
+    "odm.img": (134217728, "5fe65b2dd1cadd01fc9220db62d95c587b1333c843dba2a32d39afa7e90c3cc4"),
+    "product.img": (134217728, "809ff747c9926910dc800741b6222d7465bac7e8742d8bd62860ad50ba0dbb03"),
+}
+BASE_PARTITION_ARCHIVE = "OpenStationMax-base-1.99-partitions.zip"
+BASE_PARTITION_ARCHIVE_SHA256 = "345cfcb654324fbaea5951ed8984e5dafd21e84acce4f63acc906cb0c5f81f19"
+
+
+def prepare_base_partitions(cache_dir):
+    """Extract the bundled 1.99 images and verify every image before any flash write."""
+    archive_path = os.path.join(SCRIPT_DIR, BASE_PARTITION_ARCHIVE)
+    digest = hashlib.sha256()
+    with open(archive_path, "rb") as src:
+        for block in iter(lambda: src.read(1024 * 1024), b""):
+            digest.update(block)
+    if digest.hexdigest() != BASE_PARTITION_ARCHIVE_SHA256:
+        raise RuntimeError("Неверная контрольная сумма архива базовых разделов; запись не начата")
+    os.makedirs(cache_dir, exist_ok=True)
+    paths = {}
+    with zipfile.ZipFile(archive_path) as archive:
+        if sorted(archive.namelist()) != sorted(BASE_PARTITION_FILES):
+            raise RuntimeError("Неверный состав базовых разделов; запись не начата")
+        for name, (size, expected) in BASE_PARTITION_FILES.items():
+            if archive.getinfo(name).file_size != size:
+                raise RuntimeError(f"Неверный размер {name}; запись не начата")
+            path = os.path.join(cache_dir, name)
+            tmp = path + ".part"
+            digest = hashlib.sha256()
+            try:
+                with archive.open(name) as src, open(tmp, "wb") as dst:
+                    for block in iter(lambda: src.read(1024 * 1024), b""):
+                        digest.update(block)
+                        dst.write(block)
+                if os.path.getsize(tmp) != size or digest.hexdigest() != expected:
+                    raise RuntimeError(f"Контрольная сумма {name} не совпала; запись не начата")
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            paths[name] = path
+    return paths
+
 
 def verify_rom(rom_dir):
     manifest_path = os.path.join(rom_dir, "rom_manifest.json")
@@ -1146,6 +1190,17 @@ def verify_rom(rom_dir):
                 f"Не совпадает SHA-256 {name} (ожидалось {expected[:12]}, получено {actual[:12]}); "
                 "запись не начата"
             )
+
+
+def verify_base_compatibility(rom_dir):
+    manifest_path = os.path.join(rom_dir, "rom_manifest.json")
+    if not os.path.isfile(manifest_path):
+        # verify_rom has already required exact hashes of the pinned 1.6.3 ROM.
+        return
+    with open(manifest_path, "r", encoding="utf-8-sig") as mf:
+        manifest = json.load(mf)
+    if manifest.get("device") != "yandexstation_2" or str(manifest.get("baseSource", "")).strip().lower() != "yaosx 1.99":
+        raise RuntimeError("База ROM не подтверждена как YAOSX 1.99 для Станции Макс; запись не начата")
 
 
 def run_after_ubt():
@@ -1324,14 +1379,21 @@ def run_flash(args):
 
     emit_progress(24, "Проверка контрольных сумм прошивки...")
     verify_rom(rom_dir)
+    verify_base_compatibility(rom_dir)
     misc_path = resolve_misc_image(getattr(args, "revision", "auto"))
+    base_dir = os.path.join(os.environ.get("LOCALAPPDATA", SCRIPT_DIR), "OpenStation", "base_199")
+    base = prepare_base_partitions(base_dir)
 
     emit_progress(35, "Инициализация eMMC...")
     aml_bulkcmd("mmc dev 1")
 
-    flash_partition("vbmeta", os.path.join(rom_dir, "vbmeta.img"), 38, 41)
-    flash_partition("vendor", os.path.join(rom_dir, "vendor.img"), 41, 52)
-    flash_partition("system", os.path.join(rom_dir, "system.img"), 52, 92)
+    flash_partition("boot", base["boot.img"], 35, 37)
+    flash_partition("dtbo", base["dtbo.img"], 37, 38)
+    flash_partition("odm", base["odm.img"], 38, 40)
+    flash_partition("product", base["product.img"], 40, 42)
+    flash_partition("vbmeta", os.path.join(rom_dir, "vbmeta.img"), 42, 43)
+    flash_partition("vendor", os.path.join(rom_dir, "vendor.img"), 43, 55)
+    flash_partition("system", os.path.join(rom_dir, "system.img"), 55, 92)
 
     misc_error = None
     try:

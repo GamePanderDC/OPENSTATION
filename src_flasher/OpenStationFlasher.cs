@@ -74,7 +74,7 @@ namespace OpenStationFlasher
     public class MainWindow : Window
     {
         private const string FW_VERSION = "v1.6.3";
-        private const string INSTALLER_VERSION = "1.3.3";
+        private const string INSTALLER_VERSION = "1.3.7";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
