@@ -150,6 +150,27 @@ int main() {
     restored.sanitize_and_validate();
     assert(restored.assistant.system_prompt == selected);
     assert(restored.assistant.name == "Джарвис");
+    {
+        DaemonConfig long_config;
+        std::string prompt(40957, 'x');
+        prompt += "я";
+        prompt += "z";
+        assert(prompt.size() == 40960);
+        long_config.assistant.system_prompt = prompt;
+        long_config.sanitize_and_validate();
+        assert(long_config.assistant.system_prompt == prompt);
+        DaemonConfig roundtrip;
+        json::Value parsed;
+        assert(json::Parser::parse(long_config.to_json().dump(-1), parsed));
+        roundtrip.from_json(parsed);
+        assert(roundtrip.assistant.system_prompt == prompt);
+        long_config.assistant.system_prompt = std::string(40959, 'x') + "я";
+        long_config.sanitize_and_validate();
+        assert(long_config.assistant.system_prompt == std::string(40959, 'x'));
+        long_config.assistant.system_prompt = std::string(40961, 'x');
+        long_config.sanitize_and_validate();
+        assert(long_config.assistant.system_prompt == std::string(40960, 'x'));
+    }
     assert(restored.audio.hardware_eq_profile == "custom");
     assert(restored.audio.hardware_eq_subsonic == 55);
     assert(restored.audio.hardware_eq_notch120 == false);

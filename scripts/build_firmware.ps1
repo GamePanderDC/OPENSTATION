@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.17",
-    [string]$Changelog = "Исправлено открытие раздела «Звук и аудио» в настройках Android TV.",
+    [string]$Version = "1.6.18",
+    [string]$Changelog = "Лимит системного промпта Алисы увеличен в 10 раз: до 40960 байт.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

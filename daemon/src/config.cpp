@@ -260,9 +260,7 @@ void DaemonConfig::sanitize_and_validate() {
     if (assistant.system_prompt.empty()) {
         assistant.system_prompt = DaemonConfig().assistant.system_prompt;
     }
-    if (assistant.system_prompt.size() > 4096) {
-        assistant.system_prompt.resize(4096);
-    }
+    utf8_truncate(assistant.system_prompt, 40960);
     if (assistant.kws_keywords.empty() || assistant.kws_keywords.size() > 2048) {
         assistant.kws_keywords = "\xE2\x96\x81\xD0\xB0 \xD0\xBB\xD0\xB8 \xD1\x81\xD0\xB0 @\xD0\xB0\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0";
     }

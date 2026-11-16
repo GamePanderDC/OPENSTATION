@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.17",
+    "version":  "1.6.18",
     "autonomous":  true,
-    "changelog":  "Исправлено открытие раздела «Звук и аудио» в настройках Android TV.",
-    "buildTimeUtc":  "2026-11-16T20:27:14Z",
+    "changelog":  "Лимит системного промпта Алисы увеличен в 10 раз: до 40960 байт.",
+    "buildTimeUtc":  "2026-11-16T20:48:49Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  3163024,
-                                 "sha256":  "3035462dad3004b9400ade10cf09efad25178120354942379c473b661c4bf190"
+                                 "size":  3163072,
+                                 "sha256":  "111b0266bf152c2909ddc5d7abc003e9589d74ff29746287590ccb26fd589290"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
