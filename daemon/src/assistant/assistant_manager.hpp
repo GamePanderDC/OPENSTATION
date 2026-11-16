@@ -60,7 +60,7 @@ public:
     void set_mic_muted(bool muted);
     void set_mic_sensitivity(int sensitivity);
 
-    void feed_audio_16k(const int16_t* samples, size_t count, float rms);
+    void feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms);
 
     bool trigger_session(const std::string& reason = "manual");
     bool toggle_session();

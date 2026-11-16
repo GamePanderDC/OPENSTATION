@@ -1,5 +1,6 @@
 #include "assistant/listening_deadline.hpp"
 #include "assistant/assistant_manager.hpp"
+#include "hw/voice_gain_policy.hpp"
 #include "assistant/assistant_personalization.hpp"
 #include "assistant/assistant_intents.hpp"
 #include "assistant/tls_ws_client.hpp"
@@ -26,7 +27,6 @@ constexpr const char* kCaBundlePath = "/data/local/openstation/cacert.pem";
 constexpr size_t kTxChunkSamples = 1600;
 constexpr size_t kMaxConnectingPcmSamples = 16000 * 6;
 constexpr size_t kMaxLivePcmSamples = 16000 * 2;
-constexpr float kSpeechRmsThreshold = 95.0f; // Ultra-sensitive far-field speech detector (was 520, which blocked normal room voice)
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -299,7 +299,7 @@ void AssistantManager::set_mic_muted(bool muted) {
     }
 }
 
-void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, float rms) {
+void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms) {
     if (!samples || count == 0 || !running_.load() || mic_muted_.load()) {
         return;
     }
@@ -314,7 +314,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     }
 
     last_mic_rms_.store(rms);
-    if (rms >= kSpeechRmsThreshold) {
+    if (rms >= dialogue_activity_threshold(noise_rms)) {
         last_speech_ms_.store(steady_now_ms());
     }
 

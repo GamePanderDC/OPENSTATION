@@ -1,5 +1,6 @@
 #include "hw/audio_engine.hpp"
 #include "hw/loopback_channels.hpp"
+#include "hw/voice_gain_policy.hpp"
 #include "utils/logger.hpp"
 
 #include <aaudio/AAudio.h>
@@ -489,7 +490,7 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             const bool is_vqe = (tracked_ch <= 2);
             const float min_gain = 0.50f;
             const float max_gain = is_raw_multi ? (8.0f + sens_norm * 24.0f) :
-                                   is_vqe       ? (0.90f + sens_norm * 0.90f) :
+                                   is_vqe       ? vqe_max_speech_gain(sens_norm) :
                                                   (1.8f + sens_norm * 5.0f);
             const float target_rms = is_vqe ? (850.0f + sens_norm * 350.0f) :
                                               (1800.0f + sens_norm * 800.0f);
@@ -508,9 +509,10 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
             float ready_gain = std::clamp(
                 idle_noise_cap / std::max(agc_noise_floor_, 18.0f),
                 is_raw_multi ? 2.5f : (is_vqe ? 0.85f : 1.2f),
-                max_gain * 0.75f);
+                is_vqe ? vqe_idle_gain_cap(sens_norm) : max_gain * 0.75f);
 
-            float speech_trig = agc_noise_floor_ * (1.18f - sens_norm * 0.12f) + 5.0f;
+            float speech_trig = is_vqe ? vqe_speech_trigger(agc_noise_floor_, sens_norm)
+                                       : agc_noise_floor_ * (1.18f - sens_norm * 0.12f) + 5.0f;
             bool speech_present = (raw_rms > speech_trig);
 
             float prev_gain = agc_gain_;

@@ -186,7 +186,7 @@
       ast.geminiModel = "gemini-3.8-live";
       if ($("astModel")) $("astModel").value = "gemini-3.8-live";
       if ($("astProxyHost")) ast.geminiProxyHost = $("astProxyHost").value.trim();
-      if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 8;
+      if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 4;
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
@@ -912,7 +912,7 @@
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
         if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
-        if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 8;
+        if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 4;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
         if (Array.isArray(cfg.assistant.memoryNotes)) {
           currentMemoryNotes = cfg.assistant.memoryNotes.slice();

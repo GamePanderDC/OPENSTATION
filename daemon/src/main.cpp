@@ -52,10 +52,11 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.13";
+constexpr const char* kFirmwareVersion = "1.6.14";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
+constexpr const char* kVoiceTimeoutMigratedPath = "/data/local/openstation/.voice_timeout_164";
 
 std::atomic<bool> g_stop{false};
 
@@ -1291,6 +1292,15 @@ int main(int argc, char** argv) {
 
     DaemonConfig cfg;
     cfg.load();
+    if (!file_exists_plain(kVoiceTimeoutMigratedPath)) {
+        bool saved = true;
+        if (cfg.assistant.follow_up_sec == 8) {
+            cfg.assistant.follow_up_sec = 4;
+            saved = cfg.save();
+            LOGI("Main", "Updated the default assistant follow-up timeout to 4 seconds");
+        }
+        if (saved) write_text_file_atomic(kVoiceTimeoutMigratedPath, "1\n");
+    }
     if (!file_exists_plain(kStockAgentMigratedPath)) {
         if (!cfg.assistant.agent_mode) {
             cfg.assistant.agent_mode = true;
@@ -3991,7 +4001,7 @@ int main(int argc, char** argv) {
                 c_snap = cfg;
             }
             if (c_snap.assistant.enabled && c_snap.assistant.mode == "gemini") {
-                assistant.feed_audio_16k(pcm, count, rms);
+                assistant.feed_audio_16k(pcm, count, rms, audio.processed_noise_level());
             }
             if (c_snap.wyoming.enabled && (c_snap.assistant.mode == "wyoming" || !c_snap.assistant.enabled)) {
                 wyoming.feed_audio_16k(pcm, count, rms);

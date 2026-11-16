@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.13",
+  "version": "1.6.14",
   "autonomous": true,
-  "changelog": "Добавлены часы Bold и три штатных стиля часов. Улучшена читаемость иконок в быстром управлении.",
-  "buildTimeUtc": "2026-11-16T14:57:59Z",
+  "changelog": "Улучшена обработка тихой речи и сокращено ожидание продолжения диалога.",
+  "buildTimeUtc": "2026-11-16T19:14:17Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3156304,
-      "sha256": "b533fa62f818af24bf72813c64227fe07942b1a78bdbd36344bf32a67a550671"
+      "size": 3156896,
+      "sha256": "712956b4189dd34d458097bd1804f16e1f0f9df138aac3705432b29f92419227"
     },
     "bootlogod": {
       "fileName": "bootlogod",

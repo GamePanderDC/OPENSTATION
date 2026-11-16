@@ -129,7 +129,7 @@ struct AssistantConfig {
     bool agent_mode = true;
     bool echo_guard = true;
     int pre_roll_ms = 450;
-    int follow_up_sec = 8;
+    int follow_up_sec = 4;
     int max_session_sec = 120;
     int vad_silence_ms = 900;
     std::vector<std::string> memory_notes;

@@ -51,6 +51,7 @@ public:
     bool is_playing() const { return playing_active_.load(); }
     bool is_playback_or_tail_active(int tail_ms = 350) const;
     float playback_level() const { return playback_rms_.load(); }
+    float processed_noise_level() const { return last_noise_floor_.load() * last_agc_gain_.load(); }
 
     std::vector<uint8_t> export_recent_wav(int seconds = 5);
 
