@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.16",
+    "version":  "1.6.17",
     "autonomous":  true,
-    "changelog":  "OpenStation Max v1.6.16: экран и индикатор установки обновления, автоматическая перезагрузка и приветствие после обновления.",
-    "buildTimeUtc":  "2026-11-16T19:41:05Z",
+    "changelog":  "Исправлено открытие раздела «Звук и аудио» в настройках Android TV.",
+    "buildTimeUtc":  "2026-11-16T20:27:14Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
                                  "size":  3163024,
-                                 "sha256":  "4b31d58292b7099eaef25276b0150f056c30080ae0fedd9a0dc9b3ad0bd71a73"
+                                 "sha256":  "3035462dad3004b9400ade10cf09efad25178120354942379c473b661c4bf190"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
@@ -18,8 +18,8 @@
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  28414519,
-                                   "sha256":  "244ff95f6606d20ab84a3abe1bf54e9581ae3b90a6041f03c7e8c799ed228a8d"
+                                   "size":  28414495,
+                                   "sha256":  "84538c34bd15abe4792c61555ea61e35431ef34c11dca1fcfa8720b0c066aa47"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

@@ -2074,7 +2074,7 @@ class MainActivity : Activity() {
                 openTvAccessories()
             },
             SysItem(R.drawable.ic_hw_eq, false, "Звук и аудио") {
-                openSettingsActions("com.yandex.tv.settings.ACTION_SOUND", Settings.ACTION_SOUND_SETTINGS)
+                openTvSoundSettings()
             },
             SysItem(R.drawable.ic_settings, false, "Дата и время") {
                 openSettingsIntent(Settings.ACTION_DATE_SETTINGS, "com.android.tv.settings")
@@ -2989,14 +2989,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openSettingsActions(vararg actions: String, fallbackPkg: String = "com.android.tv.settings") {
-        for (act in actions) {
+    private fun openTvSoundSettings() {
+        val intents = listOf(
+            Intent(Settings.ACTION_SOUND_SETTINGS).setPackage("com.android.tv.settings"),
+            Intent(Settings.ACTION_SOUND_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS).setPackage("com.android.tv.settings")
+        )
+        for (intent in intents) {
             try {
-                startActivity(Intent(act).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 return
-            } catch (_: Throwable) {}
+            } catch (_: android.content.ActivityNotFoundException) {
+            } catch (_: SecurityException) {
+            }
         }
-        launchPackageName(fallbackPkg)
+        Toast.makeText(this, "Настройки звука недоступны", Toast.LENGTH_SHORT).show()
     }
 
     private fun openSettingsIntent(action: String, fallbackPkg: String) {

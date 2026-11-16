@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.16",
-    [string]$Changelog = "OpenStation Max v1.6.16: экран и индикатор установки обновления, автоматическая перезагрузка и приветствие после обновления.",
+    [string]$Version = "1.6.17",
+    [string]$Changelog = "Исправлено открытие раздела «Звук и аудио» в настройках Android TV.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
