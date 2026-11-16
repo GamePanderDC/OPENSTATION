@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.6",
-    [string]$Changelog = "OpenStation Max v1.6.6: статичные обои, видеозаставка 1080p60 и исправления интерфейса.",
+    [string]$Version = "1.6.7",
+    [string]$Changelog = "OpenStation Max v1.6.7: статичные обои, видеозаставка 1080p60 и исправления интерфейса.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
@@ -179,6 +179,9 @@ foreach ($s in $sources) {
         Copy-Item -Force $s.Src $dst
     }
     $item = Get-Item $dst
+    if ($s.Key -in @("daemon", "launcher", "ime") -and $item.Length -gt 32MB) {
+        throw "OTA не примет $($s.FileName): размер превышает 32 МиБ."
+    }
     $hash = (Get-FileHash -Path $dst -Algorithm SHA256).Hash.ToLowerInvariant()
     $filesManifest[$s.Key] = [ordered]@{
         fileName = $s.FileName

@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.6",
+  "version": "1.6.7",
   "autonomous": true,
-  "changelog": "OpenStation Max v1.6.6: статичные обои, видеозаставка 1080p60 и исправления интерфейса.",
-  "buildTimeUtc": "2026-11-16T05:18:27Z",
+  "changelog": "OpenStation Max v1.6.7: статичные обои, видеозаставка 1080p60 и исправления интерфейса.",
+  "buildTimeUtc": "2026-11-16T08:52:59Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
       "size": 3140480,
-      "sha256": "08daa032ee41d980f3a49f15b3fb2a24784da6291b8e9b43046fbb4c4b77dd59"
+      "sha256": "67db1becd9243f505ec58c6e3e8d9741bf36fda7ec9e8177d078e4fb3ed1bb7a"
     },
     "bootlogod": {
       "fileName": "bootlogod",
@@ -18,8 +18,8 @@
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 42654639,
-      "sha256": "e1976c7b5b813fde2a018cdfab1b243ffc9b9b99e852abb1b85019ecb0e880c9"
+      "size": 19235831,
+      "sha256": "6eedebce4525848112993f455374d8f7413f514baf9667a195a3cd6210bef099"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",
