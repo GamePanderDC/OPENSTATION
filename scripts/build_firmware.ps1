@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.18",
-    [string]$Changelog = "Лимит системного промпта Алисы увеличен в 10 раз: до 40960 байт.",
+    [string]$Version = "1.6.19",
+    [string]$Changelog = "Новая музыкальная карточка: обложка текущего трека на фоне и в плеере.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

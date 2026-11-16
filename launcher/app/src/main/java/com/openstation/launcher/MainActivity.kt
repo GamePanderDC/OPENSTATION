@@ -3,7 +3,6 @@ package com.openstation.launcher
 import android.Manifest
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
-import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
@@ -46,7 +45,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
-import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -65,6 +63,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.math.max
@@ -285,10 +286,9 @@ class MainActivity : Activity() {
 
     // Screen 1: Apps grid & Native Yandex Music Vinyl Hero card
     private lateinit var appsGrid: GridLayout
-    private lateinit var ivHomeVinyl: ImageView
     private lateinit var ivHomeCover: ImageView
+    private lateinit var ivMusicBackdrop: ImageView
     private lateinit var viewHomeCoverBorder: View
-    private var vinylAnimator: ObjectAnimator? = null
     private lateinit var tvHomeSourceBadge: TextView
     private lateinit var tvHomeCodecBadge: TextView
     private lateinit var tvHomeAuthBadge: TextView
@@ -303,6 +303,14 @@ class MainActivity : Activity() {
     private lateinit var btnHomeLike: IconBtnViews
     private lateinit var btnHomeOpen: LinearLayout
     private var lastHomeCoverUrl = ""
+    private var homeCoverBitmap: Bitmap? = null
+    private var homeCoverLoading = false
+    private var homeCoverGeneration = 0
+    private var homeCoverRetryAfterMs = 0L
+    private val homeArtworkApi by lazy { YandexMusicApi(applicationContext) }
+    private val homeCoverExecutor = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue<Runnable>()) { work ->
+        Thread(work, "music-artwork").apply { isDaemon = true }
+    }
     private var latestMusicSnap = YmPlayerSnapshot()
 
     // Live daemon state
@@ -502,7 +510,6 @@ class MainActivity : Activity() {
         refreshMusicSnapshotFromService()
         renderOrbAssistantUi()
         syncHomeWidgetsUi()
-        updateAnimationsState()
         handler.removeCallbacks(clockRunnable)
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(widgetEqTickRunnable)
@@ -521,7 +528,6 @@ class MainActivity : Activity() {
         handler.removeCallbacks(clockRunnable)
         handler.removeCallbacks(pollRunnable)
         handler.removeCallbacks(widgetEqTickRunnable)
-        vinylAnimator?.pause()
         super.onPause()
     }
 
@@ -531,7 +537,8 @@ class MainActivity : Activity() {
         handler.removeCallbacks(okLongPressRunnable)
         LiveOrbState.removeListener(orbStateListener)
         pageAnimator?.cancel()
-        vinylAnimator?.cancel()
+        homeCoverGeneration++
+        homeCoverExecutor.shutdownNow()
         handler.removeCallbacks(widgetEqTickRunnable)
         handler.removeCallbacks(otaDialogPollRunnable)
         try { otaDialog?.dismiss() } catch (_: Throwable) {}
@@ -1094,13 +1101,6 @@ class MainActivity : Activity() {
 
         setContentView(rootFrame)
 
-        // Subtle animations for Screen 1 Vinyl & Screen 2 Dial
-        vinylAnimator = ObjectAnimator.ofFloat(ivHomeVinyl, View.ROTATION, 0f, 360f).apply {
-            duration = 9000L
-            repeatCount = ValueAnimator.INFINITE
-            interpolator = LinearInterpolator()
-        }
-
         syncLayerFocusability()
         setPage(0, animate = false)
         btnHeroOrbClick.post {
@@ -1492,10 +1492,12 @@ class MainActivity : Activity() {
             }
         }
 
-        val ivWaveBackdrop = ImageView(this).apply {
-            setImageResource(R.drawable.hero_wave_texture)
+        ivMusicBackdrop = ImageView(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#172B4B"), Color.parseColor("#10162B"), Color.parseColor("#201A39"))
+            )
             scaleType = ImageView.ScaleType.CENTER_CROP
-            alpha = 0.24f
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -1505,9 +1507,9 @@ class MainActivity : Activity() {
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
                 intArrayOf(
-                    Color.parseColor("#C8080D18"),
-                    Color.parseColor("#78080D18"),
-                    Color.parseColor("#AA080D18")
+                    Color.parseColor("#DC080D18"),
+                    Color.parseColor("#BC080D18"),
+                    Color.parseColor("#A8080D18")
                 )
             )
             layoutParams = FrameLayout.LayoutParams(
@@ -1515,7 +1517,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
-        musicHeroCard.addView(ivWaveBackdrop)
+        musicHeroCard.addView(ivMusicBackdrop)
         musicHeroCard.addView(heroScrim)
 
         val heroContent = LinearLayout(this).apply {
@@ -1585,15 +1587,8 @@ class MainActivity : Activity() {
                 1f
             )
         }
-        val vinylFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(168), dp(116))
-        }
-        ivHomeVinyl = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_vinyl_disc)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = FrameLayout.LayoutParams(dp(106), dp(106), Gravity.CENTER_VERTICAL).apply {
-                marginStart = dp(52)
-            }
+        val coverFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(112), dp(112))
         }
         ivHomeCover = ImageView(this).apply {
             setImageResource(R.drawable.sprite_ym_emblem)
@@ -1610,9 +1605,8 @@ class MainActivity : Activity() {
             }
             layoutParams = FrameLayout.LayoutParams(dp(112), dp(112), Gravity.CENTER_VERTICAL)
         }
-        vinylFrame.addView(ivHomeVinyl)
-        vinylFrame.addView(ivHomeCover)
-        vinylFrame.addView(viewHomeCoverBorder)
+        coverFrame.addView(ivHomeCover)
+        coverFrame.addView(viewHomeCoverBorder)
 
         val metaCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1653,7 +1647,7 @@ class MainActivity : Activity() {
         metaCol.addView(pbHomeTrack)
         metaCol.addView(tvHomeTrackTime)
 
-        heroMidRow.addView(vinylFrame)
+        heroMidRow.addView(coverFrame)
         heroMidRow.addView(metaCol)
         heroContent.addView(heroMidRow)
 
@@ -2281,7 +2275,6 @@ class MainActivity : Activity() {
         val showDock = (currentPage != 0) && (LiveOrbState.assistantState != "idle")
         bottomDockBar.visibility = if (showDock) View.VISIBLE else View.GONE
         syncLayerFocusability()
-        updateAnimationsState()
     }
 
     private fun focusPageControlDirect(idx: Int) {
@@ -3394,19 +3387,6 @@ class MainActivity : Activity() {
 
         }
         renderOrbAssistantUi()
-        updateAnimationsState()
-    }
-
-    private fun updateAnimationsState() {
-        val runVinyl = (currentPage == 1) && latestMusicSnap.playing
-        if (runVinyl) {
-            vinylAnimator?.let {
-                if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
-            }
-        } else {
-            vinylAnimator?.let { if (it.isRunning) it.pause() }
-        }
-
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3424,6 +3404,8 @@ class MainActivity : Activity() {
     }
 
     private fun setHomeCoverArt(bmp: android.graphics.Bitmap?) {
+        homeCoverBitmap = bmp
+        ivMusicBackdrop.setImageBitmap(bmp)
         if (bmp != null) {
             ivHomeCover.scaleType = ImageView.ScaleType.CENTER_CROP
             ivHomeCover.background = GradientDrawable().apply {
@@ -3438,10 +3420,47 @@ class MainActivity : Activity() {
             ivHomeCover.setImageResource(R.drawable.sprite_ym_emblem)
             viewHomeCoverBorder.visibility = View.GONE
         }
+        if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
+            screensaverOverlay.updateMusic(latestMusicSnap, bmp)
+        }
+    }
+
+    private fun updateMusicArtwork(track: YmTrack?) {
+        if (isFinishing || isDestroyed) return
+        val url = track?.coverUrl(400).orEmpty()
+        if (url != lastHomeCoverUrl) {
+            lastHomeCoverUrl = url
+            homeCoverGeneration++
+            homeCoverExecutor.queue.clear()
+            homeCoverLoading = false
+            homeCoverRetryAfterMs = 0L
+            setHomeCoverArt(null)
+        }
+        if (url.isEmpty() || homeCoverBitmap != null || homeCoverLoading ||
+            SystemClock.elapsedRealtime() < homeCoverRetryAfterMs) return
+        val api = StationAudioService.instance?.musicPlayer?.api ?: homeArtworkApi
+        val generation = homeCoverGeneration
+        homeCoverLoading = true
+        homeCoverExecutor.execute {
+            val bmp = api.loadCoverBitmap(url, 400)
+            handler.post {
+                if (isFinishing || isDestroyed || generation != homeCoverGeneration) return@post
+                homeCoverLoading = false
+                if (bmp != null) setHomeCoverArt(bmp)
+                else {
+                    homeCoverRetryAfterMs = SystemClock.elapsedRealtime() + 15_000L
+                    handler.postDelayed({
+                        if (!isFinishing && !isDestroyed && generation == homeCoverGeneration)
+                            updateMusicArtwork(latestMusicSnap.currentTrack)
+                    }, 15_100L)
+                }
+            }
+        }
     }
 
     private fun renderMusicSnapshot(snap: YmPlayerSnapshot, forceViews: Boolean = false) {
         latestMusicSnap = snap
+        updateMusicArtwork(snap.currentTrack)
         if (::screensaverOverlay.isInitialized && screensaverOverlay.isOpen) {
             screensaverOverlay.updateMusic(snap, (ivHomeCover.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap)
         }
@@ -3504,27 +3523,6 @@ class MainActivity : Activity() {
                     )
                 }
 
-                val coverUrl = tr.coverUrl(300)
-                if (coverUrl != lastHomeCoverUrl) {
-                    lastHomeCoverUrl = coverUrl
-                    if (coverUrl.isBlank()) {
-                        setHomeCoverArt(null)
-                    } else {
-                        val api = StationAudioService.instance?.musicPlayer?.api
-                        if (api != null) {
-                            thread(isDaemon = true) {
-                                val bmp = api.loadCoverBitmap(coverUrl, 300)
-                                if (bmp != null && lastHomeCoverUrl == coverUrl) {
-                                    handler.post {
-                                        if (lastHomeCoverUrl == coverUrl) {
-                                            setHomeCoverArt(bmp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             } else {
                 tvHomeTrackTitle.text = "Моя волна — поток музыки"
                 tvHomeTrackArtist.text = "Скажите «${LiveOrbState.effectiveName()}, включи музыку» или жмите «Моя волна»"
@@ -3533,10 +3531,6 @@ class MainActivity : Activity() {
                 if (forceViews || lastTrackLiked != false) {
                     lastTrackLiked = false
                     btnHomeLike.icon.setImageDrawable(getDrawable(R.drawable.ic_heart_outline))
-                }
-                if (lastHomeCoverUrl.isNotEmpty()) {
-                    lastHomeCoverUrl = ""
-                    setHomeCoverArt(null)
                 }
             }
 
@@ -3555,7 +3549,6 @@ class MainActivity : Activity() {
                 btnHomePlayPause.icon.setImageDrawable(ppIcon)
             }
         }
-        updateAnimationsState()
     }
 
     private fun formatTimeMs(ms: Long): String {

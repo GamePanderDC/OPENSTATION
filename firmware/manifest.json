@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.18",
+    "version":  "1.6.19",
     "autonomous":  true,
-    "changelog":  "Лимит системного промпта Алисы увеличен в 10 раз: до 40960 байт.",
-    "buildTimeUtc":  "2026-11-16T20:48:49Z",
+    "changelog":  "Новая музыкальная карточка: обложка текущего трека на фоне и в плеере.",
+    "buildTimeUtc":  "2026-11-16T21:26:57Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
                                  "size":  3163072,
-                                 "sha256":  "111b0266bf152c2909ddc5d7abc003e9589d74ff29746287590ccb26fd589290"
+                                 "sha256":  "14a2930c1d9cf021f3188be20385d5061317a2d8a0c6286bfe7a07d0f590e4fb"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
@@ -18,8 +18,8 @@
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  28414495,
-                                   "sha256":  "84538c34bd15abe4792c61555ea61e35431ef34c11dca1fcfa8720b0c066aa47"
+                                   "size":  28415075,
+                                   "sha256":  "0a5f1ff053f873509d88d6edf246ffac02eb77fd7b96299f3a806055d1672c4e"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",
