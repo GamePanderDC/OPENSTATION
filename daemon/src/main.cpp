@@ -544,7 +544,8 @@ bool is_valid_eq_preset(const std::string& p) {
 
 bool is_valid_clock_style(const std::string& s) {
     return s == "classic" || s == "minimal" || s == "bold" || s == "seconds" ||
-           s == "binary" || s == "neon" || s == "retro" || s == "matrix";
+           s == "binary" || s == "neon" || s == "retro" || s == "matrix" ||
+           s == "yandex1" || s == "yandex2" || s == "yandex3";
 }
 
 bool is_valid_visualizer_style(const std::string& s) {
