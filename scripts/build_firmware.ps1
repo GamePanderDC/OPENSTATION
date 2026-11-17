@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.23",
-    [string]$Changelog = "Выбор защищённого DNS, проверка пинга и выбор самого быстрого сервера.",
+    [string]$Version = "1.6.24",
+    [string]$Changelog = "Автоматический выбор быстрого доступного сервера для Алисы.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

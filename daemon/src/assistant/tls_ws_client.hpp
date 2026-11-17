@@ -43,7 +43,8 @@ public:
                  const std::string& ca_pem_path,
                  std::string& err_out,
                  int timeout_ms = 8000,
-                 const std::string& connect_host_override = "");
+                 const std::string& connect_host_override = "",
+                 bool tls_probe_only = false);
 
     bool send_text(const std::string& text);
     bool send_pong(const std::string& payload);

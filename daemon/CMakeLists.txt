@@ -39,6 +39,7 @@ add_executable(openstationd
     src/hw/input_monitor.cpp
     src/hw/audio_engine.cpp
     src/assistant/tls_ws_client.cpp
+    src/assistant/proxy_selector.cpp
     src/assistant/wake_word.cpp
     src/assistant/timer_manager.cpp
     src/assistant/assistant_manager.cpp

@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.23",
+  "version": "1.6.24",
   "autonomous": true,
-  "changelog": "Выбор защищённого DNS, проверка пинга и выбор самого быстрого сервера.",
-  "buildTimeUtc": "2026-11-17T18:24:19Z",
+  "changelog": "Автоматический выбор быстрого доступного сервера для Алисы.",
+  "buildTimeUtc": "2026-11-17T18:54:37Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3190944,
-      "sha256": "2c89ade81541226d1ef8fe2705b44248efa2a3dfde48a1fc8de5cf89d04e17e8"
+      "size": 3198552,
+      "sha256": "2727b0659696143fcdb56b31e2bd5c86eda83339a22007db0d85732304ba26cc"
     },
     "bootlogod": {
       "fileName": "bootlogod",
@@ -19,7 +19,7 @@
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
       "size": 28420415,
-      "sha256": "eae5a1131832b7ad73aa2ca46b9f6b14b889b787765b9059375a0f1ce2aa24ce"
+      "sha256": "84416a40a6ac1bcb634e004c9931882fd2c2105677cedd349318f0da6be6c703"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",

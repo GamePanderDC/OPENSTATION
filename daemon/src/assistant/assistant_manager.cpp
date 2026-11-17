@@ -4,6 +4,7 @@
 #include "assistant/assistant_personalization.hpp"
 #include "assistant/assistant_intents.hpp"
 #include "assistant/tls_ws_client.hpp"
+#include "assistant/proxy_selector.hpp"
 #include "utils/base64.hpp"
 #include "utils/logger.hpp"
 
@@ -1460,7 +1461,10 @@ void AssistantManager::session_worker(uint64_t sid,
         const std::string setup_json_str = build_setup_json(eff_cfg, announcement, src == TriggerSource::Remote).dump(-1);
         std::string connect_host = cur_use_proxy ? cfg_snap.gemini_proxy_host : "";
         err.clear();
-        if (!ws.connect(kGeminiHost, kGeminiPort, ws_path, kCaBundlePath, err, 8000, connect_host)) {
+        bool connected = cur_use_proxy
+            ? connect_best_proxy(ws, connect_host, ws_path, kCaBundlePath, err, 8000)
+            : ws.connect(kGeminiHost, kGeminiPort, ws_path, kCaBundlePath, err, 8000);
+        if (!connected) {
             if (session_abort_.load() || !running_.load()) {
                 break;
             }

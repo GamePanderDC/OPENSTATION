@@ -2,6 +2,7 @@
 #include "assistant/assistant_manager.hpp"
 #include "assistant/timer_manager.hpp"
 #include "assistant/tls_ws_client.hpp"
+#include "assistant/proxy_selector.hpp"
 #include "config.hpp"
 #include "hw/alsa_mixer.hpp"
 #include "hw/audio_engine.hpp"
@@ -52,7 +53,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.23";
+constexpr const char* kFirmwareVersion = "1.6.24";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -964,8 +965,11 @@ openstation::json::Value probe_gemini_live_json(const std::string& api_key_in,
 
         TlsWsClient ws;
         std::string err;
-        if (!ws.connect("generativelanguage.googleapis.com", 443, path,
-                        "/data/local/openstation/cacert.pem", err, 5500, host_override)) {
+        bool connected = host_override.empty()
+            ? ws.connect("generativelanguage.googleapis.com", 443, path,
+                         "/data/local/openstation/cacert.pem", err, 5500)
+            : connect_best_proxy(ws, host_override, path, "/data/local/openstation/cacert.pem", err, 5500);
+        if (!connected) {
             last_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - t0).count();
             last_err = err.empty() ? "TLS connect failed" : err;

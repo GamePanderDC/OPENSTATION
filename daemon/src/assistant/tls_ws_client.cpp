@@ -325,7 +325,8 @@ bool TlsWsClient::connect(const std::string& host,
                           const std::string& ca_pem_path,
                           std::string& err_out,
                           int timeout_ms,
-                          const std::string& connect_host_override) {
+                          const std::string& connect_host_override,
+                          bool tls_probe_only) {
     close();
     std::lock_guard<std::mutex> lk(state_mu_);
     abort_req_.store(false);
@@ -465,6 +466,11 @@ bool TlsWsClient::connect(const std::string& host,
         err_out = std::string("CA verification failed: ") + vbuf;
         cleanup_tls();
         return false;
+    }
+
+    if (tls_probe_only) {
+        cleanup_tls();
+        return true;
     }
 
     // Generate Sec-WebSocket-Key (16 random bytes base64-encoded)
