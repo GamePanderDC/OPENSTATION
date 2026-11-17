@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.22";
+constexpr const char* kFirmwareVersion = "1.6.23";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -5028,6 +5028,36 @@ int main(int argc, char** argv) {
                 }
                 return HttpResponse::json(out);
             }
+            if (req.method == "GET" && req.path == "/api/system/dns/latency") {
+                // Probe a fixed allowlist: hostnames supplied by clients must never reach a shell.
+                struct Probe { const char* host; const char* target; double ms = -1; };
+                Probe probes[] = {{"dns.comss.one", "dns.comss.one"},
+                                  {"one.one.one.one", "1.1.1.1"},
+                                  {"dns.google", "8.8.8.8"},
+                                  {"dns.quad9.net", "9.9.9.9"}};
+                std::vector<std::thread> workers;
+                for (auto& probe : probes) {
+                    workers.emplace_back([&probe]() {
+                        auto result = run_argv_with_timeout(
+                            {"/system/bin/ping", "-c", "2", "-W", "2", probe.target}, 5, 2048);
+                        if (result.timed_out || result.exit_code != 0) return;
+                        const auto pos = result.output.find(" = ");
+                        if (pos == std::string::npos) return;
+                        const char* p = result.output.c_str() + pos + 3;
+                        char* end = nullptr;
+                        (void)strtod(p, &end); // min/avg/max/mdev
+                        if (!end || *end != '/') return;
+                        probe.ms = strtod(end + 1, &end);
+                        if (probe.ms < 0 || probe.ms > 60000) probe.ms = -1;
+                    });
+                }
+                for (auto& worker : workers) worker.join();
+                json::Value out = json::Value::make_obj();
+                for (const auto& probe : probes) {
+                    out[probe.host] = json::Value::make_int(probe.ms >= 0 ? static_cast<int>(std::round(probe.ms)) : -1);
+                }
+                return HttpResponse::json(out.dump(-1));
+            }
             if (req.method == "POST" && req.path == "/api/system/dns") {
                 json::Value v;
                 if (!json::Parser::parse(req.body, v) || !v.is_obj()) {
@@ -5043,16 +5073,18 @@ int main(int argc, char** argv) {
                 if (mode == "hostname" && !is_valid_dns_host(host)) {
                     return HttpResponse::json("{\"error\":\"invalid dns host\"}", 400);
                 }
-                std::string cmd = "/system/bin/settings put global private_dns_mode " + mode;
+                std::string cmd;
                 if (mode == "hostname" && !host.empty()) {
-                    cmd += " && /system/bin/settings put global private_dns_specifier " + host;
+                    cmd = "/system/bin/settings put global private_dns_specifier " + host + " && ";
                 }
+                cmd += "/system/bin/settings put global private_dns_mode " + mode;
                 ShellResult sr = run_shell_with_timeout(cmd, 4, 256);
                 refresh_private_dns_cache();
                 json::Value out = json::Value::make_obj();
-                out["ok"] = json::Value::make_bool(!sr.timed_out && sr.exit_code == 0);
                 {
                     std::lock_guard<std::mutex> lk(dns_mu);
+                    out["ok"] = json::Value::make_bool(!sr.timed_out && sr.exit_code == 0 &&
+                        private_dns_mode_cache == mode && (mode != "hostname" || private_dns_host_cache == host));
                     out["mode"] = json::Value::make_str(private_dns_mode_cache);
                     out["host"] = json::Value::make_str(private_dns_host_cache);
                 }

@@ -2556,14 +2556,23 @@
 
     const dnsHost = d.privateDnsHost || "";
     const dnsMode = d.privateDnsMode || "";
-    if ($("sysDnsHost") && document.activeElement !== $("sysDnsHost") && dnsHost) {
-      $("sysDnsHost").value = dnsHost;
+    if ($("dnsCurrent")) $("dnsCurrent").textContent = dnsMode === "hostname" && dnsHost
+      ? `Текущая настройка: ${dnsHost}` : dnsMode === "off"
+        ? "Текущая настройка: защищённый DNS выключен" : "Текущая настройка: DNS системы (авто)";
+    if ($("sysDnsChoice") && !$('sysDnsChoice').dataset.initialized) {
+      const choice = $("sysDnsChoice");
+      const known = Array.from(choice.options).some(o => o.value === dnsHost);
+      choice.value = dnsMode === "hostname" ? (known ? dnsHost : "custom") : (dnsMode === "off" ? "off" : "opportunistic");
+      if (dnsMode === "hostname" && !known && $("sysDnsHost")) $("sysDnsHost").value = dnsHost;
+      if ($("sysDnsHost")) $("sysDnsHost").hidden = choice.value !== "custom";
+      choice.dataset.initialized = "1";
+      setTimeout(() => checkDnsLatency(false), 0);
     }
     if ($("wizDnsHost") && document.activeElement !== $("wizDnsHost") && dnsHost) {
       $("wizDnsHost").value = dnsHost;
     }
     if ($("wizNetBanner")) {
-      const dnsLabel = dnsMode === "hostname" && dnsHost ? `DNS: ${dnsHost}` : "DNS: авто";
+      const dnsLabel = dnsMode === "hostname" && dnsHost ? `DNS: ${dnsHost}` : dnsMode === "off" ? "Защищённый DNS: выкл." : "DNS: авто";
       $("wizNetBanner").textContent = `✓ Автономный режим · IP: ${d.ip || "local"} · ${dnsLabel}`;
     }
 
@@ -2739,7 +2748,50 @@
       $("btnWizToggleKey").textContent = show ? "Скрыть" : "Показать";
     });
   }
-  if ($("btnApplyDns") && $("sysDnsHost")) $("btnApplyDns").addEventListener("click", () => applyDnsHost($("sysDnsHost").value));
+  const dnsChoices = {"dns.comss.one": "Comss DNS", "one.one.one.one": "Cloudflare", "dns.google": "Google", "dns.quad9.net": "Quad9"};
+  if ($("sysDnsChoice")) $("sysDnsChoice").addEventListener("change", () => {
+    $("sysDnsHost").hidden = $("sysDnsChoice").value !== "custom";
+  });
+  if ($("btnApplyDns")) $("btnApplyDns").addEventListener("click", async () => {
+    const choice = $("sysDnsChoice").value;
+    if (choice === "custom") {
+      const host = $("sysDnsHost").value.trim();
+      if (!host) { showToast("Укажите адрес DNS-сервера", true); return; }
+      await applyDnsHost(host);
+    } else if (choice === "off" || choice === "opportunistic") {
+      try {
+        const r = await api("/api/system/dns", "POST", { mode: choice });
+        showToast(r.ok ? "Настройки DNS сохранены" : "Не удалось обновить DNS", !r.ok);
+        applyTelemetry(await api("/api/status"), false);
+      } catch (e) { showToast("Ошибка DNS: " + e.message, true); }
+    } else await applyDnsHost(choice);
+  });
+  async function checkDnsLatency(chooseFastest) {
+    const info = $("dnsProbeInfo");
+    $("btnTestDns").disabled = $("btnFastestDns").disabled = true;
+    info.textContent = "Проверяем пинг от станции…";
+    try {
+      const times = await api("/api/system/dns/latency");
+      const choice = $("sysDnsChoice");
+      for (const option of choice.options) {
+        if (Object.prototype.hasOwnProperty.call(dnsChoices, option.value)) {
+          const ms = times[option.value];
+          option.textContent = `${dnsChoices[option.value]} — ${Number.isFinite(ms) && ms >= 0 ? `${ms} мс` : "нет ответа на пинг"}`;
+        }
+      }
+      const available = Object.keys(dnsChoices).filter(host => Number.isFinite(times[host]) && times[host] >= 0).sort((a, b) => times[a] - times[b]);
+      if (!available.length) { info.textContent = "Нет ответа на пинг. Выберите DNS вручную или проверьте сеть."; return; }
+      info.textContent = "Пинг проверен. Некоторые DNS могут не отвечать на пинг, даже если работают.";
+      if (chooseFastest) {
+        choice.value = available[0];
+        $("sysDnsHost").hidden = true;
+        await applyDnsHost(available[0]);
+      }
+    } catch (e) { info.textContent = "Не удалось проверить пинг: " + e.message; }
+    finally { $("btnTestDns").disabled = $("btnFastestDns").disabled = false; }
+  }
+  if ($("btnTestDns")) $("btnTestDns").addEventListener("click", () => checkDnsLatency(false));
+  if ($("btnFastestDns")) $("btnFastestDns").addEventListener("click", () => checkDnsLatency(true));
   if ($("btnWizApplyDns") && $("wizDnsHost")) $("btnWizApplyDns").addEventListener("click", () => applyDnsHost($("wizDnsHost").value));
   ["wizAgentStep1", "wizAgentStep2"].forEach((id) => {
     if ($(id)) {

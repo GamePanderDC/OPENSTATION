@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.22",
-    [string]$Changelog = "Рация с микрофоном пульта, настройка кнопок и переключение трека; индикатор громкости больше не выделяется.",
+    [string]$Version = "1.6.23",
+    [string]$Changelog = "Выбор защищённого DNS, проверка пинга и выбор самого быстрого сервера.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

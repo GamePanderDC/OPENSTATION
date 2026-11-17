@@ -965,11 +965,25 @@
                 <input type="text" id="devHost" value="station-max" />
               </div>
               <div class="form-row">
-                <label>Private DNS</label>
-                <div class="input-send-row">
-                  <input type="text" id="sysDnsHost" placeholder="dns.comss.one" value="dns.comss.one" />
+                <label for="sysDnsChoice">Защищённый DNS</label>
+                <select id="sysDnsChoice">
+                  <option value="dns.comss.one">Comss DNS</option>
+                  <option value="one.one.one.one">Cloudflare</option>
+                  <option value="dns.google">Google</option>
+                  <option value="dns.quad9.net">Quad9</option>
+                  <option value="custom">Другой сервер</option>
+                  <option value="opportunistic">DNS системы (авто)</option>
+                  <option value="off">Выключить защищённый DNS</option>
+                </select>
+                <p class="hint" id="dnsCurrent">Текущая настройка: загрузка…</p>
+                <p class="hint">Пинг измеряется от станции. Автовыбор проверяет серверы и выбирает самый быстрый; доступность сервисов может отличаться. Без защищённого DNS используется DNS сети.</p>
+                <input type="text" id="sysDnsHost" placeholder="Адрес другого DNS-сервера" hidden />
+                <div class="btn-row">
                   <button class="btn btn-sm" id="btnApplyDns" type="button">Применить</button>
+                  <button class="btn btn-sm" id="btnTestDns" type="button">Проверить пинг</button>
+                  <button class="btn btn-sm" id="btnFastestDns" type="button">Выбрать самый быстрый</button>
                 </div>
+                <p class="hint" id="dnsProbeInfo" aria-live="polite"></p>
               </div>
               <div class="btn-row">
                 <button class="btn btn-accent" id="btnSaveAll">Применить и сохранить</button>
