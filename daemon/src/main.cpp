@@ -53,11 +53,12 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.24";
+constexpr const char* kFirmwareVersion = "1.6.25";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
 constexpr const char* kVoiceTimeoutMigratedPath = "/data/local/openstation/.voice_timeout_164";
+constexpr const char* kSmartProxyMigratedPath = "/data/local/openstation/.smart_proxy_1625";
 
 std::atomic<bool> g_stop{false};
 
@@ -1297,6 +1298,15 @@ int main(int argc, char** argv) {
 
     DaemonConfig cfg;
     cfg.load();
+    if (!file_exists_plain(kSmartProxyMigratedPath)) {
+        bool saved = true;
+        if (cfg.assistant.gemini_proxy_host == "ai-pool.comss.one") {
+            cfg.assistant.gemini_proxy_host = "smart-auto";
+            saved = cfg.save();
+            LOGI("Main", "Enabled automatic Smart DNS route for the previous default proxy");
+        }
+        if (saved) write_text_file_atomic(kSmartProxyMigratedPath, "1\n");
+    }
     if (!file_exists_plain(kVoiceTimeoutMigratedPath)) {
         bool saved = true;
         if (cfg.assistant.follow_up_sec == 8) {

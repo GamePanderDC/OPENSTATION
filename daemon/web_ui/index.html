@@ -531,8 +531,9 @@
                 </div>
 
                 <div class="form-row">
-                  <label>Сервер обхода (SNI-прокси)</label>
-                  <input type="text" id="astProxyHost" placeholder="ai-pool.comss.one (пусто = выкл)" value="ai-pool.comss.one" />
+                  <label>Соединение с Gemini</label>
+                  <input type="text" id="astProxyHost" placeholder="smart-auto" value="smart-auto" />
+                  <div class="hint">smart-auto — автоматический выбор адреса через Smart DNS. Можно указать свой сервер; пустое поле отключает запасной маршрут.</div>
                 </div>
 
                 <div class="grid-2-tight">
@@ -1309,8 +1310,9 @@
             </div>
             <div class="grid-2-tight">
               <div class="form-row">
-                <label>Сервер обхода (SNI-прокси)</label>
-                <input type="text" id="wizProxyHost" placeholder="ai-pool.comss.one" value="ai-pool.comss.one" />
+                <label>Соединение с Gemini</label>
+                <input type="text" id="wizProxyHost" placeholder="smart-auto" value="smart-auto" />
+                <div class="hint">smart-auto — автоматический выбор адреса.</div>
               </div>
               <div class="form-row">
                 <label id="wizVoiceLabel">Голос ассистента</label>

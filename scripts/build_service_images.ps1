@@ -314,7 +314,7 @@ try {
             mode            = "gemini"
             geminiApiKey    = ""
             geminiModel     = "gemini-3.8-live"
-            geminiProxyHost = "ai-pool.comss.one"
+            geminiProxyHost = "smart-auto"
         }
         ota = [ordered]@{
             autoCheck         = $true

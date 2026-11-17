@@ -674,7 +674,7 @@ if (-not $curCfgText) {
             mode = "gemini"
             geminiApiKey = $(if ($GeminiApiKey) { $GeminiApiKey } else { "" })
             geminiModel = "gemini-3.8-live"
-            geminiProxyHost = "ai-pool.comss.one"
+            geminiProxyHost = "smart-auto"
         }
     }
 } elseif ($GeminiApiKey) {
@@ -686,7 +686,7 @@ if (-not $curCfgText) {
                 mode = "gemini"
                 geminiApiKey = $GeminiApiKey
                 geminiModel = "gemini-3.8-live"
-                geminiProxyHost = "ai-pool.comss.one"
+                geminiProxyHost = "smart-auto"
             })
             if ($cfgObj.PSObject.Properties.Name -contains "input" -and $null -ne $cfgObj.input -and [string]$cfgObj.input.actionShort -eq "wyoming") {
                 $cfgObj.input.actionShort = "assistant"

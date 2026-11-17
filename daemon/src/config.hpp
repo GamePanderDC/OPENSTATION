@@ -112,7 +112,7 @@ struct AssistantConfig {
     std::string name = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"; // Алиса (dynamic custom wake & persona name)
     std::string gemini_api_key;
     std::string gemini_model = "gemini-3.8-live";
-    std::string gemini_proxy_host = "ai-pool.comss.one"; // SNI proxy fallback on geo-block (1007)
+    std::string gemini_proxy_host = "smart-auto"; // Automatic SNI route fallback on geo-block (1007)
     std::string voice_name = "Aoede";
     std::string system_prompt =
         "Ты — девушка, голосовая помощница Алиса на умной колонке Яндекс Станция Макс с открытой прошивкой OpenStation Max (полный root-доступ и живой доступ в интернет). "

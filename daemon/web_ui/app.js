@@ -906,7 +906,7 @@
         if ($("astModel")) $("astModel").value = "gemini-3.8-live";
         if ($("astProxyHost")) {
           $("astProxyHost").value =
-            cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "ai-pool.comss.one";
+            cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "smart-auto";
         }
         if ($("astVoice")) $("astVoice").value = cfg.assistant.voiceName || "Aoede";
         if ($("astPrompt")) $("astPrompt").value = cfg.assistant.systemPrompt || "";
@@ -2107,7 +2107,7 @@
       const r = await api("/api/assistant/test", "POST", {
         geminiApiKey: keyVal || "",
         geminiModel: modelVal || "gemini-3.8-live",
-        geminiProxyHost: proxyVal ?? "ai-pool.comss.one"
+        geminiProxyHost: proxyVal ?? "smart-auto"
       });
       if (r.ok) {
         const msg = `✓ Связь работает (${r.latencyMs} мс)`;
@@ -2661,7 +2661,7 @@
           : "AIza... или AQ.Ab8...";
       }
       if ($("wizProxyHost") && document.activeElement !== $("wizProxyHost")) {
-        $("wizProxyHost").value = cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "ai-pool.comss.one";
+      $("wizProxyHost").value = cfg.assistant.geminiProxyHost !== undefined ? cfg.assistant.geminiProxyHost : "smart-auto";
       }
       if ($("wizVoice") && document.activeElement !== $("wizVoice")) $("wizVoice").value = cfg.assistant.voiceName || "Aoede";
       if ($("wizWakeEn")) $("wizWakeEn").checked = cfg.assistant.wakeWordEnabled !== false;
@@ -2805,7 +2805,7 @@
       enabled: true,
       mode: "gemini",
       name: ($("wizName")?.value.trim()) || "Алиса",
-      geminiProxyHost: $("wizProxyHost")?.value.trim() ?? "ai-pool.comss.one",
+      geminiProxyHost: $("wizProxyHost")?.value.trim() ?? "smart-auto",
       voiceName: $("wizVoice")?.value || "Aoede",
       wakeWordEnabled: $("wizWakeEn") ? $("wizWakeEn").checked : true,
       agentMode: $("wizAgentStep2") ? $("wizAgentStep2").checked : ($("wizAgentStep1") ? $("wizAgentStep1").checked : true)

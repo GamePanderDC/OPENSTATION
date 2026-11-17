@@ -26,8 +26,10 @@ constexpr const char* kCaBundlePath = "/data/local/openstation/cacert.pem";
 
 // Send ~100 ms frames upstream (1600 samples = 3200 PCM bytes)
 constexpr size_t kTxChunkSamples = 1600;
-constexpr size_t kMaxConnectingPcmSamples = 16000 * 6;
-constexpr size_t kMaxLivePcmSamples = 16000 * 2;
+// A connection can take several seconds when the first route fails. Preserve
+// the beginning of a spoken request while the verified alternate is selected.
+constexpr size_t kMaxConnectingPcmSamples = 16000 * 20;
+constexpr size_t kMaxLivePcmSamples = 16000 * 5;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -355,7 +357,10 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     }
 
     std::lock_guard<std::mutex> lk(tx_mu_);
-    size_t cap = (st == AssistantState::Connecting) ? kMaxConnectingPcmSamples : kMaxLivePcmSamples;
+    // Keep the connection backlog intact until it has drained; otherwise the
+    // first live microphone callback discards the beginning of the request.
+    size_t cap = (st == AssistantState::Connecting || tx_pcm_.size() > kMaxLivePcmSamples)
+                     ? kMaxConnectingPcmSamples : kMaxLivePcmSamples;
     if (tx_pcm_.size() + count > cap) {
         size_t overflow = tx_pcm_.size() + count - cap;
         if (overflow >= tx_pcm_.size()) tx_pcm_.clear();
@@ -1911,6 +1916,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     while (off < pcm_batch.size()) {
                         size_t n = std::min(kTxChunkSamples, pcm_batch.size() - off);
                         if (!send_audio_pcm(pcm_batch.data() + off, n)) {
+                            if (cur_use_proxy && !session_abort_.load()) invalidate_proxy_selection(cfg_snap.gemini_proxy_host);
                             set_error("Ошибка отправки аудио в Gemini Live", src != TriggerSource::Text);
                             fatal_error = true;
                             break;

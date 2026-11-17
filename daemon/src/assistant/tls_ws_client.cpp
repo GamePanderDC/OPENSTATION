@@ -587,13 +587,22 @@ bool TlsWsClient::tls_write_all(const uint8_t* data, size_t len, int timeout_ms)
             int rem = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                            deadline - std::chrono::steady_clock::now())
                                            .count());
-            if (rem <= 0) return false;
+            if (rem <= 0) {
+                if (!abort_req_.load()) LOGW("TlsWs", "TLS write timed out after %zu/%zu bytes", off, len);
+                return false;
+            }
             int fd = sock_fd_.load();
             if (fd < 0) return false;
             short ev = (rc == MBEDTLS_ERR_SSL_WANT_WRITE) ? POLLOUT : POLLIN;
-            if (wait_fd_poll(fd, ev, rem, abort_req_) <= 0) return false;
+            int pr = wait_fd_poll(fd, ev, rem, abort_req_);
+            if (pr <= 0) {
+                if (!abort_req_.load()) LOGW("TlsWs", "TLS write poll failed (%d, want %s), %zu/%zu bytes",
+                                              pr, ev == POLLOUT ? "write" : "read", off, len);
+                return false;
+            }
             continue;
         }
+        if (!abort_req_.load()) LOGW("TlsWs", "TLS write failed: %s, %zu/%zu bytes", mbed_err_str(rc).c_str(), off, len);
         return false;
     }
     return off == len;
