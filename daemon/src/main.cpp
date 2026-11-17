@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.19";
+constexpr const char* kFirmwareVersion = "1.6.20";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -419,7 +419,7 @@ openstation::hw::MiscRepairReport refresh_misc_repair_status(bool allow_power_up
     return g_misc_repair_state.report;
 }
 
-openstation::json::Value build_misc_repair_json(int64_t uptime_sec) {
+openstation::json::Value build_misc_repair_json(int64_t /*uptime_sec*/) {
     using openstation::json::Value;
     openstation::hw::MiscRepairReport rep;
     bool init = false;
@@ -442,7 +442,8 @@ openstation::json::Value build_misc_repair_json(int64_t uptime_sec) {
     mr["btOk"] = Value::make_bool(rep.bt_ok);
     mr["dtMatches"] = Value::make_bool(rep.dt_matches);
     mr["needsRepair"] = Value::make_bool(rep.needs_repair);
-    mr["showPopup"] = Value::make_bool(init && rep.needs_repair && !dismissed && !flashing && uptime_sec >= 12);
+    // Keep the diagnosis available on demand without interrupting the TV or web UI.
+    mr["showPopup"] = Value::make_bool(false);
     mr["dismissed"] = Value::make_bool(dismissed);
     mr["flashing"] = Value::make_bool(flashing);
     mr["chip"] = Value::make_str(openstation::hw::chip_name(rep.chip));

@@ -2735,7 +2735,7 @@ class MainActivity : Activity() {
         val ymEntry = AppEntry(
             pkg = PKG_YANDEX_MUSIC,
             label = "Яндекс Музыка",
-            icon = getDrawable(R.drawable.sprite_ym_emblem) ?: applicationInfo.loadIcon(pm),
+            icon = getDrawable(R.drawable.ic_music_app) ?: applicationInfo.loadIcon(pm),
             intent = Intent(this, YandexMusicActivity::class.java),
             leanback = true,
             isVirtual = true,

@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.19",
-    [string]$Changelog = "Новая музыкальная карточка: обложка текущего трека на фоне и в плеере.",
+    [string]$Version = "1.6.20",
+    [string]$Changelog = "Обновлён значок музыки в лаунчере; убрано автоматическое окно исправления Wi-Fi и Bluetooth.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
