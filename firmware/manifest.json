@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.20",
+    "version":  "1.6.21",
     "autonomous":  true,
-    "changelog":  "Обновлён значок музыки в лаунчере; убрано автоматическое окно исправления Wi-Fi и Bluetooth.",
-    "buildTimeUtc":  "2026-11-16T22:05:51Z",
+    "changelog":  "Кнопка выключения ТВ в веб-пульте и переключение трека удержанием кнопки Алисы на пульте.",
+    "buildTimeUtc":  "2026-11-17T02:11:30Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  3162960,
-                                 "sha256":  "93ea141ddce708aeaba1e39d69e35d7b6642d2035f136ea2b2403c08561d3956"
+                                 "size":  3165296,
+                                 "sha256":  "11d813575803c5185de30f66472f78678edfd8b464c0a7ae0c12a152ef6375d4"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
@@ -18,8 +18,8 @@
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  28416095,
-                                   "sha256":  "6620980408544f79d4c0fb305ee85cbc6821f8fc24a6e2a5650e13b3a52a68b9"
+                                   "size":  28416099,
+                                   "sha256":  "6772c216077ad4f259f38d8ffb702b705c09df97bcfa756e2074e509d9883fcd"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

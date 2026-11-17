@@ -1666,7 +1666,7 @@
   // Remote D-pad & CEC & Text
   const CEC_LABELS = {
     wakeup: "Включение ТВ",
-    standby: "Выключение ТВ",
+    standby: "Команда выключения отправлена телевизору",
     volume_up: "ТВ громче",
     volume_down: "ТВ тише"
   };

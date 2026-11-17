@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.20";
+constexpr const char* kFirmwareVersion = "1.6.21";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1968,6 +1968,22 @@ int main(int argc, char** argv) {
                 } else if (c.wyoming.enabled) {
                     if (wyoming.is_streaming()) wyoming.stop_session();
                     else wyoming.trigger_button_session(6000);
+                }
+                break;
+            }
+            case HwEventType::RemoteAssistantLong: {
+                bool ym_playing;
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    ym_playing = music_state.playing && !music_state.paused;
+                }
+                if (ym_playing && is_udp_port_bound(8086)) {
+                    json::Value mcmd = json::Value::make_obj();
+                    mcmd["cmd"] = json::Value::make_str("music_action");
+                    mcmd["action"] = json::Value::make_str("NEXT");
+                    send_udp_json(8086, mcmd.dump(-1));
+                } else {
+                    uinput.send_android_action("next");
                 }
                 break;
             }

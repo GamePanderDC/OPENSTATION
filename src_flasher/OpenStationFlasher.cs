@@ -74,7 +74,7 @@ namespace OpenStationFlasher
     public class MainWindow : Window
     {
         private const string FW_VERSION = "v1.6.3";
-        private const string INSTALLER_VERSION = "1.3.7";
+        private const string INSTALLER_VERSION = "1.3.8";
         private const string GITHUB_LATEST_API = "https://api.github.com/repos/Olegu621/OPENSTATION/releases/latest";
 
         private bool _isBusy = false;
@@ -448,6 +448,31 @@ namespace OpenStationFlasher
             _btnMainAction = BuildPrimaryButton();
             _btnMainAction.Margin = new Thickness(0, 22, 0, 0);
             centerStack.Children.Add(_btnMainAction);
+
+            var checkPassButton = new Button
+            {
+                Content = new TextBlock { Text = "Проверить пароль загрузчика", Foreground = new SolidColorBrush(Color.FromRgb(220, 215, 242)), FontSize = 12, FontWeight = FontWeights.SemiBold },
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 8, 0, 0),
+                Cursor = Cursors.Hand,
+                ToolTip = "Откроется встроенная утилита checkpass; результат показан в её окне."
+            };
+            var checkTpl = new ControlTemplate(typeof(Button));
+            var checkBorder = new FrameworkElementFactory(typeof(Border));
+            checkBorder.Name = "checkBorder";
+            checkBorder.SetValue(Border.CornerRadiusProperty, new CornerRadius(10));
+            checkBorder.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(36, 30, 65)));
+            checkBorder.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(85, 71, 128)));
+            checkBorder.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+            checkBorder.SetValue(Border.PaddingProperty, new Thickness(16, 7, 16, 7));
+            checkBorder.AppendChild(new FrameworkElementFactory(typeof(ContentPresenter)));
+            checkTpl.VisualTree = checkBorder;
+            var checkHover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+            checkHover.Setters.Add(new Setter(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(57, 46, 95)), "checkBorder"));
+            checkTpl.Triggers.Add(checkHover);
+            checkPassButton.Template = checkTpl;
+            checkPassButton.Click += OnCheckPassClick;
+            centerStack.Children.Add(checkPassButton);
 
             centerStack.Children.Add(new TextBlock
             {
@@ -827,6 +852,36 @@ namespace OpenStationFlasher
             }
 
             _pillRomVal.Text = s.LocalRomVer;
+        }
+
+        private async void OnCheckPassClick(object sender, RoutedEventArgs e)
+        {
+            if (_isBusy) return;
+            _isBusy = true;
+            _btnMainAction.IsEnabled = false;
+            ((Button)sender).IsEnabled = false;
+            try
+            {
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenStation");
+                Directory.CreateDirectory(folder);
+                string exe = Path.Combine(folder, "checkpass.exe");
+                using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("CheckPass"))
+                {
+                    if (source == null) throw new Exception("Утилита checkpass не встроена в установщик.");
+                    using (var dest = new FileStream(exe, FileMode.Create, FileAccess.Write, FileShare.None)) source.CopyTo(dest);
+                }
+                AppendLog("Открыта проверка загрузчика. Результат смотрите в окне checkpass.");
+                await Task.Run(() => {
+                    using (var process = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = folder, UseShellExecute = true }))
+                    {
+                        if (process == null) throw new Exception("Не удалось открыть checkpass.");
+                        process.WaitForExit();
+                    }
+                });
+                AppendLog("Проверка закрыта. Установщик не определяет результат автоматически.");
+            }
+            catch (Exception ex) { AppendLog("Не удалось запустить checkpass: " + ex.Message); ToggleLogDrawer(true); }
+            finally { _isBusy = false; _btnMainAction.IsEnabled = true; ((Button)sender).IsEnabled = true; }
         }
 
         private async void OnPrimaryActionClick(object sender, RoutedEventArgs e)

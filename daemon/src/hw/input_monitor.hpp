@@ -5,6 +5,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "hw/remote_keys.hpp"
 
 namespace openstation {
 
@@ -18,7 +19,8 @@ enum class HwEventType {
     JackUnplugged,
     BluetoothToggle,
     HomePress,
-    RemoteAssistant
+    RemoteAssistant,
+    RemoteAssistantLong
 };
 
 class InputMonitor {
@@ -40,6 +42,7 @@ private:
         DevRole role;
         std::string name;
         std::string path;
+        RemoteAssistantPress assistant_press;
     };
 
     void scan_devices();

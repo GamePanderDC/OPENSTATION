@@ -98,7 +98,7 @@ void InputMonitor::scan_devices() {
 
         if (match) {
             LOGI("InputMonitor", "Watching %s (%s, role=%d)", path.c_str(), sname.c_str(), static_cast<int>(role));
-            fds_.push_back(WatchedFd{fd, role, sname, path});
+            fds_.push_back(WatchedFd{fd, role, sname, path, {}});
         } else {
             ::close(fd);
         }
@@ -183,8 +183,6 @@ void InputMonitor::poll_loop() {
             usleep(50000);
             continue;
         }
-        if (ret == 0) continue;
-
         bool removed_any = false;
         for (size_t i = 0; i < pfds.size(); ++i) {
             short evm = pfds[i].revents;
@@ -260,11 +258,12 @@ void InputMonitor::poll_loop() {
                     hp_plugged_.store(plugged);
                     LOGI("InputMonitor", "3.5mm jack state -> %s", plugged ? "plugged" : "unplugged");
                     if (cb_) cb_(plugged ? HwEventType::JackPlugged : HwEventType::JackUnplugged);
-                } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY && ev.value == 1) {
+                } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY) {
                     if (is_remote_assistant_key(fds_[i].name, ev.code)) {
-                        LOGI("InputMonitor", "Yandex remote assistant key: %d", ev.code);
-                        if (cb_) cb_(HwEventType::RemoteAssistant);
-                    } else if (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377) {
+                        const auto gesture = fds_[i].assistant_press.event(ev.value, clock::now());
+                        if (gesture == RemoteAssistantGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
+                        if (gesture == RemoteAssistantGesture::Long && cb_) cb_(HwEventType::RemoteAssistantLong);
+                    } else if (ev.value == 1 && (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377)) {
                         auto hnow = clock::now();
                         if (hnow - last_home_press_tp >= std::chrono::milliseconds(350)) {
                             last_home_press_tp = hnow;
@@ -280,6 +279,13 @@ void InputMonitor::poll_loop() {
                 std::remove_if(fds_.begin(), fds_.end(),
                                [](const WatchedFd& w) { return w.fd < 0; }),
                 fds_.end());
+        }
+        for (auto& w : fds_) {
+            if (w.role == DevRole::RemoteControl && w.fd >= 0 &&
+                w.assistant_press.tick(clock::now()) == RemoteAssistantGesture::Long) {
+                LOGI("InputMonitor", "Yandex remote assistant long press");
+                if (cb_) cb_(HwEventType::RemoteAssistantLong);
+            }
         }
     }
 }

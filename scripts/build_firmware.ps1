@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.20",
-    [string]$Changelog = "Обновлён значок музыки в лаунчере; убрано автоматическое окно исправления Wi-Fi и Bluetooth.",
+    [string]$Version = "1.6.21",
+    [string]$Changelog = "Кнопка выключения ТВ в веб-пульте и переключение трека удержанием кнопки Алисы на пульте.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

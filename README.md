@@ -4,7 +4,7 @@
 >
 > Передача разделов и полный запуск после прошивки этим установщиком пока не проверены на физической станции. USB-команды и запись в память проверялись в исходном PR; автоматическое завершение проверено с имитацией устройства.
 
-> [Инструкция по USB-установке](docs/INSTALLER.md) · [последняя OTA-версия](https://github.com/Olegu621/OPENSTATION/releases/latest).
+> [Инструкция по USB-установке](docs/INSTALLER.md) · [Ручной запуск и службы](docs/MANUAL_START.md) · [последняя OTA-версия](https://github.com/Olegu621/OPENSTATION/releases/latest).
 
 <div align="center">
 
