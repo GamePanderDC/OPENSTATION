@@ -287,6 +287,7 @@ void AssistantManager::set_mic_sensitivity(int sensitivity) {
 void AssistantManager::set_mic_muted(bool muted) {
     mic_muted_.store(muted);
     if (muted) {
+        if (remote_turn_.load() && cb_.stop_remote_capture) cb_.stop_remote_capture();
         {
             std::lock_guard<std::mutex> lk(pre_mu_);
             pre_head_ = 0;
@@ -300,6 +301,7 @@ void AssistantManager::set_mic_muted(bool muted) {
 }
 
 void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms) {
+    if (remote_turn_.load()) return;
     if (!samples || count == 0 || !running_.load() || mic_muted_.load()) {
         return;
     }
@@ -372,6 +374,42 @@ bool AssistantManager::is_active() const {
 bool AssistantManager::trigger_session(const std::string& reason) {
     if (is_active()) return true;
     return start_session_internal(TriggerSource::Manual, "", reason);
+}
+
+bool AssistantManager::begin_remote_turn() {
+    return start_session_internal(TriggerSource::Remote, "", "remote_push_to_talk");
+}
+
+void AssistantManager::feed_remote_audio_16k(const int16_t* samples, size_t count) {
+    if (!samples || !count || !remote_recording_.load() || !running_.load() || mic_muted_.load()) return;
+    std::lock_guard<std::mutex> lk(tx_mu_);
+    if (!remote_recording_.load()) return;
+    const size_t cap = kMaxConnectingPcmSamples;
+    if (count > cap) { samples += count - cap; count = cap; }
+    if (tx_pcm_.size() + count > cap) {
+        const size_t overflow = tx_pcm_.size() + count - cap;
+        tx_pcm_.erase(tx_pcm_.begin(), tx_pcm_.begin() + static_cast<ptrdiff_t>(overflow));
+    }
+    tx_pcm_.insert(tx_pcm_.end(), samples, samples + count);
+    remote_samples_.fetch_add(count, std::memory_order_relaxed);
+    tx_cv_.notify_one();
+}
+
+void AssistantManager::end_remote_turn(bool failed) {
+    if (!remote_turn_.load()) return;
+    failed = failed || remote_samples_.load(std::memory_order_relaxed) == 0;
+    {
+        std::lock_guard<std::mutex> lk(tx_mu_);
+        remote_recording_.store(false);
+        remote_end_pending_.store(!failed);
+    }
+    if (failed) {
+        LOGW("Assistant", "Remote microphone unavailable");
+        set_error("Микрофон пульта недоступен или не передал звук", false);
+        if (cb_.show_screen_text) cb_.show_screen_text("НЕТ МИКРОФОНА ПУЛЬТА", 255, 80, 80, 3000);
+        stop_session("remote_microphone_failed");
+    }
+    tx_cv_.notify_all();
 }
 
 bool AssistantManager::toggle_session() {
@@ -474,6 +512,10 @@ bool AssistantManager::start_session_internal(TriggerSource src,
     if (!running_.load()) return false;
     if (announcement && is_active()) return false;
     abort_active_session_locked();
+    remote_end_pending_.store(false);
+    remote_samples_.store(0);
+    remote_turn_.store(src == TriggerSource::Remote);
+    remote_recording_.store(src == TriggerSource::Remote);
     if (announcement) c.follow_up_sec = 0;
 
     wake_word_.set_paused(true);
@@ -623,7 +665,7 @@ std::string AssistantManager::personalize_system_prompt(std::string custom_sp,
     return personalize_assistant_system_prompt(std::move(custom_sp), raw_name, is_male_voice);
 }
 
-json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool announcement) const {
+json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool announcement, bool manual_activity) const {
     using json::Value;
     const bool ext_thinking = false; // gemini-3.8-live is locked for deterministic Live audio stability
     const bool nb = ext_thinking;
@@ -1221,8 +1263,12 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
     }
 
     Value aad = Value::make_obj();
-    aad["silenceDurationMs"] = Value::make_int(std::clamp(c.vad_silence_ms, 300, 3000));
-    aad["prefixPaddingMs"] = Value::make_int(120);
+    if (manual_activity) {
+        aad["disabled"] = Value::make_bool(true);
+    } else {
+        aad["silenceDurationMs"] = Value::make_int(std::clamp(c.vad_silence_ms, 300, 3000));
+        aad["prefixPaddingMs"] = Value::make_int(120);
+    }
     Value ric = Value::make_obj();
     ric["automaticActivityDetection"] = std::move(aad);
     ric["activityHandling"] = Value::make_str("START_OF_ACTIVITY_INTERRUPTS");
@@ -1411,7 +1457,7 @@ void AssistantManager::session_worker(uint64_t sid,
     while (running_.load() && !session_abort_.load()) {
         AssistantConfig eff_cfg = cfg_snap;
         eff_cfg.google_search = cur_google_search;
-        const std::string setup_json_str = build_setup_json(eff_cfg, announcement).dump(-1);
+        const std::string setup_json_str = build_setup_json(eff_cfg, announcement, src == TriggerSource::Remote).dump(-1);
         std::string connect_host = cur_use_proxy ? cfg_snap.gemini_proxy_host : "";
         err.clear();
         if (!ws.connect(kGeminiHost, kGeminiPort, ws_path, kCaBundlePath, err, 8000, connect_host)) {
@@ -1499,6 +1545,17 @@ void AssistantManager::session_worker(uint64_t sid,
 
             if (msg.get("setupComplete")) {
                 setup_complete = true;
+                if (src == TriggerSource::Remote) {
+                    using json::Value;
+                    Value ri = Value::make_obj();
+                    ri["activityStart"] = Value::make_obj();
+                    Value start = Value::make_obj();
+                    start["realtimeInput"] = std::move(ri);
+                    if (!ws.send_text(start.dump(-1))) {
+                        set_error("Ошибка начала записи с пульта", false);
+                        return false;
+                    }
+                }
                 use_proxy_host_.store(cur_use_proxy);
                 had_interaction = (src == TriggerSource::Text) || !pending_voice_greeting.empty();
                 listen_idle_since = std::chrono::steady_clock::now();
@@ -1858,6 +1915,25 @@ void AssistantManager::session_worker(uint64_t sid,
                     }
                     if (fatal_error) break;
                 }
+                bool send_remote_end = false;
+                {
+                    std::lock_guard<std::mutex> lk(tx_mu_);
+                    if (tx_pcm_.empty() && remote_end_pending_.exchange(false)) send_remote_end = true;
+                }
+                if (send_remote_end) {
+                    using json::Value;
+                    Value ri = Value::make_obj();
+                    ri["activityEnd"] = Value::make_obj();
+                    Value msg = Value::make_obj();
+                    msg["realtimeInput"] = std::move(ri);
+                    if (!ws.send_text(msg.dump(-1))) {
+                        set_error("Ошибка завершения записи с пульта", false);
+                        fatal_error = true;
+                        break;
+                    }
+                    stop_after_turn = true;
+                    set_state(AssistantState::Thinking);
+                }
             }
 
             // 4. Transition Speaking -> Listening / End once speaker finishes playing
@@ -1882,7 +1958,7 @@ void AssistantManager::session_worker(uint64_t sid,
                     initial_speech_ms = last_speech_ms_.load();
                     listen_idle_since = now;
                 }
-                if (listening_deadline_expired(now - listen_idle_since, now - listen_unconfirmed_since,
+                if (!remote_recording_.load() && listening_deadline_expired(now - listen_idle_since, now - listen_unconfirmed_since,
                                                cfg_snap.follow_up_sec, had_interaction)) {
                     LOGI("Assistant", "Listening timeout (idle=%llds, unconfirmed=%llds), closing session",
                          static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - listen_idle_since).count()),
@@ -1952,6 +2028,10 @@ void AssistantManager::session_worker(uint64_t sid,
     ws.close();
     cleanup_watcher();
 
+    remote_recording_.store(false);
+    remote_end_pending_.store(false);
+    remote_turn_.store(false);
+
     if (!fatal_error) {
         set_state(AssistantState::Idle);
     }
@@ -1968,6 +2048,10 @@ json::Value AssistantManager::get_status_json() {
     obj["state"] = Value::make_str(state_str(state_.load()));
     obj["active"] = Value::make_bool(is_active());
     obj["micMuted"] = Value::make_bool(mic_muted_.load());
+    Value remote_mic = Value::make_obj();
+    remote_mic["recording"] = Value::make_bool(remote_recording_.load());
+    remote_mic["samples"] = Value::make_int(static_cast<int64_t>(remote_samples_.load()));
+    obj["remoteMic"] = std::move(remote_mic);
     obj["sessionsCount"] = Value::make_int(static_cast<int64_t>(sessions_count_.load()));
     obj["wakeWord"] = wake_word_.get_status_json();
 

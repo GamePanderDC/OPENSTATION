@@ -168,6 +168,8 @@
       if ($("rotaryStep")) inp.rotaryStep = parseInt($("rotaryStep").value, 10) || 1;
       if ($("actShort")) inp.actionShort = $("actShort").value;
       if ($("actLong")) inp.actionLong = $("actLong").value;
+      if ($("remoteShort")) inp.remoteShort = $("remoteShort").value;
+      if ($("remoteLong")) inp.remoteLong = $("remoteLong").value;
       payload.input = inp;
     }
 
@@ -885,6 +887,8 @@
 
       if ($("actShort")) $("actShort").value = cfg.input?.actionShort || "assistant";
       if ($("actLong")) $("actLong").value = cfg.input?.actionLong || "led_cycle";
+      if ($("remoteShort")) $("remoteShort").value = cfg.input?.remoteShort || "assistant";
+      if ($("remoteLong")) $("remoteLong").value = cfg.input?.remoteLong || "next";
       if ($("rotaryInvert")) $("rotaryInvert").checked = !!cfg.input?.rotaryInvert;
       if ($("rotaryStep")) $("rotaryStep").value = cfg.input?.rotaryStep ?? 1;
       if ($("devHost")) $("devHost").value = cfg.deviceHostname || "station-max";
@@ -1318,7 +1322,7 @@
   [
     "ringColor", "ringSecColor", "ringAutoBrightness",
     "scrMode", "scrText", "scrColor", "scrAutoBri", "clockStyle", "visualizerStyle", "autoMusicVisualizer",
-    "eqPreset", "actShort", "actLong", "rotaryInvert", "rotaryStep", "locCity",
+    "eqPreset", "actShort", "actLong", "remoteShort", "remoteLong", "rotaryInvert", "rotaryStep", "locCity",
     "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
     "astPrompt", "astWakeEn", "astChime", "astSearch", "astEchoGuard",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"

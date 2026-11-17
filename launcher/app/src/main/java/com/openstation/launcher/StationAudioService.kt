@@ -111,6 +111,7 @@ class StationAudioService : Service() {
     private var volumeOverlayManager: VolumeOverlayManager? = null
     var bleRemoteManager: BleRemoteManager? = null
         private set
+    private var remoteVoiceCapture: RemoteVoiceCapture? = null
     @Volatile
     private var lastBtEventMs = 0L
     @Volatile
@@ -218,6 +219,7 @@ class StationAudioService : Service() {
         }
         volumeOverlayManager = VolumeOverlayManager(this).apply { start() }
         bleRemoteManager = BleRemoteManager(this)
+        remoteVoiceCapture = RemoteVoiceCapture(this) { bleRemoteManager?.findTargetDevice() }
         bleRemoteManager?.startReconnect()
         startForegroundNotification()
         running = true
@@ -286,6 +288,8 @@ class StationAudioService : Service() {
         overlayManager = null
         try { volumeOverlayManager?.stop() } catch (_: Throwable) {}
         volumeOverlayManager = null
+        try { remoteVoiceCapture?.close() } catch (_: Throwable) {}
+        remoteVoiceCapture = null
         try { bleRemoteManager?.release() } catch (_: Throwable) {}
         bleRemoteManager = null
         try { unregisterReceiver(volumeReceiver) } catch (_: Throwable) {}
@@ -452,6 +456,8 @@ class StationAudioService : Service() {
         try {
             val obj = JSONObject(raw)
             when (obj.optString("cmd")) {
+                "remote_voice_start" -> remoteVoiceCapture?.start()
+                "remote_voice_stop" -> remoteVoiceCapture?.stop()
                 "eq" -> {
                     val preset = obj.optString("preset", "balanced")
                     val bb = obj.optInt("bassBoost", 20)

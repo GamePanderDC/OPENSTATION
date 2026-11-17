@@ -940,19 +940,9 @@ class MainActivity : Activity() {
             textSize = 11f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(12), dp(5), dp(12), dp(5))
-            LiquidGlassKit.applyGlass(
-                this,
-                radiusDp = 999f,
-                baseTint = Color.parseColor("#2A080D18"),
-                focusTint = Color.parseColor("#58172338"),
-                normalStroke = Color.parseColor("#14FFFFFF"),
-                focusStroke = Color.parseColor("#8C7DB8D6"),
-                refractStrength = 0.8f
-            )
-            isFocusable = true
-            isClickable = true
-            setOnClickListener { setPage(2, animate = true) }
+            setPadding(0, dp(5), 0, dp(5))
+            isFocusable = false
+            isClickable = false
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,

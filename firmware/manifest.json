@@ -1,15 +1,15 @@
 {
     "name":  "OpenStation Max",
     "device":  "yandexstation_2",
-    "version":  "1.6.21",
+    "version":  "1.6.22",
     "autonomous":  true,
-    "changelog":  "Кнопка выключения ТВ в веб-пульте и переключение трека удержанием кнопки Алисы на пульте.",
-    "buildTimeUtc":  "2026-11-17T02:11:30Z",
+    "changelog":  "Рация с микрофоном пульта, настройка кнопок и переключение трека; индикатор громкости больше не выделяется.",
+    "buildTimeUtc":  "2026-11-17T02:48:55Z",
     "files":  {
                   "daemon":  {
                                  "fileName":  "openstationd",
-                                 "size":  3165296,
-                                 "sha256":  "11d813575803c5185de30f66472f78678edfd8b464c0a7ae0c12a152ef6375d4"
+                                 "size":  3180928,
+                                 "sha256":  "ef0bcfba84a84f5a84f4ade645a3374c6adde6d4ff582fcafc505401c3a4e907"
                              },
                   "bootlogod":  {
                                     "fileName":  "bootlogod",
@@ -18,8 +18,8 @@
                                 },
                   "launcher":  {
                                    "fileName":  "OpenStationLauncher.apk",
-                                   "size":  28416099,
-                                   "sha256":  "6772c216077ad4f259f38d8ffb702b705c09df97bcfa756e2074e509d9883fcd"
+                                   "size":  28420415,
+                                   "sha256":  "afdf6e91b5edf25a96990fbdea47755df804eda333de870f88e8b5457e0c98ee"
                                },
                   "ime":  {
                               "fileName":  "OpenStationIME.apk",

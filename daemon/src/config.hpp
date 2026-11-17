@@ -100,8 +100,10 @@ struct LocationConfig {
 struct InputConfig {
     bool rotary_invert = false;
     int rotary_step = 1;                  // volume steps per detent
-    std::string action_short = "assistant"; // assistant, wyoming, play_pause, led_cycle, launcher, none
+    std::string action_short = "assistant"; // assistant, wyoming, play_pause, next, led_cycle, launcher, none
     std::string action_long = "led_cycle";
+    std::string remote_short = "assistant"; // assistant, play_pause, next, none
+    std::string remote_long = "next"; // next, push_to_talk, none
 };
 
 struct AssistantConfig {

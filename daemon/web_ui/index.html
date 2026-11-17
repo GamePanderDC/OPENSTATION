@@ -987,6 +987,7 @@
                         <option value="assistant">Запустить Алису</option>
                         <option value="wyoming">Home Assistant (Wyoming)</option>
                         <option value="play_pause">Пауза / Воспроизведение</option>
+                        <option value="next">Следующий трек</option>
                         <option value="led_cycle">Сменить подсветку</option>
                         <option value="launcher">Домой (ТВ-экран)</option>
                         <option value="none">Ничего</option>
@@ -999,11 +1000,32 @@
                         <option value="assistant">Запустить Алису</option>
                         <option value="wyoming">Home Assistant (Wyoming)</option>
                         <option value="play_pause">Пауза / Воспроизведение</option>
+                        <option value="next">Следующий трек</option>
                         <option value="launcher">Домой (ТВ-экран)</option>
                         <option value="none">Ничего</option>
                       </select>
                     </div>
                   </div>
+                  <div class="grid-2-tight">
+                    <div class="form-row">
+                    <label for="remoteShort">Короткое нажатие на пульте</label>
+                    <select id="remoteShort">
+                      <option value="assistant">Включить / выключить Алису</option>
+                      <option value="play_pause">Пауза / Воспроизведение</option>
+                      <option value="next">Следующий трек</option>
+                      <option value="none">Ничего</option>
+                    </select>
+                    </div>
+                    <div class="form-row">
+                    <label for="remoteLong">Удержание кнопки Алисы на пульте</label>
+                    <select id="remoteLong">
+                      <option value="next">Следующий трек</option>
+                      <option value="push_to_talk">Рация — говорить, пока кнопка удерживается</option>
+                      <option value="none">Ничего</option>
+                    </select>
+                    </div>
+                  </div>
+                  <p class="hint">В режиме рации кнопка записывает голос, пока её держат; короткое нажатие отдельно не выполняется. Требуются совместимый пульт и режим Gemini.</p>
                   <div class="grid-2-tight">
                     <div class="form-row toggle-row">
                       <label>Инвертировать кольцо громкости</label>

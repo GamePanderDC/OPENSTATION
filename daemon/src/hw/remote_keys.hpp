@@ -31,6 +31,8 @@ public:
         }
         return RemoteAssistantGesture::None;
     }
+    bool long_active() const { return down_ && long_fired_; }
+    bool pressed() const { return down_; }
 private:
     bool down_ = false;
     bool long_fired_ = false;

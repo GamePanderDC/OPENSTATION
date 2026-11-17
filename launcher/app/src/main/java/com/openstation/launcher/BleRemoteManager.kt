@@ -189,7 +189,7 @@ class BleRemoteManager(private val context: Context) {
         }
     }
 
-    private fun findTargetDevice(): BluetoothDevice? {
+    fun findTargetDevice(): BluetoothDevice? {
         val bm = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = bm?.adapter ?: BluetoothAdapter.getDefaultAdapter() ?: return null
         val savedMac = prefs.getString(KEY_REMOTE_MAC, "") ?: ""

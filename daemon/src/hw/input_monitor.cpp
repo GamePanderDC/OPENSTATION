@@ -187,6 +187,7 @@ void InputMonitor::poll_loop() {
         for (size_t i = 0; i < pfds.size(); ++i) {
             short evm = pfds[i].revents;
             if (evm & (POLLERR | POLLHUP | POLLNVAL)) {
+                if (fds_[i].assistant_press.pressed() && cb_) cb_(HwEventType::RemoteAssistantRelease);
                 LOGW("InputMonitor", "Closing dead input fd %s (%s)",
                      fds_[i].path.c_str(), fds_[i].name.c_str());
                 ::close(fds_[i].fd);
@@ -199,6 +200,7 @@ void InputMonitor::poll_loop() {
             while (true) {
                 ssize_t nr = read(fds_[i].fd, &ev, sizeof(ev));
                 if (nr == 0) {
+                    if (fds_[i].assistant_press.pressed() && cb_) cb_(HwEventType::RemoteAssistantRelease);
                     LOGW("InputMonitor", "EOF on input %s", fds_[i].path.c_str());
                     ::close(fds_[i].fd);
                     fds_[i].fd = -1;
@@ -208,6 +210,7 @@ void InputMonitor::poll_loop() {
                 if (nr < 0) {
                     if (errno == EINTR) continue;
                     if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    if (fds_[i].assistant_press.pressed() && cb_) cb_(HwEventType::RemoteAssistantRelease);
                     LOGW("InputMonitor", "Read error on %s: %s", fds_[i].path.c_str(), strerror(errno));
                     ::close(fds_[i].fd);
                     fds_[i].fd = -1;
@@ -260,9 +263,18 @@ void InputMonitor::poll_loop() {
                     if (cb_) cb_(plugged ? HwEventType::JackPlugged : HwEventType::JackUnplugged);
                 } else if (fds_[i].role == DevRole::RemoteControl && ev.type == EV_KEY) {
                     if (is_remote_assistant_key(fds_[i].name, ev.code)) {
+                        const bool was_down = fds_[i].assistant_press.pressed();
                         const auto gesture = fds_[i].assistant_press.event(ev.value, clock::now());
+                        if (ev.value == 1 && !was_down && cb_) {
+                            LOGI("InputMonitor", "Remote assistant key down");
+                            cb_(HwEventType::RemoteAssistantDown);
+                        }
                         if (gesture == RemoteAssistantGesture::Short && cb_) cb_(HwEventType::RemoteAssistant);
                         if (gesture == RemoteAssistantGesture::Long && cb_) cb_(HwEventType::RemoteAssistantLong);
+                        if (ev.value == 0 && was_down && cb_) {
+                            LOGI("InputMonitor", "Remote assistant key up");
+                            cb_(HwEventType::RemoteAssistantRelease);
+                        }
                     } else if (ev.value == 1 && (ev.code == 172 || ev.code == 102 || ev.code == 174 || ev.code == 171 || ev.code == 377)) {
                         auto hnow = clock::now();
                         if (hnow - last_home_press_tp >= std::chrono::milliseconds(350)) {

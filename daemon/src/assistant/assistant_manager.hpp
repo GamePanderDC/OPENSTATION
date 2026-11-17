@@ -30,6 +30,7 @@ enum class AssistantState {
 struct AssistantCallbacks {
     std::function<void(const int16_t* samples, size_t frames, int rate, int channels)> play_pcm;
     std::function<void()> clear_playback;
+    std::function<void()> stop_remote_capture;
     std::function<bool()> is_playback_or_tail_active;
     std::function<void()> play_wake_chime;
     std::function<void()> play_error_chime;
@@ -64,6 +65,9 @@ public:
 
     bool trigger_session(const std::string& reason = "manual");
     bool toggle_session();
+    bool begin_remote_turn();
+    void feed_remote_audio_16k(const int16_t* samples, size_t count);
+    void end_remote_turn(bool failed = false);
     void stop_session(const std::string& reason = "stop");
     bool send_text_prompt(const std::string& text);
     bool announce_update(const std::string& text);
@@ -80,7 +84,7 @@ public:
     json::Value get_status_json();
 
 private:
-    enum class TriggerSource { WakeWord, Manual, Text };
+    enum class TriggerSource { WakeWord, Manual, Remote, Text };
 
     bool start_session_internal(TriggerSource src,
                                 const std::string& initial_text,
@@ -97,7 +101,7 @@ private:
     void emit_event(const std::string& kind, const std::string& role = "", const std::string& text = "");
     void set_error(const std::string& msg, bool play_chime = true);
 
-    json::Value build_setup_json(const AssistantConfig& c, bool announcement = false) const;
+    json::Value build_setup_json(const AssistantConfig& c, bool announcement = false, bool manual_activity = false) const;
     static WakeWordSettings to_ww_settings(const AssistantConfig& c, int mic_sensitivity);
 
     AssistantConfig cfg_;
@@ -123,6 +127,10 @@ private:
     std::deque<std::string> tx_texts_;
     std::atomic<float> last_mic_rms_{0.0f};
     std::atomic<int64_t> last_speech_ms_{0};
+    std::atomic<bool> remote_turn_{false};
+    std::atomic<bool> remote_recording_{false};
+    std::atomic<bool> remote_end_pending_{false};
+    std::atomic<uint64_t> remote_samples_{0};
 
     // Session thread management
     std::mutex session_ctrl_mu_;

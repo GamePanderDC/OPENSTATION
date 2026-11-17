@@ -220,11 +220,17 @@ void DaemonConfig::sanitize_and_validate() {
     audio.hardware_eq_subsonic = std::clamp(audio.hardware_eq_subsonic, 35, 80);
 
     input.rotary_step = std::clamp(input.rotary_step, 1, 5);
-    if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
+    if (!is_one_of(input.action_short, {"assistant", "wyoming", "play_pause", "next", "led_cycle", "launcher", "none"})) {
         input.action_short = "assistant";
     }
-    if (!is_one_of(input.action_long, {"assistant", "wyoming", "play_pause", "led_cycle", "launcher", "none"})) {
+    if (!is_one_of(input.action_long, {"assistant", "wyoming", "play_pause", "next", "led_cycle", "launcher", "none"})) {
         input.action_long = "led_cycle";
+    }
+    if (!is_one_of(input.remote_short, {"assistant", "play_pause", "next", "none"})) {
+        input.remote_short = "assistant";
+    }
+    if (!is_one_of(input.remote_long, {"next", "push_to_talk", "none"})) {
+        input.remote_long = "next";
     }
 
     if (!is_one_of(assistant.mode, {"gemini", "wyoming", "off"})) {
@@ -455,6 +461,8 @@ json::Value DaemonConfig::to_json() const {
     in["rotaryStep"] = Value::make_int(input.rotary_step);
     in["actionShort"] = Value::make_str(input.action_short);
     in["actionLong"] = Value::make_str(input.action_long);
+    in["remoteShort"] = Value::make_str(input.remote_short);
+    in["remoteLong"] = Value::make_str(input.remote_long);
     root["input"] = std::move(in);
 
     Value ast = Value::make_obj();
@@ -654,6 +662,8 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = in->get("rotaryStep"); x && x->is_num()) input.rotary_step = x->as_int();
         if (auto* x = in->get("actionShort"); x && x->is_str()) input.action_short = x->as_str();
         if (auto* x = in->get("actionLong"); x && x->is_str()) input.action_long = x->as_str();
+        if (auto* x = in->get("remoteShort"); x && x->is_str()) input.remote_short = x->as_str();
+        if (auto* x = in->get("remoteLong"); x && x->is_str()) input.remote_long = x->as_str();
     }
 
     if (auto* ast = v.get("assistant"); ast && ast->is_obj()) {

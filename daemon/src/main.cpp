@@ -52,7 +52,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.21";
+constexpr const char* kFirmwareVersion = "1.6.22";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1851,6 +1851,63 @@ int main(int argc, char** argv) {
         return clamped;
     };
 
+    std::atomic<bool> remote_voice_available{false};
+    std::atomic<int64_t> remote_voice_stop_deadline{0};
+    std::thread remote_voice_thread([&]() {
+        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(8092);
+        if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            LOGW("RemoteVoice", "Cannot bind local audio receiver: %s", strerror(errno));
+            ::close(fd);
+            return;
+        }
+        remote_voice_available.store(true);
+        while (!g_stop.load()) {
+            const int64_t deadline = remote_voice_stop_deadline.load();
+            if (deadline > 0 && steady_ms_now() >= deadline) {
+                remote_voice_stop_deadline.store(0);
+                assistant.end_remote_turn(true);
+            }
+            pollfd pfd{fd, POLLIN, 0};
+            if (poll(&pfd, 1, 250) <= 0 || !(pfd.revents & POLLIN)) continue;
+            unsigned char buf[4096];
+            const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n == 3 && memcmp(buf, "END", 3) == 0) { remote_voice_stop_deadline.store(0); assistant.end_remote_turn(); }
+            else if (n == 3 && memcmp(buf, "ERR", 3) == 0) { remote_voice_stop_deadline.store(0); assistant.end_remote_turn(true); }
+            else if (n > 4 && n < 40 && memcmp(buf, "STS:", 4) == 0) {
+                std::string status(reinterpret_cast<char*>(buf + 4), static_cast<size_t>(n - 4));
+                if (std::all_of(status.begin(), status.end(), [](unsigned char c) { return std::islower(c) || c == '_'; }))
+                    LOGI("RemoteVoice", "State %s", status.c_str());
+            }
+            else if (n > 4 && (n - 4) % 2 == 0 && memcmp(buf, "PCM:", 4) == 0) {
+                std::vector<int16_t> samples(static_cast<size_t>((n - 4) / 2));
+                memcpy(samples.data(), buf + 4, static_cast<size_t>(n - 4));
+                assistant.feed_remote_audio_16k(samples.data(), samples.size());
+            }
+        }
+        remote_voice_available.store(false);
+        ::close(fd);
+    });
+    std::atomic<bool> remote_voice_held{false};
+    auto next_track = [&]() {
+        bool ym_playing;
+        {
+            std::lock_guard<std::mutex> lk(music_mu);
+            ym_playing = music_state.playing && !music_state.paused;
+        }
+        if (ym_playing && is_udp_port_bound(8086)) {
+            json::Value mcmd = json::Value::make_obj();
+            mcmd["cmd"] = json::Value::make_str("music_action");
+            mcmd["action"] = json::Value::make_str("NEXT");
+            send_udp_json(8086, mcmd.dump(-1));
+        } else {
+            uinput.send_android_action("next");
+        }
+    };
     inputs.start([&](HwEventType ev) {
         DaemonConfig c;
         {
@@ -1937,6 +1994,8 @@ int main(int argc, char** argv) {
                         uinput.send_android_action("play_pause");
                     }
                     leds.trigger_flash(0, 212, 255, 250);
+                } else if (act == "next") {
+                    next_track();
                 } else if (act == "led_cycle") {
                     static const char* kModes[] = {"rainbow", "solid", "breathe", "spinner", "music", "off"};
                     DaemonConfig next_c;
@@ -1962,28 +2021,51 @@ int main(int argc, char** argv) {
                 leds.trigger_flash(0, 212, 255, 220);
                 break;
             }
+            case HwEventType::RemoteAssistantDown: {
+                if (c.input.remote_long == "push_to_talk" && !remote_voice_held.load()) {
+                    if (c.assistant.enabled && c.assistant.mode == "gemini" && remote_voice_available.load() &&
+                        ensure_launcher_service_udp(8086) && assistant.begin_remote_turn()) {
+                        json::Value cmd = json::Value::make_obj();
+                        cmd["cmd"] = json::Value::make_str("remote_voice_start");
+                        if (send_udp_json(8086, cmd.dump(-1))) { remote_voice_stop_deadline.store(0); remote_voice_held.store(true); }
+                        else assistant.end_remote_turn(true);
+                    } else {
+                        leds.trigger_screen_text("ПУЛЬТ: НЕТ МИКРОФОНА", 255, 80, 80, 3000);
+                    }
+                }
+                break;
+            }
             case HwEventType::RemoteAssistant: {
-                if (c.assistant.enabled && c.assistant.mode == "gemini") {
+                if (c.input.remote_long == "push_to_talk" || remote_voice_held.load()) break;
+                if (c.input.remote_short == "next") {
+                    next_track();
+                } else if (c.input.remote_short == "play_pause") {
+                    if (is_udp_port_bound(8086)) {
+                        json::Value cmd = json::Value::make_obj();
+                        cmd["cmd"] = json::Value::make_str("music_action");
+                        cmd["action"] = json::Value::make_str("PLAY_PAUSE");
+                        send_udp_json(8086, cmd.dump(-1));
+                    } else uinput.send_android_action("play_pause");
+                } else if (c.input.remote_short == "assistant" && c.assistant.enabled && c.assistant.mode == "gemini") {
                     assistant.toggle_session();
-                } else if (c.wyoming.enabled) {
+                } else if (c.input.remote_short == "assistant" && c.wyoming.enabled) {
                     if (wyoming.is_streaming()) wyoming.stop_session();
                     else wyoming.trigger_button_session(6000);
                 }
                 break;
             }
             case HwEventType::RemoteAssistantLong: {
-                bool ym_playing;
-                {
-                    std::lock_guard<std::mutex> lk(music_mu);
-                    ym_playing = music_state.playing && !music_state.paused;
+                if (c.input.remote_long == "next") {
+                    next_track();
                 }
-                if (ym_playing && is_udp_port_bound(8086)) {
-                    json::Value mcmd = json::Value::make_obj();
-                    mcmd["cmd"] = json::Value::make_str("music_action");
-                    mcmd["action"] = json::Value::make_str("NEXT");
-                    send_udp_json(8086, mcmd.dump(-1));
-                } else {
-                    uinput.send_android_action("next");
+                break;
+            }
+            case HwEventType::RemoteAssistantRelease: {
+                if (remote_voice_held.exchange(false)) {
+                    remote_voice_stop_deadline.store(steady_ms_now() + 1500);
+                    json::Value cmd = json::Value::make_obj();
+                    cmd["cmd"] = json::Value::make_str("remote_voice_stop");
+                    if (!send_udp_json(8086, cmd.dump(-1))) assistant.end_remote_turn(true);
                 }
                 break;
             }
@@ -2404,6 +2486,11 @@ int main(int argc, char** argv) {
     };
 
     AssistantCallbacks acb;
+    acb.stop_remote_capture = [&]() {
+        json::Value cmd = json::Value::make_obj();
+        cmd["cmd"] = json::Value::make_str("remote_voice_stop");
+        send_udp_json(8086, cmd.dump(-1));
+    };
     acb.play_pcm = [&](const int16_t* samples, size_t frames, int rate, int ch) {
         audio.play_pcm(samples, frames, rate, ch);
     };
@@ -6084,6 +6171,7 @@ int main(int argc, char** argv) {
     mqtt.stop();
     adb_mgr.stop();
     mdns.stop();
+    if (remote_voice_thread.joinable()) remote_voice_thread.join();
     assistant.stop();
     wyoming.stop();
     audio.stop();
