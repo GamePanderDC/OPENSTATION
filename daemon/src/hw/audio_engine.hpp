@@ -20,7 +20,7 @@ namespace openstation {
 
 class AudioEngine {
 public:
-    using Pcm16kCallback = std::function<void(const int16_t* samples, size_t count, float rms)>;
+    using Pcm16kCallback = std::function<void(const int16_t* samples, size_t count, float rms, bool vqe_input)>;
     using WsAudioCallback = std::function<void(const int16_t* samples, size_t count)>;
     using SpectrumCallback = std::function<void(const std::array<float, 24>& bands)>;
     using SpectrumNeededCallback = std::function<bool()>;
@@ -71,7 +71,8 @@ private:
     void run_alsa_capture_session(int retry_after_seconds);
     bool input_retry_allowed() const;
     void playback_loop();
-    void process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate);
+    void process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate,
+                       bool vqe_input);
 
     AudioConfig cfg_;
     mutable std::mutex cfg_mu_;

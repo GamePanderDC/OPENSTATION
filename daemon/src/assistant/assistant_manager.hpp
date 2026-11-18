@@ -64,7 +64,7 @@ public:
     void set_mic_muted(bool muted);
     void set_mic_sensitivity(int sensitivity);
 
-    void feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms);
+    void feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms, bool vqe_input = false);
 
     bool trigger_session(const std::string& reason = "manual");
     bool toggle_session();
@@ -91,7 +91,8 @@ private:
 
     bool start_session_internal(TriggerSource src,
                                 const std::string& initial_text,
-                                const std::string& wake_kw);
+                                const std::string& wake_kw,
+                                uint64_t interrupted_session = 0);
     void session_worker(uint64_t sid,
                         TriggerSource src,
                         std::string initial_text,
@@ -125,7 +126,7 @@ private:
     std::atomic<bool> mic_muted_{false};
     std::atomic<AssistantState> state_{AssistantState::Idle};
 
-    // Circular pre-roll PCM buffer (16 kHz mono) maintained while Idle
+    // Circular pre-roll PCM buffer (16 kHz mono) for wake and interruption.
     std::mutex pre_mu_;
     std::vector<int16_t> pre_ring_;
     size_t pre_head_ = 0;

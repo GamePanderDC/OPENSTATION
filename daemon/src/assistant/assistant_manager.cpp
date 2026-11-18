@@ -228,11 +228,14 @@ bool AssistantManager::start(const AssistantConfig& cfg, AssistantCallbacks cb) 
         }
         if (!c.enabled || c.mode != "gemini" || !c.wake_word_enabled) return;
 
-        if (is_active()) {
-            LOGI("Assistant", "Wake word '%s' ignored (session already active)", kw.c_str());
-            return;
+        const auto st = state_.load();
+        if (st == AssistantState::Speaking) {
+            if (steady_now_ms() - last_speech_ms_.load() <= 800) {
+                start_session_internal(TriggerSource::WakeWord, "", kw, session_seq_.load());
+            }
+        } else if (st == AssistantState::Idle || st == AssistantState::Error) {
+            start_session_internal(TriggerSource::WakeWord, "", kw);
         }
-        start_session_internal(TriggerSource::WakeWord, "", kw);
     }, [this](const std::vector<int16_t>& pcm) {
         if (!cb_.quick_command || !local_asr_ready_ || !running_ || mic_muted_ || is_active() ||
             steady_now_ms() < wake_suppress_until_ms_ ||
@@ -364,7 +367,8 @@ void AssistantManager::set_mic_muted(bool muted) {
     }
 }
 
-void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms) {
+void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms,
+                                      bool vqe_input) {
     if (remote_turn_.load()) return;
     if (!samples || count == 0 || !running_.load() || mic_muted_.load()) {
         return;
@@ -384,13 +388,14 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
         last_speech_ms_.store(steady_now_ms());
     }
 
-    AssistantState st = state_.load();
-    if (st == AssistantState::Idle || st == AssistantState::Error) {
-        // Don't feed TTS tail / speakers test tones into wake word engine or pre-roll
-        if (steady_now_ms() < wake_suppress_until_ms_.load()) return;
-        if (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()) return;
+    const AssistantState st = state_.load();
+    const bool idle = st == AssistantState::Idle || st == AssistantState::Error;
+    const bool wake_during_reply = st == AssistantState::Speaking && vqe_input && c.wake_word_enabled;
+    if (idle || wake_during_reply) {
+        if (idle && (steady_now_ms() < wake_suppress_until_ms_.load() ||
+            (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()))) return;
 
-        // Maintain rolling pre-roll PCM buffer
+        // Keep the words that immediately follow the wake phrase, also during a reply.
         size_t max_pre = static_cast<size_t>(std::max(0, c.pre_roll_ms)) * 16U;
         if (max_pre > 0) {
             std::lock_guard<std::mutex> lk(pre_mu_);
@@ -407,12 +412,15 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
         }
 
         if (c.wake_word_enabled || c.quick_commands) {
+            wake_word_.set_paused(false);
             wake_word_.feed_audio_16k(samples, count, noise_rms);
         }
-        return;
+        if (idle) return;
+    } else {
+        wake_word_.set_paused(true);
     }
 
-    // Active session: optionally gate microphone while speaker plays TTS to prevent echo self-interrupt
+    // Echo Guard still keeps the local wake audio out of the outgoing dialogue during TTS.
     if (c.echo_guard && cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()) {
         return;
     }
@@ -551,7 +559,8 @@ bool AssistantManager::announce_update(const std::string& text) {
 
 bool AssistantManager::start_session_internal(TriggerSource src,
                                               const std::string& initial_text,
-                                              const std::string& wake_kw) {
+                                              const std::string& wake_kw,
+                                              uint64_t interrupted_session) {
     if (!running_.load()) return false;
     const bool announcement = src == TriggerSource::Text && wake_kw == "update_announcement";
 
@@ -578,7 +587,16 @@ bool AssistantManager::start_session_internal(TriggerSource src,
     // stop() may have joined the session thread while we waited for the lock; don't spawn an unjoined one.
     if (!running_.load()) return false;
     if (announcement && is_active()) return false;
+    if (interrupted_session != 0) {
+        if (session_seq_.load() != interrupted_session || !is_active() ||
+            mic_muted_.load() || remote_turn_.load()) return false;
+        stop_session("wake_word_interrupt");
+    } else if (src == TriggerSource::WakeWord && is_active()) {
+        return false;
+    }
     abort_active_session_locked();
+    if (interrupted_session != 0 && cb_.clear_playback) cb_.clear_playback();
+
     remote_end_pending_.store(false);
     remote_samples_.store(0);
     remote_turn_.store(src == TriggerSource::Remote);
@@ -598,9 +616,10 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         last_user_text_.clear();
         last_model_text_.clear();
         last_trigger_reason_ =
-            (src == TriggerSource::WakeWord) ? ("wake:" + wake_kw)
-            : (src == TriggerSource::Text)   ? "text"
-                                             : (wake_kw.empty() ? "manual" : wake_kw);
+            interrupted_session != 0       ? ("wake_interrupt:" + wake_kw)
+            : (src == TriggerSource::WakeWord) ? ("wake:" + wake_kw)
+            : (src == TriggerSource::Text)     ? "text"
+                                               : (wake_kw.empty() ? "manual" : wake_kw);
     }
 
     // Prepare initial audio queue
@@ -632,7 +651,7 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         }
     }
 
-    if (src != TriggerSource::Text && c.chime_enabled && cb_.play_wake_chime) {
+    if (src != TriggerSource::Text && interrupted_session == 0 && c.chime_enabled && cb_.play_wake_chime) {
         cb_.play_wake_chime();
     }
 
@@ -1782,7 +1801,7 @@ void AssistantManager::session_worker(uint64_t sid,
                                 if (!silent_turn && rate > 0 && !b64d.empty() && cb_.play_pcm) {
                                     std::vector<uint8_t> pcm_bytes = b64::decode(b64d);
                                     size_t frames = pcm_bytes.size() / 2;
-                                    if (frames > 0) {
+                                    if (frames > 0 && !session_abort_.load()) {
                                         set_state(AssistantState::Speaking);
                                         cb_.play_pcm(reinterpret_cast<const int16_t*>(pcm_bytes.data()), frames, rate, 1);
                                     }

@@ -336,7 +336,8 @@ void AudioEngine::push_external_spectrum(const std::array<float, 24>& bands) {
     if (need) spec_cb_(bands);
 }
 
-void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate) {
+void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate,
+                                bool vqe_input) {
     AudioConfig cfg_copy;
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
@@ -593,7 +594,7 @@ void AudioEngine::process_frame(const int16_t* interleaved, size_t frames, int c
         }
 
         if (pcm_cb_) {
-            pcm_cb_(frame16, 320, rms);
+            pcm_cb_(frame16, 320, rms, vqe_input);
         }
         {
             std::lock_guard<std::mutex> lk(ws_cb_mu_);
@@ -816,7 +817,7 @@ void AudioEngine::run_alsa_capture_session(int retry_after_seconds) {
             break;
         }
         if (xfer.result > 0) {
-            process_frame(buf.data(), static_cast<size_t>(xfer.result), ch, rate);
+            process_frame(buf.data(), static_cast<size_t>(xfer.result), ch, rate, false);
         }
     }
 
@@ -974,7 +975,7 @@ void AudioEngine::capture_loop() {
                 } else {
                     consecutive_zero_chunks = 0;
                 }
-                process_frame(buf.data(), static_cast<size_t>(n), ch, rate);
+                process_frame(buf.data(), static_cast<size_t>(n), ch, rate, preferred_input);
             } else if (n < 0) {
                 LOGW("AudioEngine", "AAudio read disconnected (%d: %s), reopening", n, g_aa.err_str(n));
                 break;

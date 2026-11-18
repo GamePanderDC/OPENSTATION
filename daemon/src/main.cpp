@@ -53,7 +53,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.27";
+constexpr const char* kFirmwareVersion = "1.6.28";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -4155,14 +4155,14 @@ int main(int argc, char** argv) {
 
     audio.start(
         start_cfg.audio,
-        [&](const int16_t* pcm, size_t count, float rms) {
+        [&](const int16_t* pcm, size_t count, float rms, bool vqe_input) {
             DaemonConfig c_snap;
             {
                 std::lock_guard<std::mutex> lk(cfg_mu);
                 c_snap = cfg;
             }
             if (c_snap.assistant.enabled && c_snap.assistant.mode == "gemini") {
-                assistant.feed_audio_16k(pcm, count, rms, audio.processed_noise_level());
+                assistant.feed_audio_16k(pcm, count, rms, audio.processed_noise_level(), vqe_input);
             }
             if (c_snap.wyoming.enabled && (c_snap.assistant.mode == "wyoming" || !c_snap.assistant.enabled)) {
                 wyoming.feed_audio_16k(pcm, count, rms);
