@@ -86,7 +86,11 @@
     document.body.classList.add("tab-" + tabName);
     try { localStorage.setItem("os_tab", tabName); } catch {}
     if (tabName === "home") loadHome();
-    if (tabName === "music") refreshMediaReceivers();
+    if (tabName === "music") {
+      refreshMediaReceivers();
+      syncMusicProvider();
+    }
+    setSpotifyFrameVisibility();
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -3610,7 +3614,6 @@
 
   const mediaReceiverRows = [
     ["airplay", "Airplay", "В AirPlay на устройстве в той же сети выберите «Яндекс станция Макс»."],
-    ["spotify", "Spotify", "В Spotify на устройстве в той же сети выберите «OpenStation Max»."],
   ];
   let mediaReceiverTimer;
   let mediaReceiverRefreshing = false;
@@ -3666,10 +3669,77 @@
     }
   }
 
+  let currentMusicProvider = "yandex";
+  let providerChoice = 0;
+  let providerWrites = Promise.resolve();
+  const spotifyDeepLink = new URLSearchParams(location.search).get("music") === "spotify";
+  let openSpotifyFromLink = spotifyDeepLink;
+
+  function setSpotifyFrameVisibility() {
+    const frame = $("musicSpotify");
+    if (!frame || !frame.hasAttribute("src")) return;
+    frame.contentWindow?.postMessage({
+      type: "openstation-spotify-visibility",
+      active: currentMusicProvider === "spotify" && $("tab-music").classList.contains("active"),
+    }, location.origin);
+  }
+
+  function renderMusicProvider(provider) {
+    currentMusicProvider = provider === "spotify" ? "spotify" : "yandex";
+    const spotify = currentMusicProvider === "spotify";
+    $("tab-music").classList.toggle("spotify-selected", spotify);
+    $("musicYandexLogin").hidden = spotify;
+    const frame = $("musicSpotify");
+    frame.hidden = !spotify;
+    if (spotify && !frame.hasAttribute("src")) frame.src = "/spotify.html";
+    $("musicProvider").querySelectorAll("[data-provider]").forEach((btn) => {
+      const active = btn.dataset.provider === currentMusicProvider;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-pressed", String(active));
+    });
+    setSpotifyFrameVisibility();
+  }
+
+  async function syncMusicProvider() {
+    if (openSpotifyFromLink) {
+      openSpotifyFromLink = false;
+      renderMusicProvider("spotify");
+      return;
+    }
+    const choice = providerChoice;
+    try {
+      await providerWrites;
+      const data = await api("/api/music/provider");
+      if (choice === providerChoice) renderMusicProvider(data.provider);
+    } catch (_) {}
+  }
+
+  $("musicProvider").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-provider]");
+    if (!button) return;
+    const provider = button.dataset.provider;
+    const choice = ++providerChoice;
+    renderMusicProvider(provider);
+    providerWrites = providerWrites.then(async () => {
+      try { await api("/api/music/provider", "POST", { provider }); }
+      catch (error) {
+        if (choice === providerChoice) showToast(error.message, true);
+      }
+    });
+  });
+  $("musicSpotify").addEventListener("load", setSpotifyFrameVisibility);
+  window.addEventListener("message", (event) => {
+    const frame = $("musicSpotify");
+    if (event.origin !== location.origin || event.source !== frame.contentWindow ||
+        event.data?.type !== "openstation-spotify-height") return;
+    const height = Number(event.data.height);
+    if (Number.isFinite(height)) frame.style.height = Math.max(280, Math.min(height, 14000)) + "px";
+  });
+
   async function init() {
     let savedTab = null;
     try { savedTab = localStorage.getItem("os_tab"); } catch {}
-    switchTab(savedTab || "music");
+    switchTab(openSpotifyFromLink ? "music" : (savedTab || "music"));
     try {
       const s = await api("/api/status");
       setConn(true);

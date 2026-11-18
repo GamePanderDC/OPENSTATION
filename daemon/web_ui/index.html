@@ -97,6 +97,11 @@
       <main class="content">
       <!-- TAB 1: MUSIC & TIMERS -->
       <section class="panel active" id="tab-music">
+        <div class="seg-group music-provider-switch" id="musicProvider" aria-label="Музыкальный сервис">
+          <button class="seg active" type="button" data-provider="yandex" aria-pressed="true">Яндекс Музыка</button>
+          <button class="seg" type="button" data-provider="spotify" aria-pressed="false">Spotify</button>
+        </div>
+        <div id="musicYandexLogin">
         <div class="card login-card" id="musicLoginCard" hidden style="margin-bottom:18px;">
           <div class="login-ico"><svg class="ico" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></div>
           <h2>Подключите Яндекс Музыку</h2>
@@ -109,6 +114,7 @@
             <button class="btn btn-sm btn-accent" id="btnPushMusicLoginOAuth" type="button">Войти</button>
           </div>
         </div>
+        </div>
 
         <div class="glass-container glass-container--rounded" id="mediaReceivers">
           <div class="glass-content">
@@ -116,13 +122,10 @@
               <div><strong>AirPlay 2</strong><div class="hint" id="mediaAirplayStatus" aria-live="polite">Проверка…</div></div>
               <button class="btn btn-sm" id="mediaAirplayToggle" type="button" hidden>Включить</button>
             </div>
-            <div class="form-row">
-              <div><strong>Spotify Connect</strong><div class="hint" id="mediaSpotifyStatus" aria-live="polite">Проверка…</div></div>
-              <button class="btn btn-sm" id="mediaSpotifyToggle" type="button" hidden>Включить</button>
-            </div>
           </div>
         </div>
-        <div class="grid-2">
+        <iframe id="musicSpotify" title="Плеер и каталог Spotify" hidden></iframe>
+        <div class="grid-2" id="musicYandexGrid">
           <div class="stack" id="musicMain">
             <!-- LIQUID GLASS MUSIC PLAYER -->
             <div class="glass-container glass-container--rounded glass-container--large player-glass-card">

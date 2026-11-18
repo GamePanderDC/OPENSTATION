@@ -447,6 +447,11 @@ body {
 #mediaReceivers .form-row:last-child { margin-bottom: 0; }
 #mediaReceivers .btn { flex: none; }
 #mediaReceivers .btn[hidden] { display: none; }
+.music-provider-switch { width: fit-content; max-width: 100%; margin-bottom: 14px; }
+#musicYandexLogin[hidden], #musicSpotify[hidden], #musicYandexGrid #musicMain[hidden] { display: none; }
+#musicSpotify { display: block; width: 100%; height: 540px; border: 0; margin: 14px 0; }
+#tab-music.spotify-selected #musicMain { display: none; }
+#tab-music.spotify-selected #musicYandexGrid { grid-template-columns: minmax(0, 1fr); }
 .toggle-row {
   display: flex;
   justify-content: space-between;

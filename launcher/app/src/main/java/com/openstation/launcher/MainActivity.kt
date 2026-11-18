@@ -2724,12 +2724,12 @@ class MainActivity : Activity() {
         )
         val ymEntry = AppEntry(
             pkg = PKG_YANDEX_MUSIC,
-            label = "Яндекс Музыка",
+            label = "Музыка",
             icon = getDrawable(R.drawable.ic_music_app) ?: applicationInfo.loadIcon(pm),
             intent = Intent(this, YandexMusicActivity::class.java),
             leanback = true,
             isVirtual = true,
-            subtitle = "Моя волна · Hi-Fi"
+            subtitle = "Яндекс Музыка · Spotify"
         )
 
         val savedOrder = getSavedAppOrder()
@@ -5629,7 +5629,7 @@ class MainActivity : Activity() {
         val pm = packageManager
         for (pkg in hidden) {
             val lbl = when (pkg) {
-                PKG_YANDEX_MUSIC -> "Яндекс Музыка"
+                PKG_YANDEX_MUSIC -> "Музыка"
                 else -> try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (_: Throwable) { pkg }
             }
             val row = makeTextIconPill(R.drawable.ic_yaos_apps, "Вернуть: $lbl", gold = false) {

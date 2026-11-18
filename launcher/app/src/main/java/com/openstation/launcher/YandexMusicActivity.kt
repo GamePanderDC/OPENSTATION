@@ -24,6 +24,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
+import android.util.Base64
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -46,6 +47,11 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import kotlin.math.max
 import kotlin.math.min
@@ -54,6 +60,7 @@ class YandexMusicActivity : Activity() {
 
     companion object {
         private const val TAG = "YandexMusicAct"
+        private const val MUSIC_API = "http://127.0.0.1:8080/api/music/provider"
         const val ACTION_MUSIC_CMD = "com.openstation.launcher.MUSIC_CMD"
     }
 
@@ -63,6 +70,15 @@ class YandexMusicActivity : Activity() {
     )
 
     private val handler = Handler(Looper.getMainLooper())
+    private val providerWorker = Executors.newSingleThreadExecutor()
+    private lateinit var yandexProvider: TextView
+    private lateinit var spotifyProvider: TextView
+    private lateinit var yandexBody: View
+    private lateinit var providerContent: LinearLayout
+    private var spotifyView: WebView? = null
+    private var selectedProvider = "yandex"
+    private var providerChange = 0
+    private var explicitYandex = false
     private var activeTab = "wave" // "wave", "search", "collection", "auth"
     private var collectionMode = "likes" // "likes", "chart"
 
@@ -167,21 +183,35 @@ class YandexMusicActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         handleIntentExtras(intent)
+        if (!explicitYandex) refreshProvider()
     }
 
     override fun onResume() {
         super.onResume()
         StationAudioService.ensureStarted(this)
         refreshFromService()
+        if (!explicitYandex) refreshProvider()
+        if (selectedProvider == "spotify") {
+            spotifyView?.onResume()
+            spotifyView?.evaluateJavascript("window.spotifyVisible && window.spotifyVisible(true)", null)
+        }
         updateVinylAnimation()
     }
 
     override fun onPause() {
+        spotifyView?.evaluateJavascript("window.spotifyVisible && window.spotifyVisible(false)", null)
+        spotifyView?.onPause()
         vinylAnimator?.pause()
         super.onPause()
     }
 
     override fun onDestroy() {
+        providerWorker.shutdown()
+        spotifyView?.let { view ->
+            providerContent.removeView(view)
+            view.destroy()
+        }
+        spotifyView = null
         vinylAnimator?.cancel()
         passportDialog?.dismiss()
         try { unregisterReceiver(stateReceiver) } catch (_: Throwable) {}
@@ -195,6 +225,8 @@ class YandexMusicActivity : Activity() {
             player()?.setOAuthToken(tok, autoResumeMyWave = false)
         }
         val tab = intent?.getStringExtra("tab")
+        explicitYandex = !tok.isNullOrBlank() || !tab.isNullOrBlank() || intent?.getBooleanExtra("open_login", false) == true
+        if (explicitYandex) selectProvider("yandex", persist = false)
         if (!tab.isNullOrBlank() && tab in listOf("wave", "search", "collection", "auth")) {
             switchTab(tab)
         }
@@ -231,6 +263,105 @@ class YandexMusicActivity : Activity() {
 
     private fun dp(v: Int): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+
+    private fun providerRequest(value: String? = null): JSONObject {
+        val connection = (URL(MUSIC_API).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 3000
+            readTimeout = 3000
+            if (value != null) {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+        }
+        try {
+            if (value != null) {
+                connection.outputStream.use { stream ->
+                    stream.write(JSONObject().put("provider", value).toString().toByteArray(Charsets.UTF_8))
+                }
+            }
+            return connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun refreshProvider() {
+        val change = providerChange
+        providerWorker.execute {
+            val current = runCatching { providerRequest().optString("provider", "yandex") }.getOrNull()
+            handler.post {
+                if (!isDestroyed && !explicitYandex && change == providerChange && current != null)
+                    selectProvider(current, persist = false)
+            }
+        }
+    }
+
+    private fun selectProvider(value: String, persist: Boolean) {
+        val spotify = value == "spotify"
+        selectedProvider = if (spotify) "spotify" else "yandex"
+        yandexProvider.isSelected = !spotify
+        spotifyProvider.isSelected = spotify
+        yandexBody.visibility = if (spotify) View.GONE else View.VISIBLE
+        for (view in listOf(tabWave, tabSearch, tabCollection, tabAuth, tvAcctBadge))
+            view.visibility = if (spotify) View.GONE else View.VISIBLE
+        if (spotify) {
+            if (spotifyView == null) spotifyView = createSpotifyView()
+            spotifyView?.visibility = View.VISIBLE
+            spotifyView?.onResume()
+            spotifyView?.evaluateJavascript("window.spotifyVisible && window.spotifyVisible(true)", null)
+        } else {
+            spotifyView?.evaluateJavascript("window.spotifyVisible && window.spotifyVisible(false)", null)
+            spotifyView?.onPause()
+            spotifyView?.visibility = View.GONE
+        }
+        updateVinylAnimation()
+        if (!persist) return
+        explicitYandex = false
+        val choice = ++providerChange
+        val provider = selectedProvider
+        providerWorker.execute {
+            if (runCatching { providerRequest(provider) }.isFailure) {
+                handler.post {
+                    if (!isDestroyed && choice == providerChange)
+                        Toast.makeText(this, "Не удалось сохранить выбор сервиса", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createSpotifyView(): WebView = WebView(this).apply {
+        setBackgroundColor(Color.TRANSPARENT)
+        settings.javaScriptEnabled = true
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+        isFocusable = true
+        webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val uri = request.url
+                if (uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port == 8080) return false
+                if (uri.scheme == "https" && uri.host in setOf("open.spotify.com", "developer.spotify.com")) {
+                    runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }.onFailure {
+                        Toast.makeText(this@YandexMusicActivity, "Откройте эту ссылку в веб-пульте", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                val home = SetupAddress.webUrl(detectLocalIp()) ?: return
+                val link = "$home/?music=spotify"
+                val image = QrGenerator.generateBitmap(link, dp(152)) ?: return
+                val buffer = ByteArrayOutputStream()
+                image.compress(Bitmap.CompressFormat.PNG, 100, buffer)
+                val png = Base64.encodeToString(buffer.toByteArray(), Base64.NO_WRAP)
+                view.evaluateJavascript("window.setSpotifySetupQr && window.setSpotifySetupQr(${JSONObject.quote(link)},${JSONObject.quote(png)})", null)
+            }
+        }
+        providerContent.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        loadUrl("http://127.0.0.1:8080/spotify.html?tv=1")
+    }
 
     private fun buildUi() {
         val rootFrame = FrameLayout(this)
@@ -269,6 +400,7 @@ class YandexMusicActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
+        providerContent = root
         rootFrame.addView(root)
 
         // ===== 1. TOP BAR =====
@@ -283,20 +415,10 @@ class YandexMusicActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val ivBrandEmblem = ImageView(this).apply {
-            setImageResource(R.drawable.sprite_ym_emblem)
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply {
-                marginEnd = dp(10)
-            }
+        yandexProvider = makeTextPill("Яндекс Музыка") { selectProvider("yandex", persist = true) }.apply {
+            isSelected = true
         }
-        val tvLogo = TextView(this).apply {
-            text = "ЯНДЕКС МУЗЫКА"
-            setTextColor(Color.parseColor("#E8C686"))
-            textSize = 18.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            letterSpacing = 0.06f
-        }
+        spotifyProvider = makeTextPill("Spotify") { selectProvider("spotify", persist = true) }
         tvAcctBadge = makeTextPill("Проверка...") { switchTab("auth") }.apply {
             textSize = 11.5f
             setPadding(dp(10), dp(4), dp(10), dp(4))
@@ -304,8 +426,8 @@ class YandexMusicActivity : Activity() {
                 marginStart = dp(12)
             }
         }
-        brandCol.addView(ivBrandEmblem)
-        brandCol.addView(tvLogo)
+        brandCol.addView(yandexProvider)
+        brandCol.addView(spotifyProvider)
         brandCol.addView(tvAcctBadge)
 
         val tabsRow = LinearLayout(this).apply {
@@ -331,6 +453,7 @@ class YandexMusicActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
+        yandexBody = bodyRow
 
         // --- LEFT: HERO VINYL PLAYER (BORK x Duo Max) ---
         val heroCardContainer = FrameLayout(this).apply {
@@ -1093,7 +1216,7 @@ class YandexMusicActivity : Activity() {
     }
 
     private fun updateVinylAnimation() {
-        if (lastSnapshot.playing) {
+        if (selectedProvider == "yandex" && lastSnapshot.playing) {
             vinylAnimator?.let {
                 if (!it.isStarted) it.start() else if (it.isPaused) it.resume()
             }
@@ -1574,6 +1697,21 @@ class YandexMusicActivity : Activity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            if (selectedProvider == "spotify") {
+                val transport = when (event.keyCode) {
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> "toggle"
+                    KeyEvent.KEYCODE_MEDIA_PLAY -> "resume"
+                    KeyEvent.KEYCODE_MEDIA_STOP, KeyEvent.KEYCODE_MEDIA_PAUSE -> "pause"
+                    KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> "next"
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MEDIA_REWIND -> "previous"
+                    else -> null
+                }
+                if (transport != null) {
+                    spotifyView?.evaluateJavascript("window.spotifyTransport && window.spotifyTransport('$transport')", null)
+                    return true
+                }
+                return super.dispatchKeyEvent(event)
+            }
             when (event.keyCode) {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                     doPlayerAction("PLAY_PAUSE")

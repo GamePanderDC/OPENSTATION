@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.31",
-    [string]$Changelog = "Установка AirPlay 2 и Spotify Connect из веб-пульта. Удаление тестового Sherpa TTS.",
+    [string]$Version = "1.6.32",
+    [string]$Changelog = "Плеер Spotify с поиском, плейлистами и избранным. Выбор сервиса на ТВ и в веб-пульте.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

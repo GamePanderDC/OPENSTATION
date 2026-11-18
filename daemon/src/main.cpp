@@ -15,6 +15,7 @@
 #include "net/http_client.hpp"
 #include "net/mdns_responder.hpp"
 #include "net/mqtt_client.hpp"
+#include "net/spotify_music.hpp"
 #include "net/timezone_db.hpp"
 #include "net/web_tools.hpp"
 #include "ota/ota_manager.hpp"
@@ -55,7 +56,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.31";
+constexpr const char* kFirmwareVersion = "1.6.32";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -4557,11 +4558,24 @@ int main(int argc, char** argv) {
         return error;
     };
 
+    SpotifyMusic spotify_music(g_stop);
     http.start(
         start_cfg.web_port,
         [&](const HttpRequest& req) -> HttpResponse {
             if (req.method == "GET" && req.path == "/api/status") {
                 return HttpResponse::json(build_status_json().dump(-1));
+            }
+            if (req.path == "/api/music/provider" || req.path.rfind("/api/music/spotify/", 0) == 0) {
+                auto response = spotify_music.handle(req);
+                if (response.status == 200 && req.path == "/api/music/spotify/command") {
+                    json::Value input;
+                    if (json::Parser::parse(req.body, input)) {
+                        const auto* action = input.get("action");
+                        if (action && (action->as_str() == "play" || action->as_str() == "resume"))
+                            send_udp_json(8086, "{\"cmd\":\"action\",\"action\":\"PAUSE\"}");
+                    }
+                }
+                return response;
             }
             if (req.path == "/api/music/receivers" && req.method == "GET") {
                 std::lock_guard<std::mutex> lock(receiver_mu);
@@ -5715,11 +5729,14 @@ int main(int argc, char** argv) {
                 bool should_banner = false;
                 bool keep_track_title = false;
                 bool clear_track_title = false;
+                bool started_yandex_playback = false;
                 std::string full_track_title;
                 {
                     std::lock_guard<std::mutex> lk(music_mu);
+                    const bool was_playing = music_state.playing && !music_state.paused;
                     music_state.update_from_json(v, now_ms);
                     const bool active = music_state.playing && !music_state.paused;
+                    started_yandex_playback = !was_playing && active;
                     if (!music_state.title.empty()) {
                         full_track_title = music_state.artist.empty()
                             ? music_state.title
@@ -5741,6 +5758,7 @@ int main(int argc, char** argv) {
                         keep_track_title = true;
                     }
                 }
+                if (started_yandex_playback) spotify_music.pause_if_playing();
                 update_led_music_playing();
                 if (keep_track_title) {
                     leds.set_music_track_title(full_track_title);

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/spotify.css">
+  <script defer src="/spotify.js"></script>
+  <title>Spotify · OpenStation</title>
+</head>
+<body class="spotify-pane">
+  <main class="sp-layout">
+    <section class="card sp-player" aria-label="Плеер Spotify">
+      <div class="sp-art">
+        <svg viewBox="0 0 48 48" width="55" height="55" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="currentColor"/><path d="M12 20c10-3 19-1 25 3m-23 4c8-2 15-1 20 2m-18 4c6-1 11 0 15 2" stroke="#071812" stroke-width="2.8" stroke-linecap="round"/></svg>
+        <img id="spCover" alt="" hidden>
+      </div>
+      <div class="sp-now-playing">
+        <p class="sp-caption">Spotify</p>
+        <h2 id="spTitle">Музыка на станции</h2>
+        <p id="spArtist" class="hint">Выберите трек из каталога или включите музыку через Spotify Connect.</p>
+        <a id="spTrackLink" class="sp-source-link" target="_blank" rel="noopener noreferrer" hidden>Открыть в Spotify ↗</a>
+      </div>
+      <div id="spTransport" hidden>
+        <label class="sp-sr-only" for="spSeek">Позиция трека</label>
+        <input id="spSeek" type="range" min="0" max="1" value="0">
+        <div class="sp-timestamps"><span id="spPosition">0:00</span><span id="spDuration">0:00</span></div>
+        <div class="btn-row sp-controls">
+          <button type="button" class="btn btn-sm" data-transport="previous" aria-label="Предыдущий трек" title="Предыдущий трек">⏮</button>
+          <button type="button" class="btn btn-accent" data-transport="toggle" id="spPlayPause">Пауза</button>
+          <button type="button" class="btn btn-sm" data-transport="next" aria-label="Следующий трек" title="Следующий трек">⏭</button>
+          <button type="button" class="btn btn-sm" id="spSave" aria-label="Добавить в избранное" title="Добавить в избранное">♡</button>
+        </div>
+      </div>
+    </section>
+    <section class="card sp-library" aria-label="Каталог Spotify">
+      <div class="sp-header">
+        <div class="seg-group" aria-label="Разделы Spotify">
+          <button type="button" class="seg active" data-section="search" aria-pressed="true">Поиск</button>
+          <button type="button" class="seg" data-section="playlists" aria-pressed="false">Плейлисты</button>
+          <button type="button" class="seg" data-section="saved" aria-pressed="false">Избранное</button>
+        </div>
+        <button type="button" class="btn btn-sm" id="spAccountToggle" aria-controls="spAccount" aria-expanded="true">Подключение</button>
+      </div>
+      <p class="hint sp-notice" id="spNotice" role="status" hidden></p>
+      <p class="hint sp-notice" id="spApiStatus" role="status" hidden></p>
+      <div id="spAccount" class="sp-account">
+        <div class="sp-connect">
+          <div><strong>Spotify Connect</strong><p class="hint" id="spReceiverState">Проверяем станцию…</p></div>
+          <button class="btn btn-sm" id="spReceiver" type="button" hidden>Включить</button>
+        </div>
+        <div id="spLogin">
+          <h3>Подключите аккаунт Spotify</h3>
+          <p class="hint">Вход открывает поиск, плейлисты и избранное. Для воспроизведения на станции нужен Spotify Premium.</p>
+          <div id="spTvLogin" hidden>
+            <img id="spSetupQr" alt="Веб-пульт для подключения Spotify" width="152" height="152" hidden>
+            <p class="hint" id="spSetupAddress">Откройте «Музыка → Spotify» в веб-пульте на телефоне.</p>
+          </div>
+          <div id="spWebLogin">
+            <details class="adv-details" id="spClientSetup">
+              <summary>Настройка Client ID</summary>
+              <ol class="hint">
+                <li>Создайте приложение в <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify for Developers</a> и выберите Web API.</li>
+                <li>Добавьте Redirect URI <code id="spRedirect"></code> и разрешите в настройках приложения вход вашему аккаунту.</li>
+                <li>Скопируйте Client ID из приложения.</li>
+              </ol>
+              <label class="sp-sr-only" for="spClient">Client ID</label>
+              <input id="spClient" type="text" placeholder="Client ID" maxlength="32" autocomplete="off" spellcheck="false">
+            </details>
+            <button class="btn btn-accent" id="spBegin" type="button">Войти в Spotify</button>
+            <div id="spFinish" hidden>
+              <a class="btn btn-sm" id="spLoginLink" target="_blank" rel="noopener noreferrer">Открыть вход Spotify ↗</a>
+              <p class="hint">После входа скопируйте весь адрес из строки браузера, даже если страница 127.0.0.1 не открылась.</p>
+              <form class="input-send-row" id="spFinishForm">
+                <label class="sp-sr-only" for="spAuthUrl">Адрес после входа</label>
+                <input id="spAuthUrl" type="url" placeholder="Адрес после входа" autocomplete="off" required>
+                <button class="btn btn-sm" type="submit">Подключить</button>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div id="spLinked" hidden>
+          <p class="hint">Аккаунт Spotify подключён.</p>
+          <button class="btn btn-sm" id="spLogout" type="button">Выйти из Spotify</button>
+        </div>
+      </div>
+      <div id="spCatalog" hidden>
+        <form id="spSearch" class="input-send-row">
+          <label class="sp-sr-only" for="spQuery">Поиск в Spotify</label>
+          <input id="spQuery" type="search" placeholder="Название трека или исполнитель" maxlength="120" required>
+          <button class="btn btn-accent" type="submit">Найти</button>
+        </form>
+        <div id="spTypes" class="seg-group" aria-label="Тип результата">
+          <button class="seg active" type="button" data-kind="track" aria-pressed="true">Треки</button>
+          <button class="seg" type="button" data-kind="album" aria-pressed="false">Альбомы</button>
+          <button class="seg" type="button" data-kind="playlist" aria-pressed="false">Плейлисты</button>
+        </div>
+        <div id="spContext" class="sp-context" hidden>
+          <button class="btn btn-sm" id="spBack" type="button">Назад</button>
+          <strong id="spContextTitle"></strong>
+          <button class="btn btn-sm btn-accent" id="spPlayAll" type="button">Играть всё</button>
+        </div>
+        <p id="spResultsStatus" class="hint" aria-live="polite"></p>
+        <div id="spResults" class="sp-results"></div>
+        <button class="btn btn-sm" id="spMore" type="button" hidden>Загрузить ещё</button>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
