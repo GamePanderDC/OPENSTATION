@@ -305,7 +305,7 @@ try {
     $defaultCfgObj = [ordered]@{
         setupCompleted = $false
         audio = [ordered]@{
-            captureMode = "alsa_16ch"
+            captureMode = "aaudio"
             kwsThreads  = 1
         }
         assistant = [ordered]@{

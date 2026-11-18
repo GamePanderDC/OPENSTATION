@@ -1,40 +1,40 @@
 {
-  "name": "OpenStation Max",
-  "device": "yandexstation_2",
-  "version": "1.6.26",
-  "autonomous": true,
-  "changelog": "ChatGPT с входом через аккаунт, голосовым режимом разговора и локальным распознаванием речи.",
-  "buildTimeUtc": "2026-11-18T00:16:40Z",
-  "files": {
-    "daemon": {
-      "fileName": "openstationd",
-      "size": 3330392,
-      "sha256": "7066e484903efd934c93c84db34580d67361eb4c10718e5dd65d97687239074b"
-    },
-    "bootlogod": {
-      "fileName": "bootlogod",
-      "size": 657728,
-      "sha256": "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9"
-    },
-    "launcher": {
-      "fileName": "OpenStationLauncher.apk",
-      "size": 28427123,
-      "sha256": "420a5de7dab2869bf16e9011c3cc8c812baaa576a5a7c96a98488a01f3f4d757"
-    },
-    "ime": {
-      "fileName": "OpenStationIME.apk",
-      "size": 808866,
-      "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
-    },
-    "bootanimation": {
-      "fileName": "bootanimation.zip",
-      "size": 6725707,
-      "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
-    },
-    "bootlogo": {
-      "fileName": "logo.img",
-      "size": 2252608,
-      "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
-    }
-  }
+    "name":  "OpenStation Max",
+    "device":  "yandexstation_2",
+    "version":  "1.6.27",
+    "autonomous":  true,
+    "changelog":  "Автоматический выбор Yandex VQE и голосовые команды без обращения «Алиса». Интеграция ChatGPT удалена.",
+    "buildTimeUtc":  "2026-11-18T18:06:03Z",
+    "files":  {
+                  "daemon":  {
+                                 "fileName":  "openstationd",
+                                 "size":  3239936,
+                                 "sha256":  "7b6979ca1083272fef45a648519bcb75e113f9d757a3d52e120e875319e49348"
+                             },
+                  "bootlogod":  {
+                                    "fileName":  "bootlogod",
+                                    "size":  657728,
+                                    "sha256":  "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9"
+                                },
+                  "launcher":  {
+                                   "fileName":  "OpenStationLauncher.apk",
+                                   "size":  28420415,
+                                   "sha256":  "2e5c4c265a76a434862946fe7e67d14aebb3aeeb2d78c58bf10662789de488f5"
+                               },
+                  "ime":  {
+                              "fileName":  "OpenStationIME.apk",
+                              "size":  808866,
+                              "sha256":  "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03"
+                          },
+                  "bootanimation":  {
+                                        "fileName":  "bootanimation.zip",
+                                        "size":  6725707,
+                                        "sha256":  "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598"
+                                    },
+                  "bootlogo":  {
+                                   "fileName":  "logo.img",
+                                   "size":  2252608,
+                                   "sha256":  "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9"
+                               }
+              }
 }

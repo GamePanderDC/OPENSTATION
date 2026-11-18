@@ -194,8 +194,10 @@ const char* AssistantManager::state_str(AssistantState st) {
 
 WakeWordSettings AssistantManager::to_ww_settings(const AssistantConfig& c, int mic_sensitivity) {
     WakeWordSettings ww;
-    ww.enabled = c.enabled && (c.mode == "gemini" || c.mode == "chatgpt") && c.wake_word_enabled;
-    ww.keywords = c.kws_keywords;
+    const bool voice_enabled = c.enabled && c.mode == "gemini";
+    ww.enabled = voice_enabled && (c.wake_word_enabled || c.quick_commands);
+    ww.keywords = c.wake_word_enabled ? c.kws_keywords : "";
+    ww.quick_commands = voice_enabled && c.quick_commands;
     ww.threshold = c.kws_threshold;
     ww.score = c.kws_score;
     ww.num_threads = c.kws_threads;
@@ -224,16 +226,25 @@ bool AssistantManager::start(const AssistantConfig& cfg, AssistantCallbacks cb) 
             std::lock_guard<std::mutex> lk(cfg_mu_);
             c = cfg_;
         }
-        if (!c.enabled || (c.mode != "gemini" && c.mode != "chatgpt") || !c.wake_word_enabled) return;
+        if (!c.enabled || c.mode != "gemini" || !c.wake_word_enabled) return;
 
         if (is_active()) {
             LOGI("Assistant", "Wake word '%s' ignored (session already active)", kw.c_str());
             return;
         }
         start_session_internal(TriggerSource::WakeWord, "", kw);
+    }, [this](const std::vector<int16_t>& pcm) {
+        if (!cb_.quick_command || !local_asr_ready_ || !running_ || mic_muted_ || is_active() ||
+            steady_now_ms() < wake_suppress_until_ms_ ||
+            (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active())) return;
+        {
+            std::lock_guard<std::mutex> lock(quick_pcm_mu_);
+            quick_pending_pcm_ = pcm;
+        }
+        quick_pcm_cv_.notify_one();
     });
 
-    if (cfg.enabled && cfg.mode == "chatgpt") warm_chatgpt_recognizer();
+    if (cfg.enabled && cfg.mode == "gemini" && cfg.quick_commands) start_quick_command_worker();
     LOGI("Assistant", "Manager started (mode=%s, model=%s, wake=%s, hasKey=%s)",
          cfg.mode.c_str(),
          cfg.gemini_model.c_str(),
@@ -243,7 +254,11 @@ bool AssistantManager::start(const AssistantConfig& cfg, AssistantCallbacks cb) 
 }
 
 void AssistantManager::stop() {
-    running_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(quick_pcm_mu_);
+        running_.store(false);
+    }
+    quick_pcm_cv_.notify_one();
     stop_session("daemon_stop");
     {
         std::lock_guard<std::mutex> lk(session_ctrl_mu_);
@@ -252,8 +267,50 @@ void AssistantManager::stop() {
         }
     }
     wake_word_.stop();
-    std::lock_guard<std::mutex> warm_lock(asr_warm_mu_);
-    if (asr_warm_.joinable()) asr_warm_.join();
+    std::lock_guard<std::mutex> lock(quick_worker_mu_);
+    if (quick_worker_.joinable()) quick_worker_.join();
+    quick_pending_pcm_.clear();
+}
+
+void AssistantManager::start_quick_command_worker() {
+    std::lock_guard<std::mutex> lock(quick_worker_mu_);
+    if (!running_ || quick_worker_.joinable()) return;
+    quick_worker_ = std::thread([this] {
+        // Avoid loading the recognition and wake word models at the same time.
+        for (int i = 0; running_ && !wake_word_.is_ready() && i < 300; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!running_) return;
+        std::string error;
+        local_asr_ready_ = local_asr_.initialize(error);
+        if (!local_asr_ready_) {
+            LOGW("Assistant", "Quick command recognizer unavailable: %s", error.c_str());
+            return;
+        }
+
+        std::vector<int16_t> pcm;
+        while (running_) {
+            {
+                std::unique_lock<std::mutex> lock(quick_pcm_mu_);
+                quick_pcm_cv_.wait(lock, [this] { return !running_ || !quick_pending_pcm_.empty(); });
+                if (!running_) break;
+                quick_pending_pcm_.swap(pcm);
+                quick_pending_pcm_.clear();
+            }
+            if (mic_muted_ || is_active() || steady_now_ms() < wake_suppress_until_ms_ ||
+                (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active())) continue;
+            std::string text, error;
+            if (!local_asr_.recognize(pcm, text, error)) continue;
+            const auto command = quick_command_from_transcript(text);
+            if (command == QuickCommand::None) continue;
+            {
+                std::lock_guard<std::mutex> lock(cfg_mu_);
+                if (!cfg_.enabled || !cfg_.quick_commands || cfg_.mode != "gemini") continue;
+            }
+            if (!running_ || mic_muted_ || is_active()) continue;
+            cb_.quick_command(command);
+        }
+    });
 }
 
 void AssistantManager::update_config(const AssistantConfig& cfg) {
@@ -267,15 +324,14 @@ void AssistantManager::update_config(const AssistantConfig& cfg) {
         if (cfg.google_search != cfg_.google_search || cfg.gemini_api_key != cfg_.gemini_api_key || !cfg.google_search) {
             search_quota_unsupported_.store(false);
         }
-        if (!cfg.enabled || cfg.mode != cfg_.mode || cfg.chatgpt_model != cfg_.chatgpt_model ||
-            cfg.chatgpt_call_mode != cfg_.chatgpt_call_mode) {
+        if (!cfg.enabled || cfg.mode != "gemini") {
             stop_cur = true;
         }
         cfg_ = cfg;
         sens = mic_sensitivity_;
     }
     wake_word_.update_settings(to_ww_settings(cfg, sens));
-    if (cfg.enabled && cfg.mode == "chatgpt") warm_chatgpt_recognizer();
+    if (cfg.enabled && cfg.mode == "gemini" && cfg.quick_commands) start_quick_command_worker();
     if (stop_cur) {
         stop_session("mode_changed");
     }
@@ -319,12 +375,9 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
         std::lock_guard<std::mutex> lk(cfg_mu_);
         c = cfg_;
     }
-    if (!c.enabled || (c.mode != "gemini" && c.mode != "chatgpt")) {
+    if (!c.enabled || c.mode != "gemini") {
         return;
     }
-
-    if (c.mode == "chatgpt" && is_active() && state_.load() != AssistantState::Listening &&
-        state_.load() != AssistantState::Connecting) return;
 
     last_mic_rms_.store(rms);
     if (rms >= dialogue_activity_threshold(noise_rms)) {
@@ -353,8 +406,8 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
             }
         }
 
-        if (c.wake_word_enabled) {
-            wake_word_.feed_audio_16k(samples, count);
+        if (c.wake_word_enabled || c.quick_commands) {
+            wake_word_.feed_audio_16k(samples, count, noise_rms);
         }
         return;
     }
@@ -367,9 +420,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     std::lock_guard<std::mutex> lk(tx_mu_);
     // Keep the connection backlog intact until it has drained; otherwise the
     // first live microphone callback discards the beginning of the request.
-    if (c.mode == "chatgpt" && state_.load() != AssistantState::Listening &&
-        state_.load() != AssistantState::Connecting) return;
-    size_t cap = (c.mode == "chatgpt" || st == AssistantState::Connecting || tx_pcm_.size() > kMaxLivePcmSamples)
+    size_t cap = (st == AssistantState::Connecting || tx_pcm_.size() > kMaxLivePcmSamples)
                      ? kMaxConnectingPcmSamples : kMaxLivePcmSamples;
     if (tx_pcm_.size() + count > cap) {
         size_t overflow = tx_pcm_.size() + count - cap;
@@ -456,16 +507,16 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
         std::lock_guard<std::mutex> lk(cfg_mu_);
         c = cfg_;
     }
-    if (!c.enabled || (c.mode != "gemini" && c.mode != "chatgpt")) {
+    if (!c.enabled || c.mode != "gemini") {
         set_error("Ассистент отключён в настройках", false);
         return false;
     }
-    if (c.mode == "gemini" && c.gemini_api_key.empty()) {
+    if (c.gemini_api_key.empty()) {
         set_error("Gemini API ключ не задан", true);
         return false;
     }
 
-    if (is_active() && c.mode == "gemini") {
+    if (is_active()) {
         if (cb_.clear_playback) cb_.clear_playback();
         {
             std::lock_guard<std::mutex> lk(tx_mu_);
@@ -509,7 +560,7 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         std::lock_guard<std::mutex> lk(cfg_mu_);
         c = cfg_;
     }
-    if (!c.enabled || (c.mode != "gemini" && c.mode != "chatgpt")) {
+    if (!c.enabled || c.mode != "gemini") {
         set_error("Ассистент отключён или выбран режим Wyoming", false);
         return false;
     }
@@ -517,19 +568,7 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         set_error("Микрофон выключен (MUTE)", true);
         return false;
     }
-    if (c.mode == "chatgpt" && !announcement) {
-        if (c.chatgpt_model.empty()) {
-            set_error("Выберите модель ChatGPT в настройках.", false);
-            return false;
-        }
-        const auto account = chatgpt_auth_.status();
-        const auto* connected = account.get("connected");
-        if (!connected || !connected->as_bool()) {
-            set_error("Подключите аккаунт ChatGPT в настройках.", false);
-            return false;
-        }
-    }
-    if (c.mode == "gemini" && c.gemini_api_key.empty()) {
+    if (c.gemini_api_key.empty()) {
         set_error("Не задан Gemini API ключ (настройте в Web UI -> Алиса)", !announcement);
         if (!announcement && cb_.show_screen_text) cb_.show_screen_text("НЕТ КЛЮЧА", 255, 80, 80, 2800);
         return false;
@@ -545,8 +584,6 @@ bool AssistantManager::start_session_internal(TriggerSource src,
     remote_turn_.store(src == TriggerSource::Remote);
     remote_recording_.store(src == TriggerSource::Remote);
     if (announcement) c.follow_up_sec = 0;
-    chatgpt_call_active_ = c.mode == "chatgpt" && c.chatgpt_call_mode &&
-        (src == TriggerSource::WakeWord || src == TriggerSource::Manual);
 
     wake_word_.set_paused(true);
     session_abort_.store(false);
@@ -605,12 +642,7 @@ bool AssistantManager::start_session_internal(TriggerSource src,
         emit_event("message", "user", initial_text);
     }
 
-    if (c.mode == "chatgpt") {
-        session_thread_ = std::thread(&AssistantManager::chatgpt_session_worker, this, src, initial_text,
-                                      c, announcement, steady_now_ms());
-    } else {
-        session_thread_ = std::thread(&AssistantManager::session_worker, this, sid, src, initial_text, c, announcement);
-    }
+    session_thread_ = std::thread(&AssistantManager::session_worker, this, sid, src, initial_text, c, announcement);
     return true;
 }
 
@@ -654,7 +686,6 @@ void AssistantManager::emit_event(const std::string& kind, const std::string& ro
     msg["type"] = Value::make_str("assistant_event");
     msg["kind"] = Value::make_str(kind);
     msg["state"] = Value::make_str(state_str(state_.load()));
-    msg["chatgptCallActive"] = Value::make_bool(chatgpt_call_active_);
     if (!role.empty()) msg["role"] = Value::make_str(role);
     if (!text.empty()) msg["text"] = Value::make_str(text);
     {
@@ -2086,7 +2117,6 @@ json::Value AssistantManager::get_status_json() {
     using json::Value;
     Value obj = Value::make_obj();
     obj["state"] = Value::make_str(state_str(state_.load()));
-    obj["chatgptCallActive"] = Value::make_bool(chatgpt_call_active_);
     obj["active"] = Value::make_bool(is_active());
     obj["micMuted"] = Value::make_bool(mic_muted_.load());
     Value remote_mic = Value::make_obj();
@@ -2103,12 +2133,14 @@ json::Value AssistantManager::get_status_json() {
     }
     obj["enabled"] = Value::make_bool(c.enabled);
     obj["mode"] = Value::make_str(c.mode);
-    obj["model"] = Value::make_str(c.mode == "chatgpt" ? c.chatgpt_model : c.gemini_model);
+    obj["quickCommandsReady"] = Value::make_bool(c.enabled && c.quick_commands && c.mode == "gemini" &&
+        wake_word_.is_ready() && local_asr_ready_);
+    obj["model"] = Value::make_str("gemini-3.8-live");
     obj["voiceName"] = Value::make_str(c.voice_name);
     obj["proxyHost"] = Value::make_str(c.gemini_proxy_host);
     obj["proxyActive"] = Value::make_bool(use_proxy_host_.load() && !c.gemini_proxy_host.empty());
     obj["hasApiKey"] = Value::make_bool(!c.gemini_api_key.empty());
-    obj["agentMode"] = Value::make_bool(c.mode == "gemini" && c.agent_mode);
+    obj["agentMode"] = Value::make_bool(c.agent_mode);
 
     Value hist = Value::make_arr();
     {

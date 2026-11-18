@@ -15,7 +15,7 @@ namespace {
 constexpr int SUPPORTED_KEYS[] = {
     KEY_BACK, KEY_HOMEPAGE, KEY_MENU, KEY_ENTER, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
     KEY_VOLUMEUP, KEY_VOLUMEDOWN, KEY_MUTE, KEY_POWER, KEY_WAKEUP, KEY_SLEEP, KEY_PLAYPAUSE,
-    KEY_STOPCD, KEY_NEXTSONG, KEY_PREVIOUSSONG, KEY_SEARCH, KEY_ESC, KEY_OK, KEY_SELECT,
+    KEY_PLAYCD, KEY_PAUSECD, KEY_STOPCD, KEY_NEXTSONG, KEY_PREVIOUSSONG, KEY_SEARCH, KEY_ESC, KEY_OK, KEY_SELECT,
     KEY_INFO, KEY_CHANNELUP, KEY_CHANNELDOWN, KEY_REWIND, KEY_FASTFORWARD,
     BTN_LEFT, BTN_RIGHT, BTN_MIDDLE
 };
@@ -110,6 +110,8 @@ bool UinputKeys::send_android_action(const std::string& action) {
     if (action == "vol_down") return send_key(KEY_VOLUMEDOWN);
     if (action == "mute") return send_key(KEY_MUTE);
     if (action == "play_pause") return send_key(KEY_PLAYPAUSE);
+    if (action == "play") return send_key(KEY_PLAYCD);
+    if (action == "pause") return send_key(KEY_PAUSECD);
     if (action == "next") return send_key(KEY_NEXTSONG);
     if (action == "prev") return send_key(KEY_PREVIOUSSONG);
     if (action == "power") return send_key(KEY_POWER);

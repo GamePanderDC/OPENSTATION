@@ -100,7 +100,6 @@ class StationAudioService : Service() {
     lateinit var musicPlayer: YandexMusicPlayer
         private set
     private var udpSocket: DatagramSocket? = null
-    private val localSpeech by lazy { LocalSpeech(applicationContext) }
     private var specUdpSocket: DatagramSocket? = null
     private var dynProc: DynamicsProcessing? = null
     private var legacyEq: Equalizer? = null
@@ -282,7 +281,6 @@ class StationAudioService : Service() {
     }
 
     override fun onDestroy() {
-        localSpeech.close()
         running = false
         bleRemoteManager?.stopReconnect()
         if (instance === this) instance = null
@@ -434,20 +432,12 @@ class StationAudioService : Service() {
                         bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 8086))
                     }
                     udpSocket = sock
-                    val buf = ByteArray(12288)
+                    val buf = ByteArray(4096)
                     while (running) {
                         val pkt = DatagramPacket(buf, buf.size)
                         sock.receive(pkt)
                         val msg = String(pkt.data, 0, pkt.length, Charsets.UTF_8)
-                        val remote = pkt.socketAddress
-                        val server = sock
-                        handleUdpJson(msg) { success ->
-                            val payload = byteArrayOf(if (success) 1 else 0)
-                            thread(name = "LocalSpeechAck", isDaemon = true) {
-                                try { server.send(DatagramPacket(payload, payload.size, remote)) }
-                                catch (_: java.io.IOException) {}
-                            }
-                        }
+                        handleUdpJson(msg)
                     }
                 } catch (t: Throwable) {
                     if (running) {
@@ -462,12 +452,10 @@ class StationAudioService : Service() {
         }
     }
 
-    private fun handleUdpJson(raw: String, reply: (Boolean) -> Unit) {
+    private fun handleUdpJson(raw: String) {
         try {
             val obj = JSONObject(raw)
             when (obj.optString("cmd")) {
-                "local_speech" -> localSpeech.speak(obj.optString("id"), obj.optString("text"), reply)
-                "local_speech_stop" -> localSpeech.stop(obj.optString("id"))
                 "remote_voice_start" -> remoteVoiceCapture?.start()
                 "remote_voice_stop" -> remoteVoiceCapture?.stop()
                 "eq" -> {

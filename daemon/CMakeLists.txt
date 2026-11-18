@@ -39,14 +39,9 @@ add_executable(openstationd
     src/hw/input_monitor.cpp
     src/hw/audio_engine.cpp
     src/assistant/tls_ws_client.cpp
-    src/assistant/offline_asr.cpp
-    src/assistant/chatgpt_oidc.cpp
-    src/assistant/chatgpt_http.cpp
-    src/assistant/chatgpt_auth.cpp
-    src/assistant/chatgpt_client.cpp
-    src/assistant/chatgpt_session.cpp
     src/assistant/proxy_selector.cpp
     src/assistant/wake_word.cpp
+    src/assistant/offline_asr.cpp
     src/assistant/timer_manager.cpp
     src/assistant/assistant_manager.cpp
     src/wyoming/wyoming_server.cpp

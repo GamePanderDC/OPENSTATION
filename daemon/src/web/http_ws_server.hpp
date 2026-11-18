@@ -19,7 +19,6 @@ struct HttpRequest {
     std::string host;
     std::string origin;
     std::string content_type;
-    bool loopback = false;
 };
 
 struct HttpResponse {

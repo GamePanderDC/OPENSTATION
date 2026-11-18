@@ -1629,8 +1629,7 @@ textarea { resize: vertical; line-height: 1.45; }
   border-radius: 18px;
   backdrop-filter: blur(20px);
 }
-.conn-banner[hidden], .alarm-banner[hidden], #chatgptAccount[hidden],
-#chatgptAccount [hidden], #astAgentRow[hidden] { display: none !important; }
+.conn-banner[hidden], .alarm-banner[hidden] { display: none !important; }
 .conn-banner > div, .alarm-banner > div { flex: 1; display: flex; flex-direction: column; font-size: 0.84rem; }
 .conn-banner b, .alarm-banner b { font-size: 0.94rem; }
 .conn-banner { background: rgba(251, 66, 104, 0.16); border: 1px solid rgba(251, 66, 104, 0.42); color: #ffd4dd; }

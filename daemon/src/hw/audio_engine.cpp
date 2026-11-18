@@ -19,6 +19,7 @@ namespace openstation {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kVqeRetrySeconds = 30;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -95,6 +96,7 @@ struct AAudioApi {
 AAudioApi g_aa;
 
 AAudioStream* open_aaudio_input(int req_ch, int req_rate, int32_t preset) {
+    if (preset >= 0 && !g_aa.builder_setInputPreset) return nullptr;
     AAudioStreamBuilder* b = nullptr;
     if (g_aa.createStreamBuilder(&b) != AAUDIO_OK || !b) return nullptr;
     g_aa.builder_setDirection(b, AAUDIO_DIRECTION_INPUT);
@@ -223,7 +225,8 @@ AudioEngine::~AudioEngine() {
     stop();
 }
 
-bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb) {
+bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb,
+                        InputRetryAllowedCallback input_retry_allowed) {
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
         cfg_ = cfg;
@@ -231,6 +234,7 @@ bool AudioEngine::start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumC
     mic_muted_.store(cfg.mic_muted);
     pcm_cb_ = std::move(pcm_cb);
     spec_cb_ = std::move(spec_cb);
+    input_retry_allowed_ = std::move(input_retry_allowed);
     wav_ring_.assign(kWavRingMax, 0);
     aec_.reset(true);
     aec_x_clean_ = true;
@@ -742,7 +746,11 @@ static int open_alsa_pcm_capture(const char* dev, unsigned int rate, unsigned in
     return fd;
 }
 
-void AudioEngine::run_alsa_capture_session(int max_duration_sec) {
+bool AudioEngine::input_retry_allowed() const {
+    return !input_retry_allowed_ || input_retry_allowed_();
+}
+
+void AudioEngine::run_alsa_capture_session(int retry_after_seconds) {
     const unsigned int rate = 48000;
     const unsigned int ch = 16;
     unsigned int period = 1024; // ~21.3 ms, power-of-2 for Amlogic AXG PDM DMA
@@ -750,7 +758,7 @@ void AudioEngine::run_alsa_capture_session(int max_duration_sec) {
     if (fd < 0) {
         {
             std::lock_guard<std::mutex> lk(stat_mu_);
-            capture_backend_ = "alsa_busy_fallback_aaudio";
+            capture_backend_ = "alsa_unavailable";
         }
         LOGW("AudioEngine", "Direct /dev/snd/pcmC0D1c busy/unavailable (%s), retrying", strerror(errno));
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -785,14 +793,14 @@ void AudioEngine::run_alsa_capture_session(int max_duration_sec) {
     active_channels_.store(ch);
     LOGI("AudioEngine", "Raw ALSA 16-ch capture started (/dev/snd/pcmC0D1c, 48000 Hz, 16 ch, period=%u)", period);
 
-    const auto session_deadline = (max_duration_sec > 0)
-        ? (std::chrono::steady_clock::now() + std::chrono::seconds(max_duration_sec))
+    const auto retry_at = (retry_after_seconds > 0)
+        ? (std::chrono::steady_clock::now() + std::chrono::seconds(retry_after_seconds))
         : std::chrono::steady_clock::time_point::max();
 
     std::vector<int16_t> buf(static_cast<size_t>(period) * ch);
     while (running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
-        if (max_duration_sec > 0 && std::chrono::steady_clock::now() >= session_deadline) {
-            LOGI("AudioEngine", "ALSA recovery window (%ds) complete; re-trying AAudio YandexVQE", max_duration_sec);
+        if (std::chrono::steady_clock::now() >= retry_at && input_retry_allowed()) {
+            LOGI("AudioEngine", "Retrying Yandex VQE after using the ALSA input");
             break;
         }
         struct snd_xferi xfer {};
@@ -847,9 +855,9 @@ void AudioEngine::capture_loop() {
 
         if (prefer_alsa_after_silence) {
             const auto started = std::chrono::steady_clock::now();
-            run_alsa_capture_session(30);
+            run_alsa_capture_session(kVqeRetrySeconds);
             if (!running_.load() || !capture_enabled_.load() || reopen_capture_.load()) continue;
-            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(28)) {
+            if (std::chrono::steady_clock::now() - started >= std::chrono::seconds(kVqeRetrySeconds - 2)) {
                 // Recovery window finished; return to AAudio GENERIC (YandexVQE).
                 prefer_alsa_after_silence = false;
                 alsa_short_retries = 0;
@@ -877,14 +885,22 @@ void AudioEngine::capture_loop() {
         };
 
         const char* opened_tag = "unknown";
+        bool preferred_input = false;
         for (const auto& a : attempts) {
             stream = open_aaudio_input(a.ch, a.rate, a.preset);
-            if (stream) {
-                opened_tag = a.tag;
-                std::lock_guard<std::mutex> lk(stat_mu_);
-                capture_backend_ = a.tag;
-                break;
+            if (!stream) continue;
+            const aaudio_result_t result = g_aa.stream_requestStart(stream);
+            if (result != AAUDIO_OK) {
+                LOGW("AudioEngine", "Cannot start %s (%s), trying the next input", a.tag, g_aa.err_str(result));
+                g_aa.stream_close(stream);
+                stream = nullptr;
+                continue;
             }
+            opened_tag = a.tag;
+            preferred_input = a.preset == AAUDIO_INPUT_PRESET_GENERIC;
+            std::lock_guard<std::mutex> lk(stat_mu_);
+            capture_backend_ = a.tag;
+            break;
         }
 
         if (!stream) {
@@ -893,7 +909,7 @@ void AudioEngine::capture_loop() {
                 capture_backend_ = "alsa_fallback";
             }
             LOGW("AudioEngine", "Cannot open AAudio capture stream, trying direct ALSA fallback...");
-            run_alsa_capture_session();
+            run_alsa_capture_session(kVqeRetrySeconds);
             if (!capture_enabled_.load() || reopen_capture_.load() || !running_.load()) continue;
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             continue;
@@ -924,21 +940,18 @@ void AudioEngine::capture_loop() {
         active_sample_rate_.store(rate);
         active_channels_.store(ch);
 
-        aaudio_result_t sr = g_aa.stream_requestStart(stream);
-        if (sr != AAUDIO_OK) {
-            LOGW("AudioEngine", "AAudio requestStart failed: %s", g_aa.err_str(sr));
-            g_aa.stream_close(stream);
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            continue;
-        }
-
         LOGI("AudioEngine", "Capture started (%s, %d Hz, %d ch)", opened_tag, rate, ch);
         int32_t chunk_frames = std::max<int32_t>(160, rate / 50); // 20 ms
         std::vector<int16_t> buf(static_cast<size_t>(chunk_frames) * ch);
         int consecutive_zero_chunks = 0;
         bool try_alsa_on_silence = false;
+        const auto retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(kVqeRetrySeconds);
 
         while (running_.load() && capture_enabled_.load() && !reopen_capture_.load()) {
+            if (!preferred_input && std::chrono::steady_clock::now() >= retry_at && input_retry_allowed()) {
+                LOGI("AudioEngine", "Retrying Yandex VQE after using %s", opened_tag);
+                break;
+            }
             aaudio_result_t n = g_aa.stream_read(stream, buf.data(), chunk_frames, 200000000LL);
             if (n > 0) {
                 int16_t max_abs = 0;

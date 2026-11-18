@@ -24,11 +24,13 @@ public:
     using WsAudioCallback = std::function<void(const int16_t* samples, size_t count)>;
     using SpectrumCallback = std::function<void(const std::array<float, 24>& bands)>;
     using SpectrumNeededCallback = std::function<bool()>;
+    using InputRetryAllowedCallback = std::function<bool()>;
 
     AudioEngine() = default;
     ~AudioEngine();
 
-    bool start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb);
+    bool start(const AudioConfig& cfg, Pcm16kCallback pcm_cb, SpectrumCallback spec_cb,
+               InputRetryAllowedCallback input_retry_allowed = {});
     void stop();
 
     void update_config(const AudioConfig& cfg);
@@ -66,7 +68,8 @@ private:
     };
 
     void capture_loop();
-    void run_alsa_capture_session(int max_duration_sec = 0);
+    void run_alsa_capture_session(int retry_after_seconds);
+    bool input_retry_allowed() const;
     void playback_loop();
     void process_frame(const int16_t* interleaved, size_t frames, int ch_count, int sample_rate);
 
@@ -75,6 +78,7 @@ private:
 
     Pcm16kCallback pcm_cb_;
     SpectrumCallback spec_cb_;
+    InputRetryAllowedCallback input_retry_allowed_;
     SpectrumNeededCallback spec_needed_cb_;
     std::mutex spec_needed_mu_;
     WsAudioCallback ws_audio_cb_;

@@ -14,7 +14,7 @@ public:
     OfflineAsr(const OfflineAsr&) = delete;
     OfflineAsr& operator=(const OfflineAsr&) = delete;
     bool initialize(std::string& error);
-    bool recognize(const std::vector<int16_t>& pcm, std::string& text, std::string& error, bool require_speech = true);
+    bool recognize(const std::vector<int16_t>& pcm, std::string& text, std::string& error);
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

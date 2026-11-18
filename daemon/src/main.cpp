@@ -1,6 +1,5 @@
 #include "assistant/assistant_intents.hpp"
 #include "assistant/assistant_manager.hpp"
-#include "assistant/chatgpt_client.hpp"
 #include "assistant/timer_manager.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "assistant/proxy_selector.hpp"
@@ -54,12 +53,13 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.26";
+constexpr const char* kFirmwareVersion = "1.6.27";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
 constexpr const char* kVoiceTimeoutMigratedPath = "/data/local/openstation/.voice_timeout_164";
 constexpr const char* kSmartProxyMigratedPath = "/data/local/openstation/.smart_proxy_1625";
+constexpr const char* kVqeInputMigratedPath = "/data/local/openstation/.vqe_input_1627";
 
 std::atomic<bool> g_stop{false};
 
@@ -1298,7 +1298,18 @@ int main(int argc, char** argv) {
     std::thread(startup_misc_and_wireless_hardware).detach();
 
     DaemonConfig cfg;
-    cfg.load();
+    const bool loaded_cfg = cfg.load();
+    if (loaded_cfg && !file_exists_plain(kVqeInputMigratedPath)) {
+        // Older installers seeded direct ALSA. Prefer the stock VQE input
+        // once on upgrade. Explicit changes after this migration are retained.
+        bool saved = true;
+        if (cfg.audio.capture_mode == "alsa_16ch") {
+            cfg.audio.capture_mode = "aaudio";
+            saved = cfg.save();
+            LOGI("Main", "Switched legacy microphone configuration to the automatic VQE input");
+        }
+        if (saved) write_text_file_atomic(kVqeInputMigratedPath, "1\n");
+    }
     if (!file_exists_plain(kSmartProxyMigratedPath)) {
         bool saved = true;
         if (cfg.assistant.gemini_proxy_host == "ai-pool.comss.one") {
@@ -1990,7 +2001,7 @@ int main(int argc, char** argv) {
                                              ? c.input.action_short
                                              : c.input.action_long;
                 if (act == "assistant") {
-                    if (c.assistant.enabled && (c.assistant.mode == "gemini" || c.assistant.mode == "chatgpt")) {
+                    if (c.assistant.enabled && c.assistant.mode == "gemini") {
                         assistant.toggle_session();
                     } else if (c.wyoming.enabled) {
                         if (wyoming.is_streaming()) wyoming.stop_session();
@@ -2038,7 +2049,7 @@ int main(int argc, char** argv) {
             }
             case HwEventType::RemoteAssistantDown: {
                 if (c.input.remote_long == "push_to_talk" && !remote_voice_held.load()) {
-                    if (c.assistant.enabled && (c.assistant.mode == "gemini" || c.assistant.mode == "chatgpt") && remote_voice_available.load() &&
+                    if (c.assistant.enabled && c.assistant.mode == "gemini" && remote_voice_available.load() &&
                         ensure_launcher_service_udp(8086) && assistant.begin_remote_turn()) {
                         json::Value cmd = json::Value::make_obj();
                         cmd["cmd"] = json::Value::make_str("remote_voice_start");
@@ -2061,7 +2072,7 @@ int main(int argc, char** argv) {
                         cmd["action"] = json::Value::make_str("PLAY_PAUSE");
                         send_udp_json(8086, cmd.dump(-1));
                     } else uinput.send_android_action("play_pause");
-                } else if (c.input.remote_short == "assistant" && c.assistant.enabled && (c.assistant.mode == "gemini" || c.assistant.mode == "chatgpt")) {
+                } else if (c.input.remote_short == "assistant" && c.assistant.enabled && c.assistant.mode == "gemini") {
                     assistant.toggle_session();
                 } else if (c.input.remote_short == "assistant" && c.wyoming.enabled) {
                     if (wyoming.is_streaming()) wyoming.stop_session();
@@ -2501,47 +2512,38 @@ int main(int argc, char** argv) {
     };
 
     AssistantCallbacks acb;
+    acb.quick_command = [&](QuickCommand command) {
+        if (command == QuickCommand::Louder || command == QuickCommand::Quieter) {
+            step_android_volume_pct(command == QuickCommand::Louder ? 10 : -10, true);
+            return;
+        }
+        const char* player_action = nullptr;
+        const char* media_key = nullptr;
+        switch (command) {
+            case QuickCommand::Next: player_action = "NEXT"; media_key = "next"; break;
+            case QuickCommand::Previous: player_action = "PREV"; media_key = "prev"; break;
+            case QuickCommand::Play: player_action = "RESUME"; media_key = "play"; break;
+            case QuickCommand::Pause: player_action = "PAUSE"; media_key = "pause"; break;
+            case QuickCommand::Stop: player_action = "STOP"; media_key = "stop"; break;
+            default: return;
+        }
+        bool use_music_player = false;
+        {
+            std::lock_guard<std::mutex> lock(music_mu);
+            use_music_player = music_state.playing || music_state.paused;
+        }
+        if (use_music_player && is_udp_port_bound(8086)) {
+            auto payload = json::Value::make_obj();
+            payload["cmd"] = json::Value::make_str("music_action");
+            payload["action"] = json::Value::make_str(player_action);
+            if (send_udp_json(8086, payload.dump())) return;
+        }
+        if (media_key) uinput.send_android_action(media_key);
+    };
     acb.stop_remote_capture = [&]() {
         json::Value cmd = json::Value::make_obj();
         cmd["cmd"] = json::Value::make_str("remote_voice_stop");
         send_udp_json(8086, cmd.dump(-1));
-    };
-    acb.speak_locally = [&](const std::string& text, const std::atomic<bool>& abort) {
-        if (abort || !ensure_launcher_service_udp(8086)) return false;
-        static std::atomic<uint64_t> sequence{0};
-        const std::string id = std::to_string(getpid()) + "-" + std::to_string(++sequence);
-        const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-        if (fd < 0) return false;
-        sockaddr_in target{};
-        target.sin_family = AF_INET;
-        target.sin_port = htons(8086);
-        target.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        bool ok = false;
-        if (connect(fd, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == 0) {
-            auto command = json::Value::make_obj();
-            command["cmd"] = json::Value::make_str("local_speech");
-            command["id"] = json::Value::make_str(id);
-            command["text"] = json::Value::make_str(ensure_utf8_and_truncate(text, 3500, "text/plain; charset=utf-8"));
-            const std::string payload = command.dump();
-            if (!abort && send(fd, payload.data(), payload.size(), 0) == static_cast<ssize_t>(payload.size())) {
-                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
-                while (!abort && !g_stop && std::chrono::steady_clock::now() < deadline) {
-                    pollfd ready{fd, POLLIN, 0};
-                    if (poll(&ready, 1, 100) <= 0) continue;
-                    uint8_t result = 0;
-                    ok = recv(fd, &result, 1, MSG_DONTWAIT) == 1 && result == 1;
-                    break;
-                }
-                if (!ok) {
-                    command.obj_val.erase("text");
-                    command["cmd"] = json::Value::make_str("local_speech_stop");
-                    const auto stop = command.dump();
-                    send(fd, stop.data(), stop.size(), 0);
-                }
-            }
-        }
-        close(fd);
-        return ok;
     };
     acb.play_pcm = [&](const int16_t* samples, size_t frames, int rate, int ch) {
         audio.play_pcm(samples, frames, rate, ch);
@@ -4159,7 +4161,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lk(cfg_mu);
                 c_snap = cfg;
             }
-            if (c_snap.assistant.enabled && (c_snap.assistant.mode == "gemini" || c_snap.assistant.mode == "chatgpt")) {
+            if (c_snap.assistant.enabled && c_snap.assistant.mode == "gemini") {
                 assistant.feed_audio_16k(pcm, count, rms, audio.processed_noise_level());
             }
             if (c_snap.wyoming.enabled && (c_snap.assistant.mode == "wyoming" || !c_snap.assistant.enabled)) {
@@ -4168,6 +4170,9 @@ int main(int argc, char** argv) {
         },
         [&](const std::array<float, 24>& bands) {
             leds.set_spectrum(bands);
+        },
+        [&]() {
+            return !assistant.is_active() && !wyoming.is_streaming();
         });
 
     audio.set_ws_audio_sink([&](const int16_t* pcm, size_t samples) {
@@ -4924,59 +4929,6 @@ int main(int argc, char** argv) {
                 }
                 wyoming.trigger_button_session(dur);
                 return HttpResponse::json("{\"ok\":true}");
-            }
-            if (req.path.rfind("/api/chatgpt/", 0) == 0) {
-                // The PC setup helper forwards the station's UI and OAuth callback over ADB.
-                // Require a loopback peer as well as a loopback Host to prevent DNS rebinding.
-                const bool local_host = req.host == "127.0.0.1" ||
-                    (req.host.compare(0, 10, "127.0.0.1:") == 0 && req.host.size() > 10 &&
-                     req.host.find_first_not_of("0123456789", 10) == std::string::npos);
-                const bool origin_ok = req.origin.empty() || req.origin == "http://" + req.host;
-                const bool json_post = req.content_type == "application/json" ||
-                                       req.content_type.rfind("application/json;", 0) == 0;
-                if (!req.loopback || !local_host || !origin_ok || (req.method == "POST" && !json_post)) {
-                    return HttpResponse::json(R"({"error":"Откройте настройки через помощник входа ChatGPT на компьютере."})", 403);
-                }
-
-                auto& auth = assistant.chatgpt_auth();
-                if (req.method == "GET" && req.path == "/api/chatgpt/status") {
-                    return HttpResponse::json(auth.status().dump());
-                }
-                json::Value res = json::Value::make_obj();
-                std::string error;
-                bool ok = false;
-                if (req.method == "GET" && req.path == "/api/chatgpt/models") {
-                    json::Value models;
-                    ok = chatgpt_list_models(auth, models, error);
-                    if (ok) res["models"] = std::move(models);
-                } else if (req.method == "POST" && (req.path == "/api/chatgpt/sign-in" ||
-                           req.path == "/api/chatgpt/select")) {
-                    json::Value body;
-                    if (req.body.size() > 2048 || !json::Parser::parse(req.body, body) || !body.is_obj()) {
-                        return HttpResponse::json(R"({"error":"Некорректный запрос."})", 400);
-                    }
-                    const auto* selected = body.get("id");
-                    const auto id = selected && selected->is_str() ? selected->as_str() : "";
-                    assistant.stop_session("chatgpt_account_change");
-                    if (req.path == "/api/chatgpt/sign-in") {
-                        std::string url;
-                        ok = auth.start(id, url, error);
-                        if (ok) res["url"] = json::Value::make_str(url);
-                    } else {
-                        ok = auth.select(id);
-                        if (!ok) error = "Не удалось выбрать аккаунт. Войдите в него снова.";
-                    }
-                } else if (req.method == "POST" && req.path == "/api/chatgpt/sign-out") {
-                    assistant.stop_session("chatgpt_sign_out");
-                    bool revoked = false;
-                    ok = auth.sign_out(revoked, error);
-                    res["revoked"] = json::Value::make_bool(revoked);
-                } else {
-                    return HttpResponse::json(R"({"error":"Неизвестный запрос."})", 404);
-                }
-                res["ok"] = json::Value::make_bool(ok);
-                if (!error.empty()) res["error"] = json::Value::make_str(error);
-                return HttpResponse::json(res.dump(), ok ? 200 : 400);
             }
             if (req.method == "POST" && req.path == "/api/assistant/trigger") {
                 std::string reason = "webui";

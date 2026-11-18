@@ -1,5 +1,6 @@
 #include "assistant/wake_word.hpp"
 #include "assistant/wake_word_tokens.hpp"
+#include "hw/voice_gain_policy.hpp"
 #include "sherpa_onnx/c-api.h"
 #include "utils/logger.hpp"
 
@@ -124,7 +125,7 @@ WakeWordEngine::~WakeWordEngine() {
     stop();
 }
 
-bool WakeWordEngine::start(const WakeWordSettings& settings, WakeCallback cb) {
+bool WakeWordEngine::start(const WakeWordSettings& settings, WakeCallback cb, QuickCallback quick_cb) {
     stop();
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
@@ -132,6 +133,7 @@ bool WakeWordEngine::start(const WakeWordSettings& settings, WakeCallback cb) {
         settings_dirty_ = false;
     }
     cb_ = std::move(cb);
+    quick_cb_ = std::move(quick_cb);
     {
         std::lock_guard<std::mutex> lk(q_mu_);
         pcm_q_.reserve(4096);
@@ -154,6 +156,7 @@ void WakeWordEngine::stop() {
 void WakeWordEngine::update_settings(const WakeWordSettings& settings) {
     std::lock_guard<std::mutex> lk(cfg_mu_);
     if (settings.enabled != settings_.enabled ||
+        settings.quick_commands != settings_.quick_commands ||
         settings.keywords != settings_.keywords ||
         std::abs(settings.threshold - settings_.threshold) > 1e-4f ||
         std::abs(settings.score - settings_.score) > 1e-4f ||
@@ -175,7 +178,8 @@ void WakeWordEngine::set_paused(bool paused) {
     }
 }
 
-void WakeWordEngine::feed_audio_16k(const int16_t* samples, size_t count) {
+void WakeWordEngine::feed_audio_16k(const int16_t* samples, size_t count, float noise_rms) {
+    noise_rms_.store(noise_rms, std::memory_order_relaxed);
     if (!samples || count == 0 || !running_.load() || paused_.load() || !ready_.load()) {
         return;
     }
@@ -282,7 +286,7 @@ void WakeWordEngine::worker_loop() {
         vad_cfg.provider = "cpu";
         vad_cfg.debug = 0;
 
-        vad = g_sherpa.createVad(&vad_cfg, 6.0f);
+        vad = g_sherpa.createVad(&vad_cfg, cur.quick_commands ? 20.0f : 6.0f);
         if (!vad) {
             set_status("error: createVad failed");
             LOGE("WakeWord", "Failed to create Silero VAD");
@@ -404,6 +408,28 @@ void WakeWordEngine::worker_loop() {
     uint32_t vad_clr_cnt = 0;
     uint32_t pb_poll_cnt = 0;
     auto last_trigger_tp = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    // Preserve the start of quiet words, then finish once the capture has a
+    // continuous pause. Silero confirms speech without controlling this timer.
+    constexpr size_t kCommandLead = kVadWin * 8;
+    constexpr size_t kCommandMax = 48000;
+    constexpr int kCommandPause = 14;
+    std::vector<int16_t> command_lead(kCommandLead);
+    std::vector<int16_t> command_pcm;
+    command_pcm.reserve(kCommandMax);
+    size_t lead_write = 0, lead_size = 0;
+    int command_quiet = 0;
+    int command_idle = 0;
+    bool command_open = false, command_voiced = false, command_too_long = false;
+    auto reset_command = [&] {
+        lead_write = lead_size = 0;
+        command_quiet = 0;
+        command_idle = 0;
+        command_open = command_voiced = command_too_long = false;
+        command_pcm.clear();
+    };
+    auto to_pcm = [](float sample) {
+        return static_cast<int16_t>(std::clamp(sample * 32768.0f, -32768.0f, 32767.0f));
+    };
 
     while (running_.load()) {
         batch.clear();
@@ -436,6 +462,7 @@ void WakeWordEngine::worker_loop() {
         }
 
         if (need_recreate) {
+            reset_command();
             acc.clear();
             acc_head = 0;
             lead_head = 0;
@@ -449,6 +476,7 @@ void WakeWordEngine::worker_loop() {
         }
 
         if (do_reset) {
+            reset_command();
             acc.clear();
             acc_head = 0;
             lead_head = 0;
@@ -470,7 +498,6 @@ void WakeWordEngine::worker_loop() {
         acc.insert(acc.end(), batch.begin(), batch.end());
         while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
             const float* win = acc.data() + acc_head;
-
             if ((pb_poll_cnt++ & 15U) == 0U) {
                 speaker_playing = is_speaker_playback_running();
             }
@@ -481,8 +508,10 @@ void WakeWordEngine::worker_loop() {
             }
             const float mean_sq = sum_sq / static_cast<float>(kVadWin);
 
+            const bool collect_commands = cur_cfg.quick_commands && quick_cb_;
             // Fast dead-silence energy gate before invoking ONNX when idle & quiet.
-            if (!speaker_playing && !kws_active && hangover_wins == 0 && mean_sq < 2.0e-7f) {
+            if (!collect_commands && !speaker_playing && !kws_active && hangover_wins == 0 &&
+                mean_sq < 2.0e-7f) {
                 if (vad_had_speech) {
                     g_sherpa.vadReset(vad);
                     vad_had_speech = false;
@@ -497,19 +526,22 @@ void WakeWordEngine::worker_loop() {
 
             bool speech = false;
             bool continuous_audio = false;
+            bool voiced = false;
+            if (!speaker_playing || collect_commands) {
+                g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
+                voiced = g_sherpa.vadDetected(vad) != 0;
+            }
             if (speaker_playing) {
                 // During active speaker playback, never let Silero VAD suppress wake words
                 // (music residuals/harmonics pull Silero below threshold even at loud SNRs).
-                if (vad_had_speech) {
-                    g_sherpa.vadReset(vad);
-                    vad_had_speech = false;
-                }
-                vad_speech_active_.store(false);
+                if (!collect_commands && vad_had_speech) g_sherpa.vadReset(vad);
+                vad_had_speech = voiced;
+                vad_speech_active_.store(voiced);
+                if (collect_commands) g_sherpa.vadClear(vad);
                 speech = true;
                 continuous_audio = true;
             } else {
-                g_sherpa.vadAccept(vad, win, static_cast<int32_t>(kVadWin));
-                speech = (g_sherpa.vadDetected(vad) != 0);
+                speech = voiced;
                 vad_speech_active_.store(speech);
                 if (speech) vad_had_speech = true;
                 if (speech || (++vad_clr_cnt & 31U) == 0U) {
@@ -596,6 +628,45 @@ void WakeWordEngine::worker_loop() {
                             if (cb_) cb_(hit);
                         }
                         break;
+                    }
+                }
+            }
+
+            if (collect_commands && !paused_) {
+                const float floor = dialogue_activity_threshold(noise_rms_.load(std::memory_order_relaxed)) / 32768.0f;
+                const bool audible = mean_sq >= floor * floor;
+                if (!command_open && audible) {
+                    command_open = true;
+                    size_t start = (lead_write + kCommandLead - lead_size) % kCommandLead;
+                    for (size_t i = 0; i < lead_size; ++i) {
+                        command_pcm.push_back(command_lead[(start + i) % kCommandLead]);
+                    }
+                }
+                if (command_open) {
+                    command_voiced |= voiced;
+                    command_quiet = audible ? 0 : command_quiet + 1;
+                    if (command_pcm.size() + kVadWin <= kCommandMax) {
+                        for (size_t i = 0; i < kVadWin; ++i) command_pcm.push_back(to_pcm(win[i]));
+                    } else {
+                        command_too_long = true;
+                    }
+                    if (command_quiet >= kCommandPause) {
+                        if (command_voiced && !command_too_long) {
+                            quick_cb_(command_pcm);
+                        }
+                        reset_command();
+                        g_sherpa.vadReset(vad);
+                    }
+                } else {
+                    for (size_t i = 0; i < kVadWin; ++i) {
+                        command_lead[lead_write] = to_pcm(win[i]);
+                        lead_write = (lead_write + 1) % kCommandLead;
+                    }
+                    lead_size = std::min(kCommandLead, lead_size + kVadWin);
+                    command_idle = voiced ? 0 : command_idle + 1;
+                    if (command_idle == 100) {
+                        g_sherpa.vadReset(vad);
+                        command_idle = 0;
                     }
                 }
             }

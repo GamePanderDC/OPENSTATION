@@ -666,7 +666,7 @@ if (-not $curCfgText) {
     $cfgObj = [pscustomobject]@{
         setupCompleted = $false
         audio = [pscustomobject]@{
-            captureMode = "alsa_16ch"
+            captureMode = "aaudio"
             kwsThreads = 1
         }
         assistant = [pscustomobject]@{

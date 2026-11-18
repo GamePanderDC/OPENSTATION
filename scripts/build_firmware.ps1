@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.26",
-    [string]$Changelog = "ChatGPT с входом через аккаунт, голосовым режимом разговора и локальным распознаванием речи.",
+    [string]$Version = "1.6.27",
+    [string]$Changelog = "Автоматический выбор Yandex VQE и голосовые команды без обращения «Алиса». Интеграция ChatGPT удалена.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

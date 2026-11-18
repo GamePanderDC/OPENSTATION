@@ -21,16 +21,18 @@ struct WakeWordSettings {
     float score = 1.5f;
     int num_threads = 1;
     int mic_sensitivity = 85;
+    bool quick_commands = false;
 };
 
 class WakeWordEngine {
 public:
     using WakeCallback = std::function<void(const std::string& keyword)>;
+    using QuickCallback = std::function<void(const std::vector<int16_t>&)>;
 
     WakeWordEngine() = default;
     ~WakeWordEngine();
 
-    bool start(const WakeWordSettings& settings, WakeCallback cb);
+    bool start(const WakeWordSettings& settings, WakeCallback cb, QuickCallback quick_cb = {});
     void stop();
 
     void update_settings(const WakeWordSettings& settings);
@@ -38,7 +40,7 @@ public:
     bool is_paused() const { return paused_.load(); }
     bool is_ready() const { return ready_.load(); }
 
-    void feed_audio_16k(const int16_t* samples, size_t count);
+    void feed_audio_16k(const int16_t* samples, size_t count, float noise_rms = 50.0f);
 
     json::Value get_status_json();
 
@@ -50,10 +52,12 @@ private:
     bool settings_dirty_ = false;
 
     WakeCallback cb_;
+    QuickCallback quick_cb_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> paused_{false};
     std::atomic<bool> ready_{false};
+    std::atomic<float> noise_rms_{50.0f};
     std::atomic<bool> vad_speech_active_{false};
     std::atomic<uint64_t> detections_{0};
     std::string status_str_ = "uninitialized";

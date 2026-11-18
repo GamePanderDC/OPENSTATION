@@ -233,7 +233,7 @@ void DaemonConfig::sanitize_and_validate() {
         input.remote_long = "next";
     }
 
-    if (!is_one_of(assistant.mode, {"gemini", "chatgpt", "wyoming", "off"})) {
+    if (!is_one_of(assistant.mode, {"gemini", "wyoming", "off"})) {
         assistant.mode = "gemini";
     }
     {
@@ -248,7 +248,6 @@ void DaemonConfig::sanitize_and_validate() {
            (assistant.gemini_api_key.back() == '\n' || assistant.gemini_api_key.back() == '\r' || assistant.gemini_api_key.back() == ' ')) {
         assistant.gemini_api_key.pop_back();
     }
-    if (assistant.chatgpt_model.size() > 128) assistant.chatgpt_model.clear();
     // gemini-3.8-live is the only supported Live model for station audio pipeline stability.
     assistant.gemini_model = "gemini-3.8-live";
     {
@@ -471,9 +470,8 @@ json::Value DaemonConfig::to_json() const {
     ast["mode"] = Value::make_str(assistant.mode);
     ast["name"] = Value::make_str(assistant.name);
     ast["geminiApiKey"] = Value::make_str(assistant.gemini_api_key);
-    ast["chatgptCallMode"] = Value::make_bool(assistant.chatgpt_call_mode);
-    ast["chatgptModel"] = Value::make_str(assistant.chatgpt_model);
     ast["geminiModel"] = Value::make_str(assistant.gemini_model);
+    ast["quickCommands"] = Value::make_bool(assistant.quick_commands);
     ast["geminiProxyHost"] = Value::make_str(assistant.gemini_proxy_host);
     ast["voiceName"] = Value::make_str(assistant.voice_name);
     ast["systemPrompt"] = Value::make_str(assistant.system_prompt);
@@ -672,11 +670,10 @@ void DaemonConfig::from_json(const json::Value& v) {
     if (auto* ast = v.get("assistant"); ast && ast->is_obj()) {
         if (auto* x = ast->get("enabled"); x && x->is_bool()) assistant.enabled = x->as_bool();
         if (auto* x = ast->get("mode"); x && x->is_str()) assistant.mode = x->as_str();
+        if (auto* x = ast->get("quickCommands"); x && x->is_bool()) assistant.quick_commands = x->as_bool();
         if (auto* x = ast->get("name"); x && x->is_str()) assistant.name = x->as_str();
         // Empty = preserve stored secret because status JSON masks secrets.
         if (auto* x = ast->get("geminiApiKey"); x && x->is_str() && !x->as_str().empty()) assistant.gemini_api_key = x->as_str();
-        if (auto* x = ast->get("chatgptCallMode"); x && x->is_bool()) assistant.chatgpt_call_mode = x->as_bool();
-        if (auto* x = ast->get("chatgptModel"); x && x->is_str()) assistant.chatgpt_model = x->as_str();
         // Locked to gemini-3.8-live regardless of stale client configs.
         assistant.gemini_model = "gemini-3.8-live";
         if (auto* x = ast->get("geminiProxyHost"); x && x->is_str()) assistant.gemini_proxy_host = x->as_str();

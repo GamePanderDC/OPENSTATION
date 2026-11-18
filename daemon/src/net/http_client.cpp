@@ -379,8 +379,7 @@ HttpClientResponse perform_single(const HttpClientRequest& req) {
     }
 
     std::string conn_err;
-    int fd = connect_tcp(req.connect_address.empty() ? u.host : req.connect_address,
-                         u.port, std::max(1000, rem_ms()), req.abort_req, conn_err);
+    int fd = connect_tcp(u.host, u.port, std::max(1000, rem_ms()), req.abort_req, conn_err);
     if (fd < 0) {
         resp.error = conn_err;
         return resp;
@@ -770,7 +769,6 @@ HttpClientResponse http_perform(const HttpClientRequest& req) {
                         to_lower_ascii(target.host) == to_lower_ascii(base.host) &&
                         target.port == base.port;
                     if (!same_origin) {
-                        cur.connect_address.clear();
                         for (auto it = cur.headers.begin(); it != cur.headers.end();) {
                             std::string name = to_lower_ascii(it->first);
                             if (name == "authorization" || name == "proxy-authorization" ||
