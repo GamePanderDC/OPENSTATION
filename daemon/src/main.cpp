@@ -4579,6 +4579,15 @@ int main(int argc, char** argv) {
                 if (!id || (action != "install" && action != "start" && action != "stop")) {
                     return HttpResponse::json("{\"error\":\"invalid receiver action\"}", 400);
                 }
+                if (action == "install") {
+                    const bool json_request = req.content_type == "application/json" ||
+                                              req.content_type.rfind("application/json;", 0) == 0;
+                    const bool same_origin = req.origin.empty() || req.origin == "http://" + req.host ||
+                                             req.origin == "https://" + req.host;
+                    if (!json_request || !same_origin) {
+                        return HttpResponse::json("{\"error\":\"Откройте веб-пульт станции напрямую\"}", 403);
+                    }
+                }
                 for (const auto& receiver : receivers) {
                     if (id->as_str() != receiver.id) continue;
                     std::lock_guard<std::mutex> lock(receiver_mu);

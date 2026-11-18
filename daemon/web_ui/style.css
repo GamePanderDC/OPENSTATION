@@ -438,6 +438,15 @@ body {
   color: #cbd5e1;
   margin-bottom: 6px;
 }
+#mediaReceivers .form-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+#mediaReceivers .form-row:last-child { margin-bottom: 0; }
+#mediaReceivers .btn { flex: none; }
+#mediaReceivers .btn[hidden] { display: none; }
 .toggle-row {
   display: flex;
   justify-content: space-between;

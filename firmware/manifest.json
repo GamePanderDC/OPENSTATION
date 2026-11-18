@@ -4,12 +4,12 @@
   "version": "1.6.31",
   "autonomous": true,
   "changelog": "Установка AirPlay 2 и Spotify Connect из веб-пульта. Удаление тестового Sherpa TTS.",
-  "buildTimeUtc": "2026-11-18T22:54:26Z",
+  "buildTimeUtc": "2026-11-18T23:00:44Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3298952,
-      "sha256": "297ce563a64640cdbe64faf7a6aa2a5bc8eea46b6923fbb36e9f0d6ae0f4179f",
+      "size": 3299656,
+      "sha256": "8dee1eb6e0e078c3a1891e062273f49424879a7ab2ba746043a194f3bbe43414",
       "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/openstationd"
     },
     "bootlogod": {
