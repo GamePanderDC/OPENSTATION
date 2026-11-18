@@ -356,7 +356,8 @@ int SpotifyMusic::api(const std::string& path, Value& output, const char* method
             retry_at_ = Clock::now() + std::chrono::seconds(std::clamp(seconds, 2, 3600));
         }
         if (response.status_code == 200 &&
-            (response.truncated || !json::Parser::parse(response.body, output))) return 502;
+            (response.truncated || (response.body.empty() ? std::string_view(method) == "GET"
+                                                           : !json::Parser::parse(response.body, output)))) return 502;
         return response.status_code;
     }
     return 401;

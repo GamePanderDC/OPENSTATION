@@ -4,12 +4,12 @@
   "version": "1.6.32",
   "autonomous": true,
   "changelog": "Плеер Spotify с поиском, плейлистами и избранным. Выбор сервиса на ТВ и в веб-пульте.",
-  "buildTimeUtc": "2026-11-18T23:33:53Z",
+  "buildTimeUtc": "2026-11-18T23:38:17Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3390144,
-      "sha256": "f849245dac61a0765def004a7d83c9ccceb3ca311e57a828085ed58ac0fe3e7c",
+      "size": 3390208,
+      "sha256": "623b9f1cd47eb3f40cf22566b356e28ecfbd7642902a27119adcf48f02f6c1ee",
       "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.32/openstationd"
     },
     "bootlogod": {
