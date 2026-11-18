@@ -4412,6 +4412,8 @@ int main(int argc, char** argv) {
     });
 
     constexpr char receiver_dir[] = "/data/local/openstation/receivers";
+    constexpr char receiver_base_url[] =
+        "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/";
     std::mutex receiver_mu;
     std::string installing_receiver;
     std::map<std::string, std::string> receiver_errors;
@@ -4500,8 +4502,7 @@ int main(int argc, char** argv) {
             !trusted_path(receiver_dir, true))
             return "Не удалось подготовить папку приёмников";
         HttpClientRequest request;
-        request.url = std::string("https://github.com/Olegu621/OPENSTATION/releases/download/v") +
-            kFirmwareVersion + "/" + receiver.asset;
+        request.url = std::string(receiver_base_url) + receiver.asset;
         request.timeout_ms = 120000;
         request.max_body_bytes = receiver.size + 1;
         request.abort_req = &g_stop;
