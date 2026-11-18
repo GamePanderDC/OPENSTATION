@@ -429,7 +429,7 @@ void WakeWordEngine::worker_loop() {
     // Preserve the start of quiet words, then finish once the capture has a
     // continuous pause. Silero confirms speech without controlling this timer.
     constexpr size_t kCommandLead = kVadWin * 8;
-    constexpr size_t kCommandMax = 48000;
+    constexpr size_t kCommandMax = 64000;
     constexpr int kCommandPause = 14;
     std::vector<int16_t> command_lead(kCommandLead);
     std::vector<int16_t> command_pcm;

@@ -756,7 +756,11 @@ class YandexMusicPlayer(private val context: Context) {
         }
     }
 
-    fun seekTo(posMs: Long) {
+    fun seekTo(posMs: Long) = seek(posMs, relative = false)
+
+    fun seekBy(deltaMs: Long) = seek(deltaMs, relative = true)
+
+    private fun seek(posMs: Long, relative: Boolean) {
         worker.submit {
             var updated = false
             synchronized(lock) {
@@ -764,14 +768,16 @@ class YandexMusicPlayer(private val context: Context) {
                 if (mp != null) {
                     try {
                         val dur = mp.duration.toLong()
-                        val tgt = if (dur > 0L) posMs.coerceIn(0L, dur) else posMs.coerceAtLeast(0L)
+                        val requested = if (relative) mp.currentPosition.toLong() + posMs else posMs
+                        val tgt = if (dur > 0L) requested.coerceIn(0L, dur) else requested.coerceIn(0L, Int.MAX_VALUE.toLong())
                         mp.seekTo(tgt.toInt())
                         updateMediaSessionLocked()
                         updated = true
                     } catch (_: Throwable) {}
                 } else if (isPaused && currentTrack != null) {
                     val dur = lastReportedDurMs.coerceAtLeast(currentTrack?.durationMs ?: 0L)
-                    savedPausedPosMs = if (dur > 0L) posMs.coerceIn(0L, dur) else posMs.coerceAtLeast(0L)
+                    val requested = if (relative) savedPausedPosMs + posMs else posMs
+                    savedPausedPosMs = if (dur > 0L) requested.coerceIn(0L, dur) else requested.coerceIn(0L, Int.MAX_VALUE.toLong())
                     savedPausedTrackId = currentTrack?.id ?: ""
                     updateMediaSessionLocked()
                     updated = true

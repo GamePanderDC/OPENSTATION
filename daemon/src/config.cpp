@@ -484,6 +484,7 @@ json::Value DaemonConfig::to_json() const {
     ast["googleSearch"] = Value::make_bool(assistant.google_search);
     ast["agentMode"] = Value::make_bool(assistant.agent_mode);
     ast["echoGuard"] = Value::make_bool(assistant.echo_guard);
+    ast["quietWhisperReply"] = Value::make_bool(assistant.quiet_whisper_reply);
     ast["preRollMs"] = Value::make_int(assistant.pre_roll_ms);
     ast["followUpSec"] = Value::make_int(assistant.follow_up_sec);
     ast["maxSessionSec"] = Value::make_int(assistant.max_session_sec);
@@ -688,6 +689,7 @@ void DaemonConfig::from_json(const json::Value& v) {
         if (auto* x = ast->get("googleSearch"); x && x->is_bool()) assistant.google_search = x->as_bool();
         if (auto* x = ast->get("agentMode"); x && x->is_bool()) assistant.agent_mode = x->as_bool();
         if (auto* x = ast->get("echoGuard"); x && x->is_bool()) assistant.echo_guard = x->as_bool();
+        if (auto* x = ast->get("quietWhisperReply"); x && x->is_bool()) assistant.quiet_whisper_reply = x->as_bool();
         if (auto* x = ast->get("preRollMs"); x && x->is_num()) assistant.pre_roll_ms = x->as_int();
         if (auto* x = ast->get("followUpSec"); x && x->is_num()) assistant.follow_up_sec = x->as_int();
         if (auto* x = ast->get("maxSessionSec"); x && x->is_num()) assistant.max_session_sec = x->as_int();

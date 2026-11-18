@@ -192,6 +192,7 @@
       if ($("astFollowUp")) ast.followUpSec = Number.isFinite(parseInt($("astFollowUp").value, 10)) ? parseInt($("astFollowUp").value, 10) : 4;
       if ($("astMaxSess")) ast.maxSessionSec = parseInt($("astMaxSess").value, 10) || 120;
       if ($("astEchoGuard")) ast.echoGuard = $("astEchoGuard").checked;
+      if ($("astQuietWhisper")) ast.quietWhisperReply = $("astQuietWhisper").checked;
       if ($("astSearch")) ast.googleSearch = $("astSearch").checked;
       if ($("astAgentMode")) ast.agentMode = $("astAgentMode").checked;
       ast.memoryNotes = currentMemoryNotes;
@@ -926,6 +927,7 @@
         if ($("astChime")) $("astChime").checked = cfg.assistant.chimeEnabled !== false;
         if ($("astSearch")) $("astSearch").checked = cfg.assistant.googleSearch === true;
         if ($("astEchoGuard")) $("astEchoGuard").checked = cfg.assistant.echoGuard !== false;
+        if ($("astQuietWhisper")) $("astQuietWhisper").checked = cfg.assistant.quietWhisperReply === true;
         if ($("astAgentMode")) $("astAgentMode").checked = cfg.assistant.agentMode !== false;
         if ($("astFollowUp")) $("astFollowUp").value = cfg.assistant.followUpSec ?? 4;
         if ($("astMaxSess")) $("astMaxSess").value = cfg.assistant.maxSessionSec ?? 120;
@@ -1335,7 +1337,7 @@
     "scrMode", "scrText", "scrColor", "scrAutoBri", "clockStyle", "visualizerStyle", "autoMusicVisualizer",
     "eqPreset", "actShort", "actLong", "remoteShort", "remoteLong", "rotaryInvert", "rotaryStep", "locCity",
     "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
-    "astPrompt", "astWakeEn", "astChime", "astQuickCommands", "astSearch", "astEchoGuard",
+    "astPrompt", "astWakeEn", "astChime", "astQuickCommands", "astSearch", "astEchoGuard", "astQuietWhisper",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"
   ].forEach((id) => {
     if ($(id)) $(id).addEventListener("change", scheduleConfigPush);
@@ -3605,7 +3607,41 @@
     });
   }
 
+  async function refreshMediaReceivers() {
+    const card = $("mediaReceivers");
+    if (!card) return;
+    try {
+      const data = await api("/api/music/receivers");
+      for (const [key, suffix] of [["airplay", "Airplay"], ["spotify", "Spotify"]]) {
+        const item = data[key];
+        const row = $("media" + suffix);
+        const status = $("media" + suffix + "Status");
+        const button = $("media" + suffix + "Toggle");
+        row.hidden = !item?.installed;
+        if (row.hidden) continue;
+        const running = item.state === "running";
+        status.textContent = running ? "Включён" : item.state === "stopped" ? "Выключен" : "Ошибка";
+        button.textContent = running ? "Выключить" : "Включить";
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            await api("/api/music/receivers", "POST", { receiver: key, action: running ? "stop" : "start" });
+          } catch (_) {
+            status.textContent = "Не удалось переключить приёмник";
+          } finally {
+            button.disabled = false;
+          }
+          setTimeout(refreshMediaReceivers, 1500);
+        };
+      }
+      card.hidden = $("mediaAirplay").hidden && $("mediaSpotify").hidden;
+    } catch (_) {
+      card.hidden = true;
+    }
+  }
+
   async function init() {
+    refreshMediaReceivers();
     let savedTab = null;
     try { savedTab = localStorage.getItem("os_tab"); } catch {}
     switchTab(savedTab || "music");

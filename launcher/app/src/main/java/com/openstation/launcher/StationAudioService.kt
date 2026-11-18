@@ -577,6 +577,11 @@ class StationAudioService : Service() {
                     val duration = obj.optInt("duration", 300)
                     handleBluetoothCommand(act, duration)
                 }
+                "launch_youtube" -> {
+                    val query = obj.optString("query").take(240)
+                    val play = obj.optBoolean("play", false)
+                    handler.post { openYouTube(query, play) }
+                }
                 "launch_music" -> {
                     openYandexMusicActivity(obj.optString("tab", ""), obj.optBoolean("openLogin", false))
                 }
@@ -606,7 +611,10 @@ class StationAudioService : Service() {
                 }
                 "music_action" -> {
                     val act = obj.optString("action", "")
-                    if (act.isNotEmpty()) {
+                    if (act == "SEEK_BY") {
+                        val seconds = obj.optInt("seconds", 0)
+                        if (seconds in -600..600 && seconds != 0) musicPlayer.seekBy(seconds * 1000L)
+                    } else if (act.isNotEmpty()) {
                         handleMusicAction(act)
                     }
                 }
@@ -718,6 +726,31 @@ class StationAudioService : Service() {
             startActivity(i)
         } catch (t: Throwable) {
             Log.w(TAG, "Cannot launch YandexMusicActivity: ${t.message}")
+        }
+    }
+
+    private fun openYouTube(query: String, play: Boolean) {
+        val packages = listOf("org.smarttube.stable", "org.smarttube.beta", "com.liskovsoft.smartyoutubetv2.tv")
+        for (pkg in packages) {
+            val launcher = packageManager.getLeanbackLaunchIntentForPackage(pkg)
+                ?: packageManager.getLaunchIntentForPackage(pkg) ?: continue
+            val intent = if (query.isBlank()) launcher else {
+                val uri = android.net.Uri.Builder().scheme("youtube").authority("search")
+                    .appendQueryParameter("query", query)
+                if (play) uri.appendQueryParameter("method", "play")
+                Intent(Intent.ACTION_VIEW, uri.build()).setComponent(launcher.component)
+            }
+            try {
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Cannot open SmartTube: ${e.message}")
+            }
+        }
+        if (query.isBlank()) {
+            packageManager.getLeanbackLaunchIntentForPackage("com.google.android.youtube.tv")?.let {
+                runCatching { startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
         }
     }
 

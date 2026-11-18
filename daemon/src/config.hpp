@@ -131,6 +131,7 @@ struct AssistantConfig {
     bool google_search = false;
     bool agent_mode = true;
     bool echo_guard = true;
+    bool quiet_whisper_reply = false;
     int pre_roll_ms = 450;
     int follow_up_sec = 4;
     int max_session_sec = 120;

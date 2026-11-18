@@ -32,7 +32,7 @@ enum class AssistantState {
 struct AssistantCallbacks {
     std::function<void(const int16_t* samples, size_t frames, int rate, int channels)> play_pcm;
     std::function<void()> clear_playback;
-    std::function<void(QuickCommand)> quick_command;
+    std::function<void(const QuickAction&)> quick_command;
     std::function<void()> stop_remote_capture;
     std::function<bool()> is_playback_or_tail_active;
     std::function<void()> play_wake_chime;
@@ -139,6 +139,8 @@ private:
     std::vector<int16_t> tx_pcm_;
     std::deque<std::string> tx_texts_;
     std::atomic<float> last_mic_rms_{0.0f};
+    std::atomic<float> last_noise_rms_{50.0f};
+    std::atomic<bool> quiet_reply_active_{false};
     std::atomic<int64_t> last_speech_ms_{0};
     std::atomic<bool> remote_turn_{false};
     std::atomic<bool> remote_recording_{false};

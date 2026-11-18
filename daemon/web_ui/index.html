@@ -110,6 +110,18 @@
           </div>
         </div>
 
+        <div class="glass-container glass-container--rounded" id="mediaReceivers" hidden>
+          <div class="glass-content">
+            <div class="form-row" id="mediaAirplay" hidden>
+              <div><strong>AirPlay 2</strong> <span class="hint" id="mediaAirplayStatus"></span></div>
+              <button class="btn btn-sm" id="mediaAirplayToggle" type="button">Включить</button>
+            </div>
+            <div class="form-row" id="mediaSpotify" hidden>
+              <div><strong>Spotify Connect</strong> <span class="hint" id="mediaSpotifyStatus"></span></div>
+              <button class="btn btn-sm" id="mediaSpotifyToggle" type="button">Включить</button>
+            </div>
+          </div>
+        </div>
         <div class="grid-2">
           <div class="stack" id="musicMain">
             <!-- LIQUID GLASS MUSIC PLAYER -->
@@ -517,9 +529,17 @@
                 <div class="form-row toggle-row">
                   <div>
                     <label for="astQuickCommands">Команды без обращения</label>
-                    <div class="hint">Громче, тише, дальше, назад, играй, продолжай, пауза, останови музыку.</div>
+                    <div class="hint">Громче, тише, на паузу, продолжи, следующий трек, открой YouTube.</div>
                   </div>
                   <input type="checkbox" id="astQuickCommands" checked />
+                </div>
+
+                <div class="form-row toggle-row">
+                  <div>
+                    <label for="astQuietWhisper">Тихий ответ на шёпот</label>
+                    <div class="hint">Приглушает ответ, когда станция распознаёт шёпот.</div>
+                  </div>
+                  <input type="checkbox" id="astQuietWhisper" />
                 </div>
 
                 <div class="grid-2-tight">

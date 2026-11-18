@@ -3,6 +3,7 @@
 #include "hw/voice_gain_policy.hpp"
 #include "assistant/assistant_personalization.hpp"
 #include "assistant/assistant_intents.hpp"
+#include "assistant/quiet_speech.hpp"
 #include "assistant/tls_ws_client.hpp"
 #include "assistant/proxy_selector.hpp"
 #include "utils/base64.hpp"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <memory>
 
@@ -304,8 +306,8 @@ void AssistantManager::start_quick_command_worker() {
                 (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active())) continue;
             std::string text, error;
             if (!local_asr_.recognize(pcm, text, error)) continue;
-            const auto command = quick_command_from_transcript(text);
-            if (command == QuickCommand::None) continue;
+            const auto command = quick_command_from_transcript(utf8_to_lower_ru(text));
+            if (command.command == QuickCommand::None) continue;
             {
                 std::lock_guard<std::mutex> lock(cfg_mu_);
                 if (!cfg_.enabled || !cfg_.quick_commands || cfg_.mode != "gemini") continue;
@@ -384,6 +386,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     }
 
     last_mic_rms_.store(rms);
+    last_noise_rms_.store(noise_rms, std::memory_order_relaxed);
     if (rms >= dialogue_activity_threshold(noise_rms)) {
         last_speech_ms_.store(steady_now_ms());
     }
@@ -1450,6 +1453,8 @@ void AssistantManager::session_worker(uint64_t sid,
     bool self_stop_requested = false;
     bool had_interaction = false;
     bool go_away_received = false;
+    QuietSpeech quiet_speech;
+    bool reply_started = false;
 
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
@@ -1771,6 +1776,9 @@ void AssistantManager::session_worker(uint64_t sid,
                     flush_live_model();
                     model_turn_done = false;
                     awaiting_playback_drain = false;
+                    quiet_reply_active_.store(false);
+                    quiet_speech = {};
+                    reply_started = false;
                     listen_idle_since = std::chrono::steady_clock::now();
                     listen_unconfirmed_since = listen_idle_since;
                     set_state(AssistantState::Listening);
@@ -1808,7 +1816,20 @@ void AssistantManager::session_worker(uint64_t sid,
                                     std::vector<uint8_t> pcm_bytes = b64::decode(b64d);
                                     size_t frames = pcm_bytes.size() / 2;
                                     if (frames > 0 && !session_abort_.load()) {
+                                        if (!reply_started) {
+                                            quiet_reply_active_.store(cfg_snap.quiet_whisper_reply && quiet_speech.detected());
+                                            reply_started = true;
+                                        }
                                         set_state(AssistantState::Speaking);
+                                        if (quiet_reply_active_) {
+                                            // Change only this response, before it reaches the speaker and echo reference.
+                                            for (size_t i = 0; i < frames; ++i) {
+                                                int16_t sample = 0;
+                                                std::memcpy(&sample, pcm_bytes.data() + i * 2, 2);
+                                                sample = static_cast<int16_t>(sample * 0.35f);
+                                                std::memcpy(pcm_bytes.data() + i * 2, &sample, 2);
+                                            }
+                                        }
                                         cb_.play_pcm(reinterpret_cast<const int16_t*>(pcm_bytes.data()), frames, rate, 1);
                                     }
                                 }
@@ -1998,6 +2019,11 @@ void AssistantManager::session_worker(uint64_t sid,
                     }
                 }
                 if (!pcm_batch.empty()) {
+                    if (cfg_snap.quiet_whisper_reply && !reply_started && !speaking_now &&
+                        !remote_turn_ && src != TriggerSource::Text) {
+                        quiet_speech.observe(pcm_batch.data(), pcm_batch.size(),
+                                             last_noise_rms_.load(std::memory_order_relaxed));
+                    }
                     size_t off = 0;
                     while (off < pcm_batch.size()) {
                         size_t n = std::min(kTxChunkSamples, pcm_batch.size() - off);
@@ -2036,6 +2062,9 @@ void AssistantManager::session_worker(uint64_t sid,
             if (awaiting_playback_drain) {
                 if (!speaking_now) {
                     awaiting_playback_drain = false;
+                    quiet_reply_active_.store(false);
+                    quiet_speech = {};
+                    reply_started = false;
                     if (stop_after_turn || go_away_received || cfg_snap.follow_up_sec <= 0) {
                         LOGI("Assistant", "Session complete after turn (stop=%d, goAway=%d)",
                              stop_after_turn ? 1 : 0, go_away_received ? 1 : 0);
@@ -2127,6 +2156,7 @@ void AssistantManager::session_worker(uint64_t sid,
     remote_recording_.store(false);
     remote_end_pending_.store(false);
     remote_turn_.store(false);
+    quiet_reply_active_.store(false);
 
     if (!fatal_error) {
         set_state(AssistantState::Idle);
@@ -2144,6 +2174,7 @@ json::Value AssistantManager::get_status_json() {
     obj["state"] = Value::make_str(state_str(state_.load()));
     obj["active"] = Value::make_bool(is_active());
     obj["micMuted"] = Value::make_bool(mic_muted_.load());
+    obj["quietReplyActive"] = Value::make_bool(quiet_reply_active_.load());
     Value remote_mic = Value::make_obj();
     remote_mic["recording"] = Value::make_bool(remote_recording_.load());
     remote_mic["samples"] = Value::make_int(static_cast<int64_t>(remote_samples_.load()));

@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.29",
-    [string]$Changelog = "Повторный вызов «Алиса» во время ответа учитывает звук динамика станции.",
+    [string]$Version = "1.6.30",
+    [string]$Changelog = "Новые команды без обращения, SmartTube, перемотка и тихий ответ на шёпот.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

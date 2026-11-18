@@ -53,7 +53,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.29";
+constexpr const char* kFirmwareVersion = "1.6.30";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -2512,7 +2512,20 @@ int main(int argc, char** argv) {
     };
 
     AssistantCallbacks acb;
-    acb.quick_command = [&](QuickCommand command) {
+    acb.quick_command = [&](const QuickAction& action) {
+        const auto command = action.command;
+        if (command == QuickCommand::Home) {
+            uinput.send_android_action("home");
+            return;
+        }
+        if (command == QuickCommand::YouTube || command == QuickCommand::YouTubeSearch) {
+            auto payload = json::Value::make_obj();
+            payload["cmd"] = json::Value::make_str("launch_youtube");
+            payload["query"] = json::Value::make_str(action.query);
+            payload["play"] = json::Value::make_bool(command == QuickCommand::YouTube);
+            send_udp_json(8086, payload.dump());
+            return;
+        }
         if (command == QuickCommand::Louder || command == QuickCommand::Quieter) {
             step_android_volume_pct(command == QuickCommand::Louder ? 10 : -10, true);
             return;
@@ -2525,6 +2538,10 @@ int main(int argc, char** argv) {
             case QuickCommand::Play: player_action = "RESUME"; media_key = "play"; break;
             case QuickCommand::Pause: player_action = "PAUSE"; media_key = "pause"; break;
             case QuickCommand::Stop: player_action = "STOP"; media_key = "stop"; break;
+            case QuickCommand::Seek: player_action = "SEEK_BY"; break;
+            case QuickCommand::VideoNext: media_key = "next"; break;
+            case QuickCommand::VideoPrevious: media_key = "prev"; break;
+            case QuickCommand::VideoStop: media_key = "stop"; break;
             default: return;
         }
         bool use_music_player = false;
@@ -2532,10 +2549,11 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> lock(music_mu);
             use_music_player = music_state.playing || music_state.paused;
         }
-        if (use_music_player && is_udp_port_bound(8086)) {
+        if (player_action && use_music_player && is_udp_port_bound(8086)) {
             auto payload = json::Value::make_obj();
             payload["cmd"] = json::Value::make_str("music_action");
             payload["action"] = json::Value::make_str(player_action);
+            if (command == QuickCommand::Seek) payload["seconds"] = json::Value::make_int(action.seconds);
             if (send_udp_json(8086, payload.dump())) return;
         }
         if (media_key) uinput.send_android_action(media_key);
@@ -4358,11 +4376,96 @@ int main(int argc, char** argv) {
         }
     });
 
+    std::mutex receiver_mu;
+    struct MediaReceiver {
+        const char* id;
+        const char* root;
+        const char* control;
+    };
+    const MediaReceiver receivers[] = {
+        {"airplay", "/data/local/tmp/ya-airplay", "manage.sh"},
+        {"spotify", "/data/local/openstation/receivers/spotify", "control.sh"},
+    };
+    auto trusted_receiver = [](const MediaReceiver& receiver) {
+        struct stat dir {}, control {};
+        const std::string path = std::string(receiver.root) + "/" + receiver.control;
+        return lstat(receiver.root, &dir) == 0 && S_ISDIR(dir.st_mode) &&
+               dir.st_uid == 0 && (dir.st_mode & 0022) == 0 &&
+               lstat(path.c_str(), &control) == 0 && S_ISREG(control.st_mode) &&
+               control.st_uid == 0 && (control.st_mode & 0022) == 0;
+    };
+    auto receiver_status = [&](const MediaReceiver& receiver) {
+        auto value = json::Value::make_obj();
+        const bool installed = trusted_receiver(receiver);
+        value["installed"] = json::Value::make_bool(installed);
+        if (!installed) {
+            value["state"] = json::Value::make_str("missing");
+            return value;
+        }
+        const bool is_airplay = std::string_view(receiver.id) == "airplay";
+        std::string script = std::string(receiver.root) + (is_airplay ? "/status.sh" : "/control.sh");
+        if (is_airplay) {
+            struct stat info {};
+            if (lstat(script.c_str(), &info) != 0 || !S_ISREG(info.st_mode) ||
+                info.st_uid != 0 || (info.st_mode & 0022) != 0) {
+                value["state"] = json::Value::make_str("error");
+                return value;
+            }
+        }
+        const auto status = run_argv_with_timeout({"/system/bin/sh", script, "status"}, 4, 128);
+        const char* state = "error";
+        if (is_airplay) {
+            if (status.exit_code == 0) state = "running";
+            else if (status.exit_code == 3) state = "stopped";
+        } else if (status.exit_code == 0) {
+            const auto text = trim_ws_copy(status.output);
+            if (text == "running") state = "running";
+            else if (text == "stopped") state = "stopped";
+        }
+        value["state"] = json::Value::make_str(state);
+        return value;
+    };
+
     http.start(
         start_cfg.web_port,
         [&](const HttpRequest& req) -> HttpResponse {
             if (req.method == "GET" && req.path == "/api/status") {
                 return HttpResponse::json(build_status_json().dump(-1));
+            }
+            if (req.path == "/api/music/receivers" && req.method == "GET") {
+                std::lock_guard<std::mutex> lock(receiver_mu);
+                auto out = json::Value::make_obj();
+                for (const auto& receiver : receivers) out[receiver.id] = receiver_status(receiver);
+                return HttpResponse::json(out.dump(-1));
+            }
+            if (req.path == "/api/music/receivers" && req.method == "POST") {
+                json::Value input;
+                if (!json::Parser::parse(req.body, input) || !input.is_obj()) {
+                    return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
+                }
+                const auto* id = input.get("receiver");
+                const auto* op = input.get("action");
+                const auto action = op ? op->as_str() : "";
+                if (!id || (action != "start" && action != "stop")) {
+                    return HttpResponse::json("{\"error\":\"invalid receiver action\"}", 400);
+                }
+                for (const auto& receiver : receivers) {
+                    if (id->as_str() != receiver.id) continue;
+                    std::lock_guard<std::mutex> lock(receiver_mu);
+                    if (!trusted_receiver(receiver)) {
+                        return HttpResponse::json("{\"error\":\"receiver not installed\"}", 404);
+                    }
+                    const std::string path = std::string(receiver.root) + "/" + receiver.control;
+                    const auto result = run_argv_with_timeout({"/system/bin/sh", path, action}, 22, 256);
+                    auto value = receiver_status(receiver);
+                    const auto* state = value.get("state");
+                    const bool changed = state && state->as_str() == (action == "start" ? "running" : "stopped");
+                    value["ok"] = json::Value::make_bool(changed);
+                    if (!changed) value["error"] = json::Value::make_str(
+                        result.timed_out ? "Приёмник не ответил вовремя" : "Не удалось переключить приёмник");
+                    return HttpResponse::json(value.dump(-1), changed ? 200 : 500);
+                }
+                return HttpResponse::json("{\"error\":\"unknown receiver\"}", 404);
             }
             if (req.method == "POST" && req.path == "/api/config") {
                 json::Value v;
