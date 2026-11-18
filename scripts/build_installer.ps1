@@ -5,7 +5,7 @@ $stage = Join-Path $root 'build\installer'
 $out = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $stage,$out | Out-Null
 $engine = Join-Path $stage 'engine'
-& python -m PyInstaller --noconfirm --clean --onefile --console --name OpenStationEngine --distpath $engine --workpath (Join-Path $stage 'temp') --specpath $stage --add-data "$(Join-Path $root 'service_flash');." (Join-Path $root 'service_flash\flash_service.py')
+& python -m PyInstaller --noconfirm --clean --onefile --console --name OpenStationEngine --distpath $engine --workpath (Join-Path $stage 'temp') --specpath $stage --add-data "$(Join-Path $root 'service_flash');." --add-data "$(Join-Path $root 'assets\alice\cacert.pem');tls" (Join-Path $root 'service_flash\flash_service.py')
 if ($LASTEXITCODE -ne 0) { throw 'Engine build failed' }
 $net = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
 $wpf = Join-Path $net 'WPF'

@@ -15,6 +15,7 @@ Supports:
 import argparse
 import ctypes
 from contextlib import contextmanager
+from functools import lru_cache
 import glob
 import hashlib
 import json
@@ -22,11 +23,13 @@ import os
 import platform
 import re
 import shutil
+import ssl
 import subprocess
 import struct
 import sys
 import time
 import threading
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -893,12 +896,37 @@ def _parse_rom_manifest_files(manifest: dict) -> dict:
     return resolved
 
 
+@lru_cache(maxsize=1)
+def _rom_tls_context() -> ssl.SSLContext:
+    # Keep the Windows trust store (including managed roots) and supply public
+    # roots with the installer for Windows installations with an outdated store.
+    if getattr(sys, "frozen", False):
+        ca_path = os.path.join(SCRIPT_DIR, "tls", "cacert.pem")
+    else:
+        ca_path = os.path.join(REPO_ROOT, "assets", "alice", "cacert.pem")
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=ca_path)
+    return context
+
+
+def _open_rom_url(request: urllib.request.Request, timeout: int):
+    try:
+        return urllib.request.urlopen(request, timeout=timeout, context=_rom_tls_context())
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLCertVerificationError):
+            raise RuntimeError(
+                "Не удалось проверить сертификат сервера GitHub. Проверьте дату и время Windows "
+                "и настройки HTTPS-прокси. Загрузка прошивки остановлена."
+            ) from exc
+        raise
+
+
 def _resolve_latest_rom_release() -> dict:
     """Resolve the newest ROM release and manifest from GitHub Releases, or fall back cleanly."""
     headers = {"User-Agent": "OpenStationFlasher/1.6", "Accept": "application/vnd.github+json"}
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=100"
     req = urllib.request.Request(api_url, headers=headers)
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with _open_rom_url(req, timeout=20) as resp:
         releases = json.loads(resp.read().decode("utf-8"))
 
     if isinstance(releases, list):
@@ -921,7 +949,7 @@ def _resolve_latest_rom_release() -> dict:
 
             if manifest_asset and manifest_asset.get("browser_download_url"):
                 mreq = urllib.request.Request(manifest_asset["browser_download_url"], headers=headers)
-                with urllib.request.urlopen(mreq, timeout=20) as mresp:
+                with _open_rom_url(mreq, timeout=20) as mresp:
                     raw_manifest = mresp.read()
                 manifest = json.loads(raw_manifest.decode("utf-8"))
                 files_map = _parse_rom_manifest_files(manifest)
@@ -1002,7 +1030,7 @@ def download_latest_rom(dest_cache: str, base_pct: int = 8, span_pct: int = 20) 
     digest = hashlib.sha256()
     request = urllib.request.Request(url, headers={"User-Agent": "OpenStationFlasher/1.6"})
     downloaded = 0
-    with urllib.request.urlopen(request, timeout=60) as response, open(part, "wb") as output:
+    with _open_rom_url(request, timeout=60) as response, open(part, "wb") as output:
         while True:
             block = response.read(1024 * 1024)
             if not block:

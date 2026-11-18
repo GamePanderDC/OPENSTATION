@@ -1,7 +1,9 @@
 import argparse
 import os
+import ssl
 import tempfile
 import unittest
+from urllib.error import URLError
 from contextlib import contextmanager
 from unittest.mock import patch
 import sys
@@ -24,6 +26,23 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(f.PINNED_ROM_SIZE, manifest['archive']['size'])
         self.assertEqual(f.PINNED_ROM_SHA256, manifest['archive']['sha256'])
         self.assertEqual(f.ROM_FILES, f._parse_rom_manifest_files(manifest))
+
+    def test_rom_request_verifies_tls_with_the_bundled_roots(self):
+        request = f.urllib.request.Request("https://api.github.com/")
+        with patch.object(f.urllib.request, "urlopen") as urlopen:
+            f._open_rom_url(request, timeout=20)
+        context = urlopen.call_args.kwargs["context"]
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertGreater(context.cert_store_stats()["x509_ca"], 0)
+
+    def test_invalid_rom_certificate_is_not_retried_without_tls_verification(self):
+        request = f.urllib.request.Request("https://github.com/")
+        error = URLError(ssl.SSLCertVerificationError("untrusted"))
+        with patch.object(f.urllib.request, "urlopen", side_effect=error) as urlopen:
+            with self.assertRaisesRegex(RuntimeError, "сертификат"):
+                f._open_rom_url(request, timeout=20)
+        urlopen.assert_called_once()
 
     def test_rom_release_is_found_after_ten_newer_releases(self):
         import io
