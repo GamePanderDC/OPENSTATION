@@ -13,6 +13,8 @@ struct HttpClientRequest {
     std::string url;
     std::map<std::string, std::string> headers;
     std::string body;
+    // Optional IP override. TLS hostname and certificate verification still use URL host.
+    std::string connect_address;
     int timeout_ms = 8000;
     int max_redirects = 5;
     size_t max_body_bytes = 512 * 1024;

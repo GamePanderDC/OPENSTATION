@@ -112,6 +112,8 @@ struct AssistantConfig {
     std::string name = "\xD0\x90\xD0\xBB\xD0\xB8\xD1\x81\xD0\xB0"; // Алиса (dynamic custom wake & persona name)
     std::string gemini_api_key;
     std::string gemini_model = "gemini-3.8-live";
+    std::string chatgpt_model;
+    bool chatgpt_call_mode = true;
     std::string gemini_proxy_host = "smart-auto"; // Automatic SNI route fallback on geo-block (1007)
     std::string voice_name = "Aoede";
     std::string system_prompt =

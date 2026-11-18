@@ -463,7 +463,7 @@
               </div>
             </div>
 
-            <div class="form-row toggle-row" style="margin-top:12px; padding:10px 12px; border-radius:12px; background:rgba(86,216,255,0.07); border:1px solid rgba(110,218,255,0.20);">
+            <div id="astAgentRow" class="form-row toggle-row" style="margin-top:12px; padding:10px 12px; border-radius:12px; background:rgba(86,216,255,0.07); border:1px solid rgba(110,218,255,0.20);">
               <div>
                 <label for="astAgentMode" style="font-weight:600; color:#f1f5f9;">Режим Агента (ADB и система)</label>
                 <div class="hint" style="margin-top:2px;">Алиса получает полный доступ к ADB / root-командам для автоматизации любых действий на станции и рисует задачи на экранчике.</div>
@@ -477,8 +477,45 @@
             </div>
             <div class="hint" id="aliceTestResult" style="margin-top:6px;"></div>
 
+            <div class="form-row">
+              <label for="astMode">Ассистент</label>
+              <select id="astMode">
+                <option value="gemini">Gemini Live</option>
+                <option value="chatgpt">ChatGPT</option>
+                <option value="wyoming">Home Assistant (Wyoming)</option>
+                <option value="off">Выкл</option>
+              </select>
+            </div>
+            <div id="chatgptAccount" hidden>
+              <div class="form-row toggle-row">
+                <div>
+                  <label for="chatgptCallMode">Режим разговора</label>
+                  <div class="hint">Говорите по очереди без повторного обращения. Скажите «Положи трубку» или нажмите кнопку Алисы, чтобы закончить.</div>
+                </div>
+                <input type="checkbox" id="chatgptCallMode" checked />
+              </div>
+              <div id="chatgptSetupHint" class="hint" hidden>Для подключения аккаунта откройте на компьютере помощник «Вход в ChatGPT».</div>
+              <div id="chatgptControls" hidden>
+                <div class="form-row" id="chatgptSavedRow" hidden>
+                  <label for="chatgptSaved">Аккаунт ChatGPT</label>
+                  <select id="chatgptSaved"></select>
+                </div>
+                <div class="btn-row">
+                  <button class="btn btn-accent" type="button" id="chatgptSignIn" data-oai-siwc-button>Continue with ChatGPT</button>
+                  <button class="btn" type="button" id="chatgptUseSaved" hidden>Подключить выбранный аккаунт</button>
+                  <button class="btn" type="button" id="chatgptSignOut" hidden>Выйти</button>
+                </div>
+                <div class="form-row" id="chatgptModelRow" hidden>
+                  <label for="chatgptModel">Модель ChatGPT</label>
+                  <select id="chatgptModel"></select>
+                </div>
+                <div id="chatgptAuthStatus" class="hint" aria-live="polite"></div>
+                <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Лимиты ChatGPT</a>
+              </div>
+            </div>
+
             <details class="adv-details">
-              <summary>Инженерные параметры Gemini Live</summary>
+              <summary>Дополнительные настройки ассистента</summary>
               <div class="adv-details-body">
                 <div class="form-row toggle-row">
                   <label>Включить Алису</label>
@@ -515,14 +552,6 @@
                 </div>
 
                 <div class="grid-2-tight">
-                  <div class="form-row">
-                    <label>Режим ассистента</label>
-                    <select id="astMode">
-                      <option value="gemini">Алиса (Gemini Live)</option>
-                      <option value="wyoming">Home Assistant (Wyoming)</option>
-                      <option value="off">Выкл</option>
-                    </select>
-                  </div>
                   <div class="form-row">
                     <label>Модель Gemini Live (фиксирована)</label>
                     <input type="text" id="astModel" value="gemini-3.8-live" readonly disabled />

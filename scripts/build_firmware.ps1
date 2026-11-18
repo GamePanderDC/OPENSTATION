@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.25",
-    [string]$Changelog = "Автономное соединение Алисы через Smart DNS и сохранение речи при долгом подключении.",
+    [string]$Version = "1.6.26",
+    [string]$Changelog = "ChatGPT с входом через аккаунт, голосовым режимом разговора и локальным распознаванием речи.",
     [switch]$Clean,
     [switch]$RebuildIme
 )

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "assistant/wake_word.hpp"
+#include "assistant/chatgpt_auth.hpp"
+#include "assistant/offline_asr.hpp"
 #include "config.hpp"
 #include "hw/framebuffer_hw.hpp"
 #include "utils/json_min.hpp"
@@ -30,6 +32,7 @@ enum class AssistantState {
 struct AssistantCallbacks {
     std::function<void(const int16_t* samples, size_t frames, int rate, int channels)> play_pcm;
     std::function<void()> clear_playback;
+    std::function<bool(const std::string&, const std::atomic<bool>&)> speak_locally;
     std::function<void()> stop_remote_capture;
     std::function<bool()> is_playback_or_tail_active;
     std::function<void()> play_wake_chime;
@@ -82,6 +85,7 @@ public:
                                                  bool is_male_voice);
 
     json::Value get_status_json();
+    ChatGptAuth& chatgpt_auth() { return chatgpt_auth_; }
 
 private:
     enum class TriggerSource { WakeWord, Manual, Remote, Text };
@@ -95,6 +99,9 @@ private:
                         AssistantConfig cfg_snap,
                         bool announcement);
     void abort_active_session_locked();
+    void chatgpt_session_worker(TriggerSource source, std::string initial_text,
+                                AssistantConfig cfg, bool announcement, int64_t triggered_ms);
+    void warm_chatgpt_recognizer();
 
     void set_state(AssistantState st);
     void append_history(const std::string& role, const std::string& text);
@@ -109,7 +116,12 @@ private:
     mutable std::mutex cfg_mu_;
     AssistantCallbacks cb_;
     WakeWordEngine wake_word_;
+    ChatGptAuth chatgpt_auth_;
+    OfflineAsr chatgpt_asr_;
+    std::mutex asr_warm_mu_;
+    std::thread asr_warm_;
 
+    std::atomic<bool> chatgpt_call_active_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> mic_muted_{false};
     std::atomic<AssistantState> state_{AssistantState::Idle};

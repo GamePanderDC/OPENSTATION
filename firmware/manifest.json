@@ -1,15 +1,15 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.25",
+  "version": "1.6.26",
   "autonomous": true,
-  "changelog": "Автономное соединение Алисы через Smart DNS и сохранение речи при долгом подключении.",
-  "buildTimeUtc": "2026-11-17T19:50:32Z",
+  "changelog": "ChatGPT с входом через аккаунт, голосовым режимом разговора и локальным распознаванием речи.",
+  "buildTimeUtc": "2026-11-18T00:16:40Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3216696,
-      "sha256": "34c032d43b626a0308a347e52dfcbcc516a958845675b004118b8c6a8eb0443f"
+      "size": 3330392,
+      "sha256": "7066e484903efd934c93c84db34580d67361eb4c10718e5dd65d97687239074b"
     },
     "bootlogod": {
       "fileName": "bootlogod",
@@ -18,8 +18,8 @@
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
-      "size": 28420415,
-      "sha256": "8011369c66b75002241026766f8e90bef3bec6b1642f1532bc44286f5f17381b"
+      "size": 28427123,
+      "sha256": "420a5de7dab2869bf16e9011c3cc8c812baaa576a5a7c96a98488a01f3f4d757"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",

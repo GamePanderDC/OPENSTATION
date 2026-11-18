@@ -378,6 +378,11 @@ void HttpWsServer::handle_connection(std::shared_ptr<ConnSlot> slot) {
     if (sp1 == std::string::npos || sp2 == std::string::npos) return;
 
     HttpRequest req;
+    sockaddr_in peer{};
+    socklen_t peer_size = sizeof(peer);
+    if (getpeername(cfd, reinterpret_cast<sockaddr*>(&peer), &peer_size) == 0 && peer.sin_family == AF_INET) {
+        req.loopback = ntohl(peer.sin_addr.s_addr) == INADDR_LOOPBACK;
+    }
     req.method = req_line.substr(0, sp1);
     std::string full_uri = req_line.substr(sp1 + 1, sp2 - sp1 - 1);
     size_t qm = full_uri.find('?');

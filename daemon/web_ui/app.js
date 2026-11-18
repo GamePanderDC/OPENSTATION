@@ -17,6 +17,11 @@
   let otaPendingRestart = false;
   let bootanimBusy = false;
   let wifiAdbBusy = false;
+  const chatgptLocal = location.hostname === "127.0.0.1";
+  const chatgptSetup = chatgptLocal && new URLSearchParams(location.search).get("chatgpt") === "1";
+  let chatgptLoaded = false;
+  let chatgptAccountState = null;
+  let chatgptPolling = null;
 
   const COMPONENT_RU = {
     daemon: "Система",
@@ -185,6 +190,8 @@
       const newGeminiKey = $("astApiKey")?.value.trim() || "";
       if (newGeminiKey) ast.geminiApiKey = newGeminiKey;
       if ($("astMode")) ast.mode = $("astMode").value;
+      if ($("chatgptCallMode")) ast.chatgptCallMode = $("chatgptCallMode").checked;
+      if (chatgptLocal && $("chatgptModel")?.value) ast.chatgptModel = $("chatgptModel").value;
       ast.geminiModel = "gemini-3.8-live";
       if ($("astModel")) $("astModel").value = "gemini-3.8-live";
       if ($("astProxyHost")) ast.geminiProxyHost = $("astProxyHost").value.trim();
@@ -615,6 +622,16 @@
   function applyAliceBanner(astState, ast, cfgAst) {
     const cleanName = (cfgAst?.name || "").trim() || "Алиса";
     syncAssistantNameLabels(cleanName);
+    const chatgpt = cfgAst?.mode === "chatgpt";
+    const callEnabled = chatgpt && cfgAst?.chatgptCallMode !== false;
+    const start = $("btnAliceTrigger");
+    const stop = $("btnAliceStop");
+    if (start) {
+      start.textContent = callEnabled ? "Начать разговор" :
+        "Разбудить (" + (cfgAst?.name?.trim() || "Алиса") + ")";
+      start.disabled = chatgpt && !!ast?.active;
+    }
+    if (stop) stop.textContent = ast?.chatgptCallActive ? "Завершить разговор" : "Остановить диалог";
     const stRu = ALICE_STATE_RU[astState] || astState;
     const qb = $("btnQuickAlice");
     if (qb) {
@@ -641,6 +658,9 @@
       } else if (cfgAst && !cfgAst.geminiApiKeySet && !cfgAst.geminiApiKey && cfgAst.mode === "gemini") {
         ban.textContent = "Укажите Gemini API Key справа и нажмите «Применить и сохранить»";
         ban.className = "status-banner warn";
+      } else if (ast?.chatgptCallActive) {
+        ban.textContent = "Разговор с ChatGPT · " + stRu;
+        ban.className = "status-banner live";
       } else if (ast?.active) {
         ban.textContent = `${cleanName}: ${stRu}`;
         ban.className = "status-banner live";
@@ -898,7 +918,9 @@
         if ($("astName") && document.activeElement !== $("astName")) {
           $("astName").value = cfg.assistant.name || "Алиса";
         }
-        if ($("astMode")) $("astMode").value = cfg.assistant.mode || "gemini";
+        if ($("astMode") && document.activeElement !== $("astMode")) $("astMode").value = cfg.assistant.mode || "gemini";
+        updateChatGptControls();
+        if ($("chatgptCallMode")) $("chatgptCallMode").checked = cfg.assistant.chatgptCallMode !== false;
         if ($("astApiKey")) {
           $("astApiKey").value = "";
           $("astApiKey").placeholder = cfg.assistant.geminiApiKeySet ? "Ключ уже сохранён; пустое поле оставляет его без изменений" : "Вставьте Gemini API key";
@@ -1323,13 +1345,121 @@
     "ringColor", "ringSecColor", "ringAutoBrightness",
     "scrMode", "scrText", "scrColor", "scrAutoBri", "clockStyle", "visualizerStyle", "autoMusicVisualizer",
     "eqPreset", "actShort", "actLong", "remoteShort", "remoteLong", "rotaryInvert", "rotaryStep", "locCity",
-    "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel",
+    "wyoEn", "wyoAlways", "astEnabled", "astMode", "astVoice", "astModel", "chatgptCallMode",
     "astPrompt", "astWakeEn", "astChime", "astSearch", "astEchoGuard",
     "astFollowUp", "astMaxSess", "otaAutoCheck", "otaSyncBootanim", "otaRepo", "otaBranch"
   ].forEach((id) => {
     if ($(id)) $(id).addEventListener("change", scheduleConfigPush);
   });
 
+  function updateChatGptControls() {
+    const visible = chatgptSetup || $("astMode")?.value === "chatgpt";
+    if (!$("chatgptAccount")) return;
+    $("chatgptAccount").hidden = !visible;
+    const agentRow = $("astAgentMode")?.closest(".form-row");
+    if (agentRow) agentRow.hidden = $("astMode")?.value === "chatgpt";
+    $("chatgptSetupHint").hidden = chatgptLocal;
+    $("chatgptControls").hidden = !chatgptLocal;
+    if (visible && chatgptLocal && !chatgptLoaded) {
+      chatgptLoaded = true;
+      refreshChatGpt(true);
+    }
+  }
+
+  async function refreshChatGpt(refreshModels = false) {
+    const status = $("chatgptAuthStatus");
+    try {
+      const result = await api("/api/chatgpt/status");
+      const previous = chatgptAccountState;
+      chatgptAccountState = result;
+      const saved = $("chatgptSaved");
+      const selected = saved.value;
+      saved.replaceChildren();
+      const accounts = result.accounts || [];
+      accounts.forEach((account) => {
+        const label = (account.email || "Аккаунт ChatGPT") + " · " + account.id.slice(-6);
+        saved.add(new Option(label, account.id));
+      });
+      saved.value = accounts.some((account) => account.id === selected) ? selected : result.active;
+      if (!saved.value && accounts.length) saved.selectedIndex = 0;
+      $("chatgptSavedRow").hidden = !accounts.length;
+      $("chatgptUseSaved").hidden = !accounts.length;
+      $("chatgptSignOut").hidden = !result.connected;
+      const waiting = result.state === "waiting";
+      $("chatgptSignIn").disabled = waiting;
+      $("chatgptUseSaved").disabled = waiting;
+      $("chatgptSignOut").disabled = waiting;
+      status.textContent = waiting ? "Подтвердите вход в браузере." :
+        result.error || (result.connected ? "Аккаунт подключён." : "Подключите аккаунт, чтобы использовать ChatGPT.");
+      if (waiting) {
+        clearTimeout(chatgptPolling);
+        chatgptPolling = setTimeout(refreshChatGpt, 1400);
+      }
+      if (!result.connected) {
+        $("chatgptModel").replaceChildren();
+        $("chatgptModelRow").hidden = true;
+      } else if (refreshModels || previous?.state === "waiting" || previous?.active !== result.active) {
+        const response = await api("/api/chatgpt/models");
+        const picker = $("chatgptModel");
+        picker.replaceChildren(...response.models.map((m) => new Option(m.name, m.slug)));
+        const model = state?.config?.assistant?.chatgptModel;
+        if (response.models.some((m) => m.slug === model)) picker.value = model;
+        $("chatgptModelRow").hidden = false;
+        if (picker.value !== model) {
+          await api("/api/config", "POST", { assistant: { chatgptModel: picker.value } });
+        }
+      }
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  async function signInWithChatGpt(id = "") {
+    const popup = window.open("about:blank", "_blank");
+    if (!popup) {
+      $("chatgptAuthStatus").textContent = "Разрешите всплывающие окна и повторите вход.";
+      return;
+    }
+    popup.opener = null;
+    try {
+      const result = await api("/api/chatgpt/sign-in", "POST", { id });
+      const url = new URL(result.url);
+      if (url.origin !== "https://auth.openai.com" || url.pathname !== "/api/accounts/authorize") throw new Error("Некорректный адрес входа.");
+      popup.location.replace(url.href);
+      await refreshChatGpt();
+    } catch (err) {
+      popup.close();
+      $("chatgptAuthStatus").textContent = err.message;
+    }
+  }
+
+  $("astMode")?.addEventListener("change", updateChatGptControls);
+  $("chatgptSignIn")?.addEventListener("click", () => signInWithChatGpt());
+  $("chatgptUseSaved")?.addEventListener("click", async () => {
+    const id = $("chatgptSaved").value;
+    if (!id) return;
+    const selected = chatgptAccountState?.accounts?.find((a) => a.id === id);
+    if (!selected?.connected) {
+      await signInWithChatGpt(id);
+      return;
+    }
+    try {
+      await api("/api/chatgpt/select", "POST", { id });
+      await refreshChatGpt(true);
+    } catch (err) {
+      $("chatgptAuthStatus").textContent = err.message;
+    }
+  });
+  $("chatgptSignOut")?.addEventListener("click", async () => {
+    try {
+      const response = await api("/api/chatgpt/sign-out", "POST", {});
+      await refreshChatGpt();
+      if (response.error) $("chatgptAuthStatus").textContent = response.error;
+    } catch (err) {
+      $("chatgptAuthStatus").textContent = err.message;
+    }
+  });
+  $("chatgptModel")?.addEventListener("change", scheduleConfigPush);
   init10BandEq();
   initAliceMemoryAndLocation();
 
@@ -1367,9 +1497,9 @@
   async function triggerAlice() {
     try {
       await api("/api/assistant/trigger", "POST", { reason: "webui" });
-      showToast("Алиса слушает...");
-    } catch {
-      showToast("Не удалось запустить Алису (проверьте ключ)", true);
+      showToast(state?.config?.assistant?.mode === "chatgpt" ? "ChatGPT слушает…" : "Алиса слушает…");
+    } catch (err) {
+      showToast(state?.assistant?.lastError || err.message, true);
     }
   }
   async function stopAlice() {
@@ -2080,6 +2210,7 @@
             const fakeAst = Object.assign({}, state?.assistant || {}, {
               state: msg.state || "idle",
               active: !["idle", "error"].includes(msg.state || "idle"),
+              chatgptCallActive: !!msg.chatgptCallActive,
               lastError: msg.lastError || ""
             });
             if (state) state.assistant = fakeAst;
@@ -2726,6 +2857,11 @@
 
   if ($("btnTestAlice")) {
     $("btnTestAlice").addEventListener("click", () => {
+      if ($("astMode")?.value === "chatgpt") {
+        if (chatgptLocal) refreshChatGpt(true);
+        else $("aliceTestResult").textContent = "Проверка аккаунта доступна в помощнике входа ChatGPT.";
+        return;
+      }
       runGeminiLiveTest($("astApiKey")?.value.trim(), "gemini-3.8-live", $("astProxyHost")?.value.trim(), $("aliceTestResult"));
     });
   }
@@ -3597,6 +3733,7 @@
   async function init() {
     let savedTab = null;
     try { savedTab = localStorage.getItem("os_tab"); } catch {}
+    if (chatgptSetup) savedTab = "alice";
     switchTab(savedTab || "music");
     try {
       const s = await api("/api/status");

@@ -22,12 +22,20 @@ std::chrono::steady_clock::time_point cache_until;
 std::string failed_host, failed_address;
 std::chrono::steady_clock::time_point failed_until;
 
-std::vector<std::string> query_smart_dns() {
-    // The user-selected Smart DNS only resolves the Gemini endpoint here;
-    // the rest of the station keeps its existing system DNS.
-    const std::vector<unsigned char> question = {
-        18,'g','e','n','e','r','a','t','i','v','e','l','a','n','g','u','a','g','e',
-        10,'g','o','o','g','l','e','a','p','i','s',3,'c','o','m',0,0,1,0,1};
+std::vector<std::string> query_smart_dns(const std::string& hostname) {
+    if (hostname != "generativelanguage.googleapis.com" && hostname != "auth.openai.com" &&
+        hostname != "api.openai.com") return {};
+    std::vector<unsigned char> question;
+    for (size_t begin = 0; begin < hostname.size();) {
+        const size_t end = hostname.find('.', begin);
+        const size_t len = (end == std::string::npos ? hostname.size() : end) - begin;
+        if (len == 0 || len > 63) return {};
+        question.push_back(static_cast<unsigned char>(len));
+        question.insert(question.end(), hostname.begin() + static_cast<ptrdiff_t>(begin),
+                        hostname.begin() + static_cast<ptrdiff_t>(begin + len));
+        begin += len + 1;
+    }
+    question.insert(question.end(), {0, 0, 1, 0, 1});
     const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
     const uint16_t id = static_cast<uint16_t>(ticks ^ static_cast<decltype(ticks)>(getpid()));
     std::vector<unsigned char> packet = {static_cast<unsigned char>(id >> 8), static_cast<unsigned char>(id),
@@ -52,6 +60,10 @@ std::vector<std::string> query_smart_dns() {
     close(fd);
     return answers;
 }
+}
+
+std::vector<std::string> resolve_smart_dns(const std::string& hostname) {
+    return query_smart_dns(hostname);
 }
 
 void invalidate_proxy_selection(const std::string& host) {
@@ -80,7 +92,7 @@ std::string select_fast_proxy(const std::string& host, const std::string& ca_pat
     }
     std::vector<std::string> addresses;
     if (host == "smart-auto") {
-        addresses = query_smart_dns();
+        addresses = query_smart_dns("generativelanguage.googleapis.com");
     } else {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
