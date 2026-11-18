@@ -40,8 +40,9 @@ public:
     bool is_paused() const { return paused_.load(); }
     bool is_ready() const { return ready_.load(); }
 
-    void feed_audio_16k(const int16_t* samples, size_t count, float noise_rms = 50.0f);
+    void feed_audio_16k(const int16_t* samples, size_t count, float noise_rms, bool during_reply);
 
+    void feed_playback_16k(const int16_t* samples, size_t count);
     json::Value get_status_json();
 
 private:
@@ -58,6 +59,7 @@ private:
     std::atomic<bool> paused_{false};
     std::atomic<bool> ready_{false};
     std::atomic<float> noise_rms_{50.0f};
+    std::atomic<bool> during_reply_{false};
     std::atomic<bool> vad_speech_active_{false};
     std::atomic<uint64_t> detections_{0};
     std::string status_str_ = "uninitialized";
@@ -66,6 +68,7 @@ private:
     std::mutex q_mu_;
     std::condition_variable q_cv_;
     std::vector<float> pcm_q_;
+    std::vector<float> playback_q_;
     bool reset_req_ = false;
 
     std::thread worker_;

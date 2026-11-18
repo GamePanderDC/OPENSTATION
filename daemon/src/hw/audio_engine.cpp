@@ -1281,6 +1281,10 @@ void AudioEngine::playback_loop() {
         playing_active_.store(true);
         std::vector<int16_t> mono16k;
         mono16k.reserve(512);
+        std::vector<int16_t> playback_reference;
+        playback_reference.reserve(342);
+        int reference_sum = 0;
+        int reference_samples = 0;
         auto write_chunk = [&](const std::vector<int16_t>& buf, uint64_t ep) -> bool {
             size_t total_frames = buf.size() / 2;
             size_t off = 0;
@@ -1315,6 +1319,20 @@ void AudioEngine::playback_loop() {
 
                 aaudio_result_t wr = g_aa.stream_write(out_s, buf.data() + off * 2, to_write, 1000000000LL);
                 if (wr <= 0) break;
+                if (playback_reference_cb_) {
+                    playback_reference.clear();
+                    for (int32_t i = 0; i < wr; ++i) {
+                        const auto index = (off + static_cast<size_t>(i)) * 2;
+                        reference_sum += buf[index] + buf[index + 1];
+                        if (++reference_samples == 3) {
+                            playback_reference.push_back(static_cast<int16_t>(reference_sum / 6));
+                            reference_sum = reference_samples = 0;
+                        }
+                    }
+                    if (!playback_reference.empty()) {
+                        playback_reference_cb_(playback_reference.data(), playback_reference.size());
+                    }
+                }
                 off += static_cast<size_t>(wr);
                 last_playback_end_ms_.store(steady_now_ms());
             }

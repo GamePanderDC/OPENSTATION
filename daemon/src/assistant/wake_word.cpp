@@ -5,6 +5,8 @@
 #include "utils/logger.hpp"
 
 #include <algorithm>
+#include <array>
+#include <utility>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -178,8 +180,9 @@ void WakeWordEngine::set_paused(bool paused) {
     }
 }
 
-void WakeWordEngine::feed_audio_16k(const int16_t* samples, size_t count, float noise_rms) {
+void WakeWordEngine::feed_audio_16k(const int16_t* samples, size_t count, float noise_rms, bool during_reply) {
     noise_rms_.store(noise_rms, std::memory_order_relaxed);
+    during_reply_.store(during_reply, std::memory_order_relaxed);
     if (!samples || count == 0 || !running_.load() || paused_.load() || !ready_.load()) {
         return;
     }
@@ -199,6 +202,15 @@ void WakeWordEngine::feed_audio_16k(const int16_t* samples, size_t count, float 
     for (size_t i = 0; i < count; ++i) {
         pcm_q_[old_sz + i] = static_cast<float>(samples[i]) * kScale;
     }
+    q_cv_.notify_one();
+}
+
+void WakeWordEngine::feed_playback_16k(const int16_t* samples, size_t count) {
+    if (!samples || count == 0 || !running_ || !ready_) return;
+    std::lock_guard<std::mutex> lock(q_mu_);
+    constexpr size_t kMaxPlaybackBacklog = 8000;
+    if (playback_q_.size() + count > kMaxPlaybackBacklog) playback_q_.clear();
+    for (size_t i = 0; i < count; ++i) playback_q_.push_back(samples[i] / 32768.0f);
     q_cv_.notify_one();
 }
 
@@ -253,9 +265,14 @@ void WakeWordEngine::worker_loop() {
     const SherpaOnnxVoiceActivityDetector* vad = nullptr;
     const SherpaOnnxKeywordSpotter* kws = nullptr;
     const SherpaOnnxOnlineStream* kws_stream = nullptr;
+    const SherpaOnnxOnlineStream* playback_stream = nullptr;
 
     auto destroy_engines = [&]() {
         if (kws_stream) { g_sherpa.destroyOnlineStream(kws_stream); kws_stream = nullptr; }
+        if (playback_stream) {
+            g_sherpa.destroyOnlineStream(playback_stream);
+            playback_stream = nullptr;
+        }
         if (kws) { g_sherpa.destroyKws(kws); kws = nullptr; }
         if (vad) { g_sherpa.destroyVad(vad); vad = nullptr; }
         ready_.store(false);
@@ -350,6 +367,7 @@ void WakeWordEngine::worker_loop() {
 
     std::vector<float> batch;
     batch.reserve(4096);
+    std::vector<float> playback_batch;
     std::vector<float> acc;
     acc.reserve(8192);
     size_t acc_head = 0;
@@ -431,14 +449,38 @@ void WakeWordEngine::worker_loop() {
         return static_cast<int16_t>(std::clamp(sample * 32768.0f, -32768.0f, 32767.0f));
     };
 
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point last_playback_audio{}, pending_deadline{};
+    std::vector<std::string> playback_wakes;
+    std::string pending_wake;
+    const std::array<float, 5120> playback_lead{};
+    auto reset_playback_state = [&] {
+        if (playback_stream) g_sherpa.resetKwsStream(kws, playback_stream);
+        last_playback_audio = {};
+        playback_wakes.clear();
+        pending_wake.clear();
+    };
+    auto emit_wake = [&](const std::string& hit, Clock::time_point now) {
+        if (during_reply_ && std::find(playback_wakes.begin(), playback_wakes.end(), hit) != playback_wakes.end()) {
+            LOGI("WakeWord", "Ignored wake word from speaker playback");
+            return;
+        }
+        if (now - last_trigger_tp < std::chrono::milliseconds(1500)) return;
+        last_trigger_tp = now;
+        detections_.fetch_add(1);
+        LOGI("WakeWord", "Triggered wake word: '%s'", hit.c_str());
+        if (cb_) cb_(hit);
+    };
+
     while (running_.load()) {
         batch.clear();
+        playback_batch.clear();
         bool need_recreate = false;
         bool do_reset = false;
         {
             std::unique_lock<std::mutex> lk(q_mu_);
-            q_cv_.wait_for(lk, std::chrono::milliseconds(150), [&] {
-                if (!running_.load() || !pcm_q_.empty() || reset_req_) return true;
+            q_cv_.wait_for(lk, std::chrono::milliseconds(pending_wake.empty() ? 150 : 40), [&] {
+                if (!running_.load() || !pcm_q_.empty() || !playback_q_.empty() || reset_req_) return true;
                 std::lock_guard<std::mutex> clk(cfg_mu_);
                 return settings_dirty_;
             });
@@ -446,6 +488,7 @@ void WakeWordEngine::worker_loop() {
             if (!pcm_q_.empty()) {
                 batch.swap(pcm_q_);
             }
+            playback_batch.swap(playback_q_);
             if (reset_req_) {
                 do_reset = true;
                 reset_req_ = false;
@@ -473,6 +516,7 @@ void WakeWordEngine::worker_loop() {
             active_energy_wins = 0;
             music_cont_wins = 0;
             create_engines(cur_cfg);
+            reset_playback_state();
         }
 
         if (do_reset) {
@@ -488,13 +532,47 @@ void WakeWordEngine::worker_loop() {
             music_cont_wins = 0;
             if (vad) g_sherpa.vadReset(vad);
             if (kws && kws_stream) g_sherpa.resetKwsStream(kws, kws_stream);
+            reset_playback_state();
             vad_speech_active_.store(false);
         }
 
-        if (!ready_.load() || paused_.load() || batch.empty()) {
-            continue;
+        if (!ready_ || paused_) continue;
+
+        if (!playback_batch.empty()) {
+            const auto now = Clock::now();
+            if (!playback_stream) playback_stream = g_sherpa.createKwsStream(kws);
+            if (playback_stream) {
+                if (now - last_playback_audio > std::chrono::milliseconds(350)) {
+                    g_sherpa.resetKwsStream(kws, playback_stream);
+                    g_sherpa.streamAccept(playback_stream, 16000, playback_lead.data(),
+                                          static_cast<int32_t>(playback_lead.size()));
+                }
+                g_sherpa.streamAccept(playback_stream, 16000, playback_batch.data(),
+                                      static_cast<int32_t>(playback_batch.size()));
+                while (g_sherpa.isKwsReady(kws, playback_stream)) {
+                    g_sherpa.decodeKws(kws, playback_stream);
+                    const auto* result = g_sherpa.getKwsResult(kws, playback_stream);
+                    if (result && result->keyword && result->keyword[0] != '\0') {
+                        std::string keyword = result->keyword;
+                        g_sherpa.destroyKwsResult(result);
+                        g_sherpa.resetKwsStream(kws, playback_stream);
+                        if (std::find(playback_wakes.begin(), playback_wakes.end(), keyword) == playback_wakes.end()) {
+                            playback_wakes.push_back(std::move(keyword));
+                            LOGI("WakeWord", "Detected wake word in speaker reference");
+                        }
+                        break;
+                    }
+                    if (result) g_sherpa.destroyKwsResult(result);
+                }
+            }
+            last_playback_audio = now;
         }
 
+        if (!pending_wake.empty() && Clock::now() >= pending_deadline) {
+            emit_wake(std::exchange(pending_wake, {}), Clock::now());
+            if (paused_) continue;
+        }
+        if (batch.empty()) continue;
         acc.insert(acc.end(), batch.begin(), batch.end());
         while ((acc.size() - acc_head) >= kVadWin && running_.load() && !paused_.load()) {
             const float* win = acc.data() + acc_head;
@@ -620,12 +698,15 @@ void WakeWordEngine::worker_loop() {
                         music_cont_wins = 0;
                         lead_count = 0;
 
-                        auto now = std::chrono::steady_clock::now();
-                        if (now - last_trigger_tp >= std::chrono::milliseconds(1500)) {
-                            last_trigger_tp = now;
-                            detections_.fetch_add(1);
-                            LOGI("WakeWord", "Triggered wake word: '%s'", hit.c_str());
-                            if (cb_) cb_(hit);
+                        const auto now = Clock::now();
+                        if (during_reply_ && now - last_playback_audio <= std::chrono::milliseconds(300)) {
+                            // Let the digital reference catch up before accepting the mic result.
+                            if (pending_wake.empty()) {
+                                pending_wake = std::move(hit);
+                                pending_deadline = now + std::chrono::milliseconds(110);
+                            }
+                        } else {
+                            emit_wake(hit, now);
                         }
                         break;
                     }

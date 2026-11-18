@@ -14,6 +14,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace openstation {
@@ -39,6 +40,7 @@ public:
     bool capture_enabled() const { return capture_enabled_.load(); }
 
     void set_ws_audio_sink(WsAudioCallback cb);
+    void set_playback_reference_sink(WsAudioCallback cb) { playback_reference_cb_ = std::move(cb); }
     void set_spectrum_needed_cb(SpectrumNeededCallback cb);
     void push_external_spectrum(const std::array<float, 24>& bands);
 
@@ -83,6 +85,7 @@ private:
     SpectrumNeededCallback spec_needed_cb_;
     std::mutex spec_needed_mu_;
     WsAudioCallback ws_audio_cb_;
+    WsAudioCallback playback_reference_cb_;
     std::mutex ws_cb_mu_;
 
     std::atomic<bool> running_{false};

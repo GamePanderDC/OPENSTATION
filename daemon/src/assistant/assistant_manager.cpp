@@ -413,7 +413,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
 
         if (c.wake_word_enabled || c.quick_commands) {
             wake_word_.set_paused(false);
-            wake_word_.feed_audio_16k(samples, count, noise_rms);
+            wake_word_.feed_audio_16k(samples, count, noise_rms, wake_during_reply);
         }
         if (idle) return;
     } else {
@@ -438,6 +438,12 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     tx_pcm_.insert(tx_pcm_.end(), samples, samples + count);
     if (tx_pcm_.size() >= kTxChunkSamples) {
         tx_cv_.notify_one();
+    }
+}
+
+void AssistantManager::feed_playback_16k(const int16_t* samples, size_t count) {
+    if (state_ == AssistantState::Speaking && !mic_muted_ && !remote_turn_ && !session_abort_) {
+        wake_word_.feed_playback_16k(samples, count);
     }
 }
 

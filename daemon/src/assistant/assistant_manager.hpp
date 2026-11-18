@@ -66,6 +66,7 @@ public:
 
     void feed_audio_16k(const int16_t* samples, size_t count, float rms, float noise_rms, bool vqe_input = false);
 
+    void feed_playback_16k(const int16_t* samples, size_t count);
     bool trigger_session(const std::string& reason = "manual");
     bool toggle_session();
     bool begin_remote_turn();
