@@ -262,14 +262,11 @@
 
 ## AirPlay 2 и Spotify Connect
 
-Приёмники устанавливаются отдельно через существующий root ADB. В разделе «Музыка» веб-пульта появятся кнопки управления установленными приёмниками. Можно также пользоваться командами `start`, `stop` и `status` того же скрипта.
+Откройте «Музыка» в веб-пульте и нажмите «Установить» рядом с нужным приёмником. Станция сама скачает пакет, проверит SHA-256 и запустит приёмник. После перезагрузки приёмник можно запустить кнопкой «Включить».
 
-```powershell
-python scripts/manage_media_receivers.py spotify install --serial АДРЕС_СТАНЦИИ:5555
-python scripts/manage_media_receivers.py airplay install --serial АДРЕС_СТАНЦИИ:5555
-```
+Телефон и станция должны быть в одной локальной сети. В списке устройств Spotify выберите «OpenStation Max», а в меню AirPlay — «Яндекс станция Макс».
 
-В Spotify выберите «OpenStation Max» в списке устройств. AirPlay 2 использует пакет [YA AirPlay](https://github.com/qprots/station-max/blob/main/AIRPLAY2.md), рассчитанный на сборку 5000000921 с Android 9. Приёмники включаются вручную. Установщик проверяет SHA-256 пакетов перед копированием.
+Spotify Connect доступен на Станции Макс (arm64). AirPlay 2 поддерживает сборки 5000000921 и 2875769476 с Android 9. Если запуск недоступен при текущих настройках, веб-пульт покажет причину. [Документация YA AirPlay](https://github.com/qprots/station-max/blob/2104537b81f23808570b75bafe93cc1b56e253a6/AIRPLAY2.md) · [Исходники и лицензии компонентов](https://github.com/qprots/station-max/blob/2104537b81f23808570b75bafe93cc1b56e253a6/airplay2/THIRD_PARTY_NOTICES.md)
 
 ## ☁ Обновления по воздуху (GitHub OTA)
 

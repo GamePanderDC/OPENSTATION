@@ -37,7 +37,9 @@
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
+#include <filesystem>
 #include <malloc.h>
+#include <mbedtls/sha256.h>
 #include <mutex>
 #include <netinet/in.h>
 #include <poll.h>
@@ -53,7 +55,7 @@
 
 namespace {
 
-constexpr const char* kFirmwareVersion = "1.6.30";
+constexpr const char* kFirmwareVersion = "1.6.31";
 constexpr const char* kPostOtaWizardPath = "/data/local/openstation/post_ota_wizard.ver";
 constexpr const char* kLastBootedFwPath = "/data/local/openstation/.last_booted_fw_ver";
 constexpr const char* kStockAgentMigratedPath = "/data/local/openstation/.stock_agent_162";
@@ -1296,6 +1298,39 @@ int main(int argc, char** argv) {
     Logger::instance().init("/data/local/openstation/openstationd.log");
     LOGI("Main", "=== OpenStation Max Daemon v%s starting ===", kFirmwareVersion);
     std::thread(startup_misc_and_wireless_hardware).detach();
+    std::thread remove_test_tts([] {
+        constexpr char marker[] = "/data/local/openstation/.legacy_test_tts_removed";
+        constexpr char package[] = "com.k2fsa.sherpa.onnx.tts.engine";
+        if (file_exists_plain(marker)) return;
+        for (int attempt = 0; attempt < 30 && !g_stop.load(); ++attempt) {
+            char boot[PROP_VALUE_MAX] {};
+            __system_property_get("sys.boot_completed", boot);
+            if (strcmp(boot, "1") == 0) {
+                const auto packages = run_argv_with_timeout(
+                    {"/system/bin/pm", "list", "packages", "--user", "0", package}, 5);
+                if (packages.exit_code == 0) {
+                    const std::string exact = std::string("package:") + package;
+                    const std::string listed = "\n" + trim_ws_copy(packages.output) + "\n";
+                    if (listed.find("\n" + exact + "\n") == std::string::npos) {
+                        write_text_file_atomic(marker, "1\n");
+                        return;
+                    }
+                    const auto path = run_argv_with_timeout(
+                        {"/system/bin/pm", "path", "--user", "0", package}, 5);
+                    if (path.exit_code == 0 && path.output.rfind("package:/data/app/", 0) == 0) {
+                        const auto result = run_argv_with_timeout(
+                            {"/system/bin/pm", "uninstall", "--user", "0", package}, 15);
+                        if (result.exit_code == 0 && trim_ws_copy(result.output) == "Success") {
+                            write_text_file_atomic(marker, "1\n");
+                            LOGI("Main", "Removed the legacy Sherpa test TTS app");
+                            return;
+                        }
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    });
 
     DaemonConfig cfg;
     const bool loaded_cfg = cfg.load();
@@ -4376,54 +4411,149 @@ int main(int argc, char** argv) {
         }
     });
 
+    constexpr char receiver_dir[] = "/data/local/openstation/receivers";
     std::mutex receiver_mu;
+    std::string installing_receiver;
+    std::map<std::string, std::string> receiver_errors;
+    std::thread receiver_job;
     struct MediaReceiver {
         const char* id;
         const char* root;
         const char* control;
+        const char* asset;
+        size_t size;
+        const char* sha256;
     };
     const MediaReceiver receivers[] = {
-        {"airplay", "/data/local/tmp/ya-airplay", "manage.sh"},
-        {"spotify", "/data/local/openstation/receivers/spotify", "control.sh"},
+        {"airplay", "/data/local/tmp/ya-airplay", "manage.sh", "OpenStationAirPlay2.tar", 8222720,
+         "82222b8afaf7cd9dcb9966a82f90546b6d886fa68cff65aec152c975fdedbdad"},
+        {"spotify", "/data/local/openstation/receivers/spotify", "control.sh", "OpenStationSpotifyConnect.tar", 19599360,
+         "9810e77fe22b91c9a0bb8aa7db51ee8dc51e08c16cfd27d347ed0ed6c2488b09"},
     };
-    auto trusted_receiver = [](const MediaReceiver& receiver) {
-        struct stat dir {}, control {};
-        const std::string path = std::string(receiver.root) + "/" + receiver.control;
-        return lstat(receiver.root, &dir) == 0 && S_ISDIR(dir.st_mode) &&
-               dir.st_uid == 0 && (dir.st_mode & 0022) == 0 &&
-               lstat(path.c_str(), &control) == 0 && S_ISREG(control.st_mode) &&
-               control.st_uid == 0 && (control.st_mode & 0022) == 0;
+    auto is_airplay = [](const MediaReceiver& receiver) { return std::string_view(receiver.id) == "airplay"; };
+    auto trusted_path = [](const char* path, bool directory) {
+        struct stat st {};
+        return lstat(path, &st) == 0 && (directory ? S_ISDIR(st.st_mode) : S_ISREG(st.st_mode)) &&
+               st.st_uid == 0 && (st.st_mode & 0022) == 0;
+    };
+    auto trusted_receiver = [&](const MediaReceiver& receiver) {
+        return trusted_path(receiver.root, true) &&
+               trusted_path((std::string(receiver.root) + "/" + receiver.control).c_str(), false);
+    };
+    auto receiver_compatibility = [&](const MediaReceiver& receiver) -> const char* {
+        char device[PROP_VALUE_MAX] {}, abi[PROP_VALUE_MAX] {};
+        __system_property_get("ro.product.device", device);
+        __system_property_get("ro.product.cpu.abi", abi);
+        if (strcmp(device, "yandexstation_2") != 0 || strcmp(abi, "arm64-v8a") != 0)
+            return "Доступно на Станции Макс (arm64)";
+        if (!is_airplay(receiver)) return nullptr;
+        char build[PROP_VALUE_MAX] {}, sdk[PROP_VALUE_MAX] {};
+        __system_property_get("ro.build.version.incremental", build);
+        __system_property_get("ro.build.version.sdk", sdk);
+        if (strcmp(sdk, "28") != 0 || (strcmp(build, "5000000921") != 0 && strcmp(build, "2875769476") != 0))
+            return "AirPlay 2 доступен на сборках Android 9: 5000000921 и 2875769476";
+        const auto mode = run_argv_with_timeout({"/system/bin/getenforce"}, 2, 64);
+        if (mode.exit_code != 0 || trim_ws_copy(mode.output) != "Permissive")
+            return "AirPlay 2 недоступен при текущих настройках системы";
+        return nullptr;
+    };
+    auto receiver_command = [&](const MediaReceiver& receiver, const std::string& action) {
+        const std::string script = std::string(receiver.root) + "/" +
+            (is_airplay(receiver) ? action + ".sh" : receiver.control);
+        if (!trusted_path(script.c_str(), false)) return ShellResult{};
+        if (is_airplay(receiver))
+            return run_argv_with_timeout({"/system/bin/sh", script}, action == "status" ? 4 : 22, 256);
+        return run_argv_with_timeout({"/system/bin/sh", script, action}, action == "status" ? 4 : 22, 256);
     };
     auto receiver_status = [&](const MediaReceiver& receiver) {
         auto value = json::Value::make_obj();
         const bool installed = trusted_receiver(receiver);
         value["installed"] = json::Value::make_bool(installed);
-        if (!installed) {
-            value["state"] = json::Value::make_str("missing");
-            return value;
-        }
-        const bool is_airplay = std::string_view(receiver.id) == "airplay";
-        std::string script = std::string(receiver.root) + (is_airplay ? "/status.sh" : "/control.sh");
-        if (is_airplay) {
-            struct stat info {};
-            if (lstat(script.c_str(), &info) != 0 || !S_ISREG(info.st_mode) ||
-                info.st_uid != 0 || (info.st_mode & 0022) != 0) {
-                value["state"] = json::Value::make_str("error");
-                return value;
+        const char* state = "missing";
+        if (const char* unsupported = receiver_compatibility(receiver)) {
+            state = "unsupported";
+            value["message"] = json::Value::make_str(unsupported);
+        } else if (installing_receiver == receiver.id) {
+            state = "installing";
+        } else {
+            if (auto error = receiver_errors.find(receiver.id); error != receiver_errors.end())
+                value["message"] = json::Value::make_str(error->second);
+            if (installed) {
+                state = "error";
+                const auto status = receiver_command(receiver, "status");
+                if (is_airplay(receiver)) {
+                    if (status.exit_code == 0) state = "running";
+                    else if (status.exit_code == 3) state = "stopped";
+                } else if (status.exit_code == 0) {
+                    const auto response = trim_ws_copy(status.output);
+                    if (response == "running") state = "running";
+                    else if (response == "stopped") state = "stopped";
+                }
             }
-        }
-        const auto status = run_argv_with_timeout({"/system/bin/sh", script, "status"}, 4, 128);
-        const char* state = "error";
-        if (is_airplay) {
-            if (status.exit_code == 0) state = "running";
-            else if (status.exit_code == 3) state = "stopped";
-        } else if (status.exit_code == 0) {
-            const auto text = trim_ws_copy(status.output);
-            if (text == "running") state = "running";
-            else if (text == "stopped") state = "stopped";
         }
         value["state"] = json::Value::make_str(state);
         return value;
+    };
+    auto install_receiver = [&](const MediaReceiver& receiver) -> const char* {
+        if (!trusted_path("/data/local/openstation", true) ||
+            (mkdir(receiver_dir, 0700) != 0 && errno != EEXIST) ||
+            !trusted_path(receiver_dir, true))
+            return "Не удалось подготовить папку приёмников";
+        HttpClientRequest request;
+        request.url = std::string("https://github.com/Olegu621/OPENSTATION/releases/download/v") +
+            kFirmwareVersion + "/" + receiver.asset;
+        request.timeout_ms = 120000;
+        request.max_body_bytes = receiver.size + 1;
+        request.abort_req = &g_stop;
+        auto response = http_perform(request);
+        if (!response.ok || response.status_code != 200)
+            return "Не удалось скачать приёмник с GitHub. Проверьте интернет на станции";
+        if (response.truncated || response.body.size() != receiver.size)
+            return "Пакет скачан не полностью. Повторите установку";
+        unsigned char digest[32] {};
+        if (mbedtls_sha256(reinterpret_cast<const unsigned char*>(response.body.data()),
+                           response.body.size(), digest, 0) != 0)
+            return "Не удалось проверить пакет приёмника";
+        char hex[65] {};
+        for (size_t i = 0; i < sizeof(digest); ++i)
+            snprintf(hex + i * 2, 3, "%02x", static_cast<unsigned int>(digest[i]));
+        if (strcmp(hex, receiver.sha256) != 0) return "Не совпала контрольная сумма пакета";
+        if (g_stop.load()) return "Установка прервана при выключении станции";
+        std::string stage = std::string(receiver_dir) + "/stage-XXXXXX";
+        if (!mkdtemp(stage.data())) return "Не удалось создать временную папку";
+        const std::string archive = stage + "/bundle.tar";
+        const bool saved = write_text_file_atomic(archive.c_str(), response.body);
+        response.body.clear();
+        const char* error = nullptr;
+        if (!saved) {
+            error = "Не удалось сохранить пакет. Проверьте свободное место на станции";
+        } else if (run_argv_with_timeout({"/system/bin/tar", "-xf", archive, "-C", stage}, 12).exit_code != 0) {
+            error = "Не удалось распаковать приёмник";
+        } else {
+            unlink(archive.c_str());
+            if (is_airplay(receiver)) {
+                const auto result = run_argv_with_timeout(
+                    {"/system/bin/sh", stage + "/manage.sh", "install", "off", "off"}, 90);
+                if (result.exit_code != 0) {
+                    LOGW("Receivers", "AirPlay installer returned %d", result.exit_code);
+                    error = "Не удалось установить AirPlay 2. Попробуйте перезапустить станцию";
+                }
+            } else {
+                struct stat existing {};
+                if (lstat(receiver.root, &existing) == 0 || rename(stage.c_str(), receiver.root) != 0) {
+                    error = "Не удалось сохранить Spotify Connect";
+                } else {
+                    stage.clear();
+                }
+            }
+            if (!error && !trusted_receiver(receiver))
+                error = "Не удалось проверить установленный приёмник";
+            if (!error && !is_airplay(receiver) && receiver_command(receiver, "start").exit_code != 0)
+                error = "Spotify Connect установлен, но не запустился. Нажмите «Включить»";
+        }
+        std::error_code cleanup_error;
+        if (!stage.empty()) std::filesystem::remove_all(stage, cleanup_error);
+        return error;
     };
 
     http.start(
@@ -4446,17 +4576,39 @@ int main(int argc, char** argv) {
                 const auto* id = input.get("receiver");
                 const auto* op = input.get("action");
                 const auto action = op ? op->as_str() : "";
-                if (!id || (action != "start" && action != "stop")) {
+                if (!id || (action != "install" && action != "start" && action != "stop")) {
                     return HttpResponse::json("{\"error\":\"invalid receiver action\"}", 400);
                 }
                 for (const auto& receiver : receivers) {
                     if (id->as_str() != receiver.id) continue;
                     std::lock_guard<std::mutex> lock(receiver_mu);
-                    if (!trusted_receiver(receiver)) {
-                        return HttpResponse::json("{\"error\":\"receiver not installed\"}", 404);
+                    if (!installing_receiver.empty()) {
+                        return HttpResponse::json("{\"error\":\"Дождитесь завершения установки приёмника\"}", 409);
                     }
-                    const std::string path = std::string(receiver.root) + "/" + receiver.control;
-                    const auto result = run_argv_with_timeout({"/system/bin/sh", path, action}, 22, 256);
+                    if (const char* unsupported = receiver_compatibility(receiver)) {
+                        auto value = json::Value::make_obj();
+                        value["error"] = json::Value::make_str(unsupported);
+                        return HttpResponse::json(value.dump(-1), 409);
+                    }
+                    if (action == "install") {
+                        if (trusted_receiver(receiver))
+                            return HttpResponse::json(receiver_status(receiver).dump(-1));
+                        if (receiver_job.joinable()) receiver_job.join();
+                        receiver_errors.erase(receiver.id);
+                        installing_receiver = receiver.id;
+                        receiver_job = std::thread([&, receiver] {
+                            const char* error = install_receiver(receiver);
+                            std::lock_guard<std::mutex> done(receiver_mu);
+                            if (error) receiver_errors[receiver.id] = error;
+                            installing_receiver.clear();
+                        });
+                        return HttpResponse::json(receiver_status(receiver).dump(-1), 202);
+                    }
+                    if (!trusted_receiver(receiver)) {
+                        return HttpResponse::json("{\"error\":\"Сначала установите приёмник\"}", 404);
+                    }
+                    receiver_errors.erase(receiver.id);
+                    const auto result = receiver_command(receiver, action);
                     auto value = receiver_status(receiver);
                     const auto* state = value.get("state");
                     const bool changed = state && state->as_str() == (action == "start" ? "running" : "stopped");
@@ -6364,6 +6516,8 @@ int main(int argc, char** argv) {
     if (timezone_thread.joinable()) timezone_thread.join();
     timers.stop();
     http.stop();
+    if (receiver_job.joinable()) receiver_job.join();
+    remove_test_tts.join();
     mqtt.stop();
     adb_mgr.stop();
     mdns.stop();

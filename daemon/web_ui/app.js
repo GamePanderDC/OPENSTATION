@@ -86,6 +86,7 @@
     document.body.classList.add("tab-" + tabName);
     try { localStorage.setItem("os_tab", tabName); } catch {}
     if (tabName === "home") loadHome();
+    if (tabName === "music") refreshMediaReceivers();
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -3607,41 +3608,65 @@
     });
   }
 
+  const mediaReceiverRows = [
+    ["airplay", "Airplay", "В AirPlay на устройстве в той же сети выберите «Яндекс станция Макс»."],
+    ["spotify", "Spotify", "В Spotify на устройстве в той же сети выберите «OpenStation Max»."],
+  ];
+  let mediaReceiverTimer;
+  let mediaReceiverRefreshing = false;
+  let mediaReceiverAction = false;
+
   async function refreshMediaReceivers() {
-    const card = $("mediaReceivers");
-    if (!card) return;
+    if (!$("mediaReceivers") || mediaReceiverRefreshing || mediaReceiverAction) return;
+    clearTimeout(mediaReceiverTimer);
+    mediaReceiverRefreshing = true;
     try {
       const data = await api("/api/music/receivers");
-      for (const [key, suffix] of [["airplay", "Airplay"], ["spotify", "Spotify"]]) {
+      const installing = mediaReceiverRows.some(([key]) => data[key]?.state === "installing");
+      for (const [key, suffix, instructions] of mediaReceiverRows) {
         const item = data[key];
-        const row = $("media" + suffix);
         const status = $("media" + suffix + "Status");
         const button = $("media" + suffix + "Toggle");
-        row.hidden = !item?.installed;
-        if (row.hidden) continue;
-        const running = item.state === "running";
-        status.textContent = running ? "Включён" : item.state === "stopped" ? "Выключен" : "Ошибка";
-        button.textContent = running ? "Выключить" : "Включить";
+        const current = item?.state;
+        const text = {
+          missing: "Требуется установка",
+          installing: "Скачивание и установка…",
+          running: instructions,
+          stopped: "Выключен",
+          error: "Приёмник не отвечает",
+        };
+        status.textContent = item?.message || text[current] || "Статус недоступен";
+        button.hidden = !item || current === "unsupported" || current === "installing";
+        button.disabled = installing;
+        const action = current === "running" ? "stop" : item?.installed ? "start" : "install";
+        button.textContent = { install: "Установить", start: "Включить", stop: "Выключить" }[action];
         button.onclick = async () => {
-          button.disabled = true;
+          if (mediaReceiverAction) return;
+          mediaReceiverAction = true;
+          for (const [, name] of mediaReceiverRows) $("media" + name + "Toggle").disabled = true;
           try {
-            await api("/api/music/receivers", "POST", { receiver: key, action: running ? "stop" : "start" });
-          } catch (_) {
-            status.textContent = "Не удалось переключить приёмник";
+            await api("/api/music/receivers", "POST", { receiver: key, action });
+          } catch (error) {
+            showToast(error.message || "Не удалось переключить приёмник", true);
           } finally {
-            button.disabled = false;
+            mediaReceiverAction = false;
+            refreshMediaReceivers();
           }
-          setTimeout(refreshMediaReceivers, 1500);
         };
       }
-      card.hidden = $("mediaAirplay").hidden && $("mediaSpotify").hidden;
+      if (installing) mediaReceiverTimer = setTimeout(refreshMediaReceivers, 1500);
     } catch (_) {
-      card.hidden = true;
+      for (const [, suffix] of mediaReceiverRows) {
+        $("media" + suffix + "Status").textContent = "Статус недоступен";
+        $("media" + suffix + "Toggle").hidden = true;
+      }
+      mediaReceiverTimer = setTimeout(refreshMediaReceivers, 5000);
+    } finally {
+      mediaReceiverRefreshing = false;
     }
   }
 
   async function init() {
-    refreshMediaReceivers();
     let savedTab = null;
     try { savedTab = localStorage.getItem("os_tab"); } catch {}
     switchTab(savedTab || "music");

@@ -1,46 +1,46 @@
 {
   "name": "OpenStation Max",
   "device": "yandexstation_2",
-  "version": "1.6.30",
+  "version": "1.6.31",
   "autonomous": true,
-  "changelog": "Новые команды без обращения, SmartTube, перемотка и тихий ответ на шёпот.",
-  "buildTimeUtc": "2026-11-18T22:05:05Z",
+  "changelog": "Установка AirPlay 2 и Spotify Connect из веб-пульта. Удаление тестового Sherpa TTS.",
+  "buildTimeUtc": "2026-11-18T22:54:26Z",
   "files": {
     "daemon": {
       "fileName": "openstationd",
-      "size": 3270176,
-      "sha256": "f2fdf36cb10f1593a28e0f60c81b3b27dff57d73cbe7f7295e608850c29bcc2a",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/openstationd"
+      "size": 3298952,
+      "sha256": "297ce563a64640cdbe64faf7a6aa2a5bc8eea46b6923fbb36e9f0d6ae0f4179f",
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/openstationd"
     },
     "bootlogod": {
       "fileName": "bootlogod",
       "size": 657728,
       "sha256": "4f199c8445c271c52bc4f5fbf27e1a9d8c29adf8c2786e284813b7c825f6e0d9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/bootlogod"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/bootlogod"
     },
     "launcher": {
       "fileName": "OpenStationLauncher.apk",
       "size": 28421619,
       "sha256": "52f8ae5a0af7c329be9e1a2aaa287db346e529793e9c489ce228a44cb78d9aaf",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/OpenStationLauncher.apk"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/OpenStationLauncher.apk"
     },
     "ime": {
       "fileName": "OpenStationIME.apk",
       "size": 808866,
       "sha256": "9034ebf1d0a22dbc86c76f151d607fb66c644b8e45c58461122e009c48e82f03",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/OpenStationIME.apk"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/OpenStationIME.apk"
     },
     "bootanimation": {
       "fileName": "bootanimation.zip",
       "size": 6725707,
       "sha256": "4fc2b4c98535f97747f92f22d32ae3ebb45d7e1ef796f7079fb1cb992b255598",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/bootanimation.zip"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/bootanimation.zip"
     },
     "bootlogo": {
       "fileName": "logo.img",
       "size": 2252608,
       "sha256": "70a7f0b61fe434335fd38786c5d7914b40f03910e67411e98a21a436f640ebd9",
-      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.30/logo.img"
+      "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.31/logo.img"
     }
   }
 }

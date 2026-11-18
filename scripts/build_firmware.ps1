@@ -6,8 +6,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.30",
-    [string]$Changelog = "Новые команды без обращения, SmartTube, перемотка и тихий ответ на шёпот.",
+    [string]$Version = "1.6.31",
+    [string]$Changelog = "Установка AirPlay 2 и Spotify Connect из веб-пульта. Удаление тестового Sherpa TTS.",
     [switch]$Clean,
     [switch]$RebuildIme
 )
