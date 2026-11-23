@@ -13,6 +13,7 @@
 #include <string_view>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 namespace openstation {
@@ -355,9 +356,14 @@ int SpotifyMusic::api(const std::string& path, Value& output, const char* method
             const int seconds = it == response.headers.end() ? 30 : atoi(it->second.c_str());
             retry_at_ = Clock::now() + std::chrono::seconds(std::clamp(seconds, 2, 3600));
         }
-        if (response.status_code == 200 &&
-            (response.truncated || (response.body.empty() ? std::string_view(method) == "GET"
-                                                           : !json::Parser::parse(response.body, output)))) return 502;
+        if (response.status_code == 200) {
+            if (response.truncated) return 502;
+            if (std::string_view(method) == "GET") {
+                if (response.body.empty() || !json::Parser::parse(response.body, output)) return 502;
+            } else if (!response.body.empty() && (response.body.front() == '{' || response.body.front() == '[')) {
+                (void)json::Parser::parse(response.body, output);
+            }
+        }
         return response.status_code;
     }
     return 401;
@@ -373,7 +379,12 @@ HttpResponse SpotifyMusic::status() {
         playback_ = {};
         const auto& device = field(playback, "device");
         const auto id = device_id();
-        if (playback_status_ == 200 && !id.empty() && str(device, "id") == id) {
+        std::string dev_name = str(device, "name");
+        std::string dev_id = str(device, "id");
+        bool is_station = (dev_name.find("OpenStation") != std::string::npos) ||
+                          (!id.empty() && dev_id == id) ||
+                          field(device, "is_active").as_bool();
+        if (playback_status_ == 200 && is_station) {
             playback_ = music_item(field(playback, "item"));
             if (!playback_.is_null()) {
                 playback_["playing"] = Value::make_bool(field(playback, "is_playing").as_bool());
@@ -392,7 +403,7 @@ HttpResponse SpotifyMusic::status() {
                 }
             }
         }
-        status_until_ = Clock::now() + std::chrono::seconds(playback_status_ == 200 || playback_status_ == 204 ? 8 : 20);
+        status_until_ = Clock::now() + std::chrono::milliseconds(playback_status_ == 200 ? 1500 : 3500);
     }
     output["linked"] = Value::make_bool(!refresh_.empty());
     output["playback"] = playback_;
@@ -477,7 +488,7 @@ HttpResponse SpotifyMusic::command(const Value& input) {
     const char* method = "PUT";
     std::string path;
     Value payload = Value::make_obj();
-    if (action == "play" && spotify_id(id) && (track || context)) {
+    if (action == "play" && !id.empty() && spotify_id(id) && (track || context)) {
         path = "/play?";
         if (context) {
             payload["context_uri"] = Value::make_str("spotify:" + kind + ":" + id);
@@ -494,12 +505,18 @@ HttpResponse SpotifyMusic::command(const Value& input) {
                 if (spotify_id(next_id)) payload["uris"].push(Value::make_str("spotify:track:" + next_id));
             }
         }
-    } else if (action == "resume") {
+    } else if (action == "resume" || (action == "play" && id.empty())) {
         path = "/play?";
     } else if (action == "pause") {
         path = "/pause?";
-    } else if (action == "next" || action == "previous") {
-        path = "/" + action + "?";
+    } else if (action == "play_pause" || action == "toggle") {
+        if (field(playback_, "playing").as_bool()) {
+            path = "/pause?";
+        } else {
+            path = "/play?";
+        }
+    } else if (action == "next" || action == "previous" || action == "prev") {
+        path = "/" + std::string(action == "prev" ? "previous" : action) + "?";
         method = "POST";
     } else if (action == "seek" && field(input, "positionMs").is_num()) {
         const auto position = std::clamp<int64_t>(field(input, "positionMs").as_i64(), 0, 86400000);
@@ -510,33 +527,179 @@ HttpResponse SpotifyMusic::command(const Value& input) {
     } else {
         return error("Неизвестная команда Spotify.", 400);
     }
-    const auto target = device_id();
-    if (target.empty()) return error("Не удалось определить Spotify Connect на станции.", 500);
-    const int devices = api("/me/player/devices", result);
-    if (devices != 200) return api_error(devices);
-    const auto& list = field(result, "devices").arr_val;
-    const auto receiver = std::find_if(list.begin(), list.end(), [&](const Value& item) {
-        return str(item, "id") == target && !field(item, "is_restricted").as_bool();
-    });
-    if (receiver == list.end()) return error(
-        "Включите Spotify Connect на станции и выберите «OpenStation Max» в списке устройств Spotify на телефоне.", 409);
-    const int response = api("/me/player" + path + "device_id=" + target, result, method,
+    std::string target = resolve_target_device();
+    if (target.empty()) {
+        (void)::system("/system/bin/am start -n com.spotify.tv.android/.SpotifyTVActivity >/dev/null 2>&1");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        target = resolve_target_device();
+    }
+    if (target.empty()) {
+        return error("Spotify Connect на станции не найден. Запустите Spotify на телевизоре или телефоне.", 409);
+    }
+    std::string full_path = "/me/player" + path;
+    if (full_path.back() == '?' || full_path.back() == '&') {
+        full_path += "device_id=" + target;
+    } else {
+        full_path += (full_path.find('?') == std::string::npos ? "?" : "&") + std::string("device_id=") + target;
+    }
+    const int response = api(full_path, result, method,
                              action == "play" ? payload.dump() : "");
+    fprintf(stderr, "[Spotify] command: action=%s, path=%s, target=%s, code=%d\n", action.c_str(), full_path.c_str(), target.c_str(), response);
+    fflush(stderr);
     status_until_ = {};
     return response == 200 || response == 204 ? ok() : api_error(response);
+}
+
+std::string SpotifyMusic::resolve_target_device() {
+    Value result;
+    const int devices = api("/me/player/devices", result);
+    if (devices != 200) return {};
+    const auto& list = field(result, "devices").arr_val;
+    // 1. Prefer TV device named OpenStation
+    for (const auto& item : list) {
+        if (field(item, "is_restricted").as_bool()) continue;
+        std::string name = str(item, "name");
+        std::string type = str(item, "type");
+        if (name.find("OpenStation") != std::string::npos && type == "TV") {
+            return str(item, "id");
+        }
+    }
+    // 2. Any device named OpenStation
+    for (const auto& item : list) {
+        if (field(item, "is_restricted").as_bool()) continue;
+        std::string name = str(item, "name");
+        if (name.find("OpenStation") != std::string::npos) {
+            return str(item, "id");
+        }
+    }
+    // 3. Active device
+    for (const auto& item : list) {
+        if (field(item, "is_restricted").as_bool()) continue;
+        if (field(item, "is_active").as_bool()) {
+            return str(item, "id");
+        }
+    }
+    // 4. Default SHA1 device_id()
+    const auto def_id = device_id();
+    for (const auto& item : list) {
+        if (field(item, "is_restricted").as_bool()) continue;
+        if (str(item, "id") == def_id) {
+            return str(item, "id");
+        }
+    }
+    // 5. First non-restricted device
+    for (const auto& item : list) {
+        if (!field(item, "is_restricted").as_bool()) {
+            return str(item, "id");
+        }
+    }
+    return {};
 }
 
 void SpotifyMusic::pause_if_playing() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!field(playback_, "playing").as_bool()) return;
-    const auto target = device_id();
-    if (target.empty()) return;
+    std::string target = resolve_target_device();
     Value response;
-    const int code = api("/me/player/pause?device_id=" + target, response, "PUT");
+    std::string path = target.empty() ? "/me/player/pause" : ("/me/player/pause?device_id=" + target);
+    const int code = api(path, response, "PUT");
     if (code == 200 || code == 204) {
         playback_["playing"] = Value::make_bool(false);
         status_until_ = {};
     }
+}
+
+bool SpotifyMusic::is_linked() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !refresh_.empty();
+}
+
+std::string SpotifyMusic::provider() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+    return provider_;
+}
+
+json::Value SpotifyMusic::poll_playback() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (refresh_.empty()) return {};
+    if (Clock::now() < retry_at_) return playback_;
+    Value playback;
+    playback_status_ = api("/me/player?additional_types=track%2Cepisode", playback);
+    if (playback_status_ == 200) {
+        const auto& device = field(playback, "device");
+        const auto id = device_id();
+        std::string dev_name = str(device, "name");
+        std::string dev_id = str(device, "id");
+        bool is_station = (dev_name.find("OpenStation") != std::string::npos) ||
+                          (!id.empty() && dev_id == id) ||
+                          field(device, "is_active").as_bool();
+        if (is_station) {
+            playback_ = music_item(field(playback, "item"));
+            if (!playback_.is_null()) {
+                playback_["playing"] = Value::make_bool(field(playback, "is_playing").as_bool());
+                playback_["positionMs"] = Value::make_int(field(playback, "progress_ms").as_i64());
+                if (checked_track_ == str(playback_, "id")) {
+                    playback_["saved"] = Value::make_bool(saved_track_ == checked_track_);
+                }
+            }
+        } else {
+            playback_ = {};
+        }
+    } else if (playback_status_ == 204) {
+        playback_ = {};
+    }
+    return playback_;
+}
+
+bool SpotifyMusic::play_query(const std::string& query) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (refresh_.empty()) return false;
+    if (query.empty()) {
+        Value cmd = Value::make_obj();
+        cmd["action"] = Value::make_str("resume");
+        auto resp = command(cmd);
+        if (resp.status == 200 || resp.status == 204) return true;
+        Value saved_tracks;
+        if (api("/me/tracks?limit=1", saved_tracks) == 200) {
+            const auto& items = field(saved_tracks, "items").arr_val;
+            if (!items.empty()) {
+                const auto& track = field(items[0], "track");
+                std::string tid = str(track, "id");
+                if (!tid.empty()) {
+                    Value play_cmd = Value::make_obj();
+                    play_cmd["action"] = Value::make_str("play");
+                    play_cmd["kind"] = Value::make_str("track");
+                    play_cmd["id"] = Value::make_str(tid);
+                    auto play_resp = command(play_cmd);
+                    return play_resp.status == 200 || play_resp.status == 204;
+                }
+            }
+        }
+        return false;
+    }
+    Value search_res;
+    int code = api("/search?q=" + url_encode(query) + "&type=track&limit=1", search_res);
+    if (code != 200) return false;
+    const auto& tracks = field(search_res, "tracks");
+    const auto& items = field(tracks, "items").arr_val;
+    if (items.empty()) return false;
+    std::string track_id = str(items[0], "id");
+    if (track_id.empty()) return false;
+
+    Value cmd = Value::make_obj();
+    cmd["action"] = Value::make_str("play");
+    cmd["kind"] = Value::make_str("track");
+    cmd["id"] = Value::make_str(track_id);
+    auto resp = command(cmd);
+    return resp.status == 200 || resp.status == 204;
+}
+
+bool SpotifyMusic::execute_simple_command(const std::string& action) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Value cmd = Value::make_obj();
+    cmd["action"] = Value::make_str(action);
+    auto resp = command(cmd);
+    return resp.status == 200 || resp.status == 204;
 }
 
 } // namespace openstation

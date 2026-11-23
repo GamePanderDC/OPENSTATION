@@ -519,6 +519,59 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
     std::string clean = trim_str(text);
     if (clean.empty()) return false;
 
+    std::string ul = utf8_to_lower_ru(clean);
+    if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
+                margs["action"] = json::Value::make_str("open_spotify");
+            } else {
+                margs["action"] = json::Value::make_str("play_spotify");
+                margs["query"] = json::Value::make_str(clean);
+            }
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            margs["action"] = json::Value::make_str("pause");
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            margs["action"] = json::Value::make_str("next");
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            margs["action"] = json::Value::make_str("prev");
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            margs["action"] = json::Value::make_str("play");
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    }
+
     AssistantConfig c;
     {
         std::lock_guard<std::mutex> lk(cfg_mu_);
@@ -832,9 +885,12 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
               "таймеры/будильники (manage_timer), HDMI-CEC и пульт ТВ (tv_hdmi_cec, remote_control, type_text), встроенный нативный плеер "
               "Яндекс Музыка (music_control), приложения и ссылки (manage_apps), умный дом MQTT/HTTP (mqtt_publish, http_request), "
               "диагностика и ограниченное управление питанием (system_info, device_power).\n"
-              "- Музыка (music_control): на команды «включи музыку», «поставь музыку», «давай музыку», «включи мою волну» (без конкретного названия) "
+              "- Музыка (music_control): на команды «включи музыку», «поставь музыку», «давай музыку», «включи мою волну» (без конкретного названия и без упоминания Spotify) "
               "ВСЕГДА сразу вызывай music_control(action=\"play_my_wave\"). Если назван исполнитель/песня/жанр — вызывай music_control(action=\"play_query\", query=\"...\"); "
               "если попросили настроение волны («бодрую/весёлую/спокойную/грустную волну») — action=\"play_my_wave\" с mood. "
+              "Если пользователь явно просит включить музыку в Spotify («включи в спотифай», «включи [песню/артиста] в спотифай / через спотифай», «поставь музыку в спотифай») — "
+              "ВСЕГДА вызывай music_control(action=\"play_spotify\", query=\"...\") (или с пустым query, если песня не указана). "
+              "Для «открой спотифай» — вызывай music_control(action=\"open_spotify\"). "
               "Для «дальше/следующий» -> next, «назад/предыдущий» -> prev: СТРОГО вызывай music_control МОЛЧА и НИЧЕГО НЕ ПРОИЗНОСИ В ГОЛОС (не говори «включаю следующий трек», «переключаю» или любые другие фразы подтверждения — сразу молча переключай трек!). "
               "Для «лайк/нравится» -> like, «дизлайк/не нравится» -> dislike, "
               "«мои лайки/избранное» -> play_liked, «пауза/стоп» -> pause/stop, «открой яндекс музыку» -> open.\n"
@@ -1256,9 +1312,10 @@ json::Value AssistantManager::build_setup_json(const AssistantConfig& c, bool an
     {
         Value p = Value::make_obj();
         p["action"] = make_enum_prop(
-            "Native Yandex Music player action: 'play_my_wave' for general 'включи музыку' / My Wave, "
-            "'play_query' with 'query' for specific artist/track, or transport/feedback commands.",
-            {"play_my_wave", "play_query", "play_pause", "play", "pause", "stop", "next", "prev", "like", "dislike", "play_liked", "open"});
+            "Music player action: 'play_my_wave' for general 'включи музыку' / My Wave, "
+            "'play_query' with 'query' for specific artist/track, "
+            "'play_spotify' for Spotify playback, 'open_spotify' to open Spotify TV, or transport/feedback commands.",
+            {"play_my_wave", "play_query", "play_spotify", "open_spotify", "play_pause", "play", "pause", "stop", "next", "prev", "like", "dislike", "play_liked", "open"});
         p["query"] = make_prop("STRING", "Search query (track title, artist, album) when action='play_query'");
         p["mood"] = make_enum_prop("Optional My Wave mood when action='play_my_wave'", {"any", "energetic", "fun", "calm", "sad"});
         p["open_ui"] = make_prop("BOOLEAN", "Open full-screen Yandex Music UI on TV (default false)");
@@ -1530,6 +1587,41 @@ void AssistantManager::session_worker(uint64_t sid,
                     json::Value bargs = json::Value::make_obj();
                     bargs["action"] = json::Value::make_str("disable");
                     cb_.execute_tool("bluetooth_control", bargs);
+                }
+            } else if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
+                if (cb_.execute_tool) {
+                    json::Value margs = json::Value::make_obj();
+                    if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
+                        margs["action"] = json::Value::make_str("open_spotify");
+                    } else {
+                        margs["action"] = json::Value::make_str("play_spotify");
+                        margs["query"] = json::Value::make_str(u);
+                    }
+                    cb_.execute_tool("music_control", margs);
+                }
+            } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
+                if (cb_.execute_tool) {
+                    json::Value margs = json::Value::make_obj();
+                    margs["action"] = json::Value::make_str("pause");
+                    cb_.execute_tool("music_control", margs);
+                }
+            } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
+                if (cb_.execute_tool) {
+                    json::Value margs = json::Value::make_obj();
+                    margs["action"] = json::Value::make_str("next");
+                    cb_.execute_tool("music_control", margs);
+                }
+            } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
+                if (cb_.execute_tool) {
+                    json::Value margs = json::Value::make_obj();
+                    margs["action"] = json::Value::make_str("prev");
+                    cb_.execute_tool("music_control", margs);
+                }
+            } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
+                if (cb_.execute_tool) {
+                    json::Value margs = json::Value::make_obj();
+                    margs["action"] = json::Value::make_str("play");
+                    cb_.execute_tool("music_control", margs);
                 }
             }
         }
@@ -1994,8 +2086,45 @@ void AssistantManager::session_worker(uint64_t sid,
                 }
                 model_turn_done = false;
                 awaiting_playback_drain = false;
-                self_stop_requested = is_assistant_stop_request(utf8_to_lower_ru(trim_str(t)));
+                std::string ul = utf8_to_lower_ru(trim_str(t));
+                self_stop_requested = is_assistant_stop_request(ul);
                 if (self_stop_requested) stop_after_turn = true;
+                if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
+                            margs["action"] = json::Value::make_str("open_spotify");
+                        } else {
+                            margs["action"] = json::Value::make_str("play_spotify");
+                            margs["query"] = json::Value::make_str(t);
+                        }
+                        cb_.execute_tool("music_control", margs);
+                    }
+                } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        margs["action"] = json::Value::make_str("pause");
+                        cb_.execute_tool("music_control", margs);
+                    }
+                } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        margs["action"] = json::Value::make_str("next");
+                        cb_.execute_tool("music_control", margs);
+                    }
+                } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        margs["action"] = json::Value::make_str("prev");
+                        cb_.execute_tool("music_control", margs);
+                    }
+                } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        margs["action"] = json::Value::make_str("play");
+                        cb_.execute_tool("music_control", margs);
+                    }
+                }
                 set_state(AssistantState::Thinking);
                 if (!send_client_text(t)) {
                     set_error("Ошибка отправки текста в Gemini Live", src != TriggerSource::Text);

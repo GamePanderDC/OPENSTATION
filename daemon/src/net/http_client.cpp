@@ -560,8 +560,8 @@ HttpClientResponse perform_single(const HttpClientRequest& req) {
     raw_req += "Accept-Encoding: identity\r\n";
     raw_req += "Connection: close\r\n";
     raw_req += extra_hdrs;
-    if (!req.body.empty()) {
-        if (!has_ct) raw_req += "Content-Type: application/json\r\n";
+    if (method == "POST" || method == "PUT" || method == "PATCH" || !req.body.empty()) {
+        if (!has_ct && !req.body.empty()) raw_req += "Content-Type: application/json\r\n";
         raw_req += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
     }
     raw_req += "\r\n";

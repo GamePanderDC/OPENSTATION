@@ -124,7 +124,7 @@
       missing: "Установите приёмник для воспроизведения на станции.",
       installing: "Скачивание и установка…",
       stopped: "Приёмник выключен.",
-      running: "На телефоне выберите «OpenStation Max» в списке устройств Spotify.",
+      running: "Приёмник активен («OpenStation Max»). Играйте из каталога ниже или через Spotify Connect.",
       error: "Приёмник не отвечает.",
     };
     byId("spReceiverState").textContent = receiver?.message || descriptions[state] || "Статус подключения недоступен.";
@@ -318,6 +318,18 @@
   }
 
   byId("spAccountToggle").addEventListener("click", () => setAccount(byId("spAccount").hidden));
+  const tvBtn = byId("spLaunchTv");
+  if (tvBtn) {
+    tvBtn.addEventListener("click", async () => {
+      try {
+        await fetch("/api/apps/launch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ package: "com.spotify.tv.android" })
+        });
+      } catch (_) {}
+    });
+  }
   byId("spBegin").addEventListener("click", () => action(async () => {
     const { url } = await spotify("login", { clientId: byId("spClient").value.trim() });
     byId("spLoginLink").href = url;

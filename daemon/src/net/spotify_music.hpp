@@ -16,8 +16,15 @@ public:
     HttpResponse handle(const HttpRequest& request);
     void pause_if_playing();
 
+    bool is_linked();
+    std::string provider() const;
+    json::Value poll_playback();
+    bool play_query(const std::string& query);
+    bool execute_simple_command(const std::string& action);
+
 private:
     using Clock = std::chrono::steady_clock;
+    std::string resolve_target_device();
     HttpResponse begin(const json::Value& input);
     HttpResponse finish(const std::string& state, const std::string& code);
     HttpResponse status();

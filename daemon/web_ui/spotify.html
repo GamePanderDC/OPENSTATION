@@ -17,7 +17,10 @@
         <img id="spCover" alt="" hidden>
       </div>
       <div class="sp-now-playing">
-        <p class="sp-caption">Spotify</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <p class="sp-caption" style="margin:0;">Spotify</p>
+          <button type="button" class="btn btn-sm" id="spLaunchTv" title="Открыть Spotify на экране ТВ" style="font-size:0.8rem;padding:3px 10px;">📺 Экран ТВ</button>
+        </div>
         <h2 id="spTitle">Музыка на станции</h2>
         <p id="spArtist" class="hint">Выберите трек из каталога или включите музыку через Spotify Connect.</p>
         <a id="spTrackLink" class="sp-source-link" target="_blank" rel="noopener noreferrer" hidden>Открыть в Spotify ↗</a>

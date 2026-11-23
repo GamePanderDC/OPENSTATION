@@ -796,6 +796,8 @@ ShellResult run_argv_with_timeout(const std::vector<std::string>& args, int time
     } else if (wp > 0) {
         if (WIFEXITED(st)) sr.exit_code = WEXITSTATUS(st);
         else if (WIFSIGNALED(st)) sr.exit_code = 128 + WTERMSIG(st);
+    } else if (wp < 0 && errno == ECHILD && !sr.timed_out) {
+        sr.exit_code = 0;
     }
 
     sr.output = openstation::ensure_utf8_and_truncate(raw, max_bytes);
@@ -1294,6 +1296,7 @@ int main(int argc, char** argv) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_DFL);
 
     using namespace openstation;
     Logger::instance().init("/data/local/openstation/openstationd.log");
@@ -1410,6 +1413,8 @@ int main(int argc, char** argv) {
         std::lock_guard<std::mutex> lk(music_mu);
         return music_state.to_json();
     };
+
+    SpotifyMusic spotify_music(g_stop);
 
     // System Android STREAM_MUSIC volume percentage (synced with Android settings/StationAudioService)
     std::atomic<int> volume_osd_pct{10};
@@ -1956,10 +1961,16 @@ int main(int argc, char** argv) {
     });
     std::atomic<bool> remote_voice_held{false};
     auto next_track = [&]() {
-        bool ym_playing;
+        bool is_sp = false;
+        bool ym_playing = false;
         {
             std::lock_guard<std::mutex> lk(music_mu);
+            is_sp = (music_state.source == "spotify");
             ym_playing = music_state.playing && !music_state.paused;
+        }
+        if (is_sp) {
+            spotify_music.execute_simple_command("next");
+            return;
         }
         if (ym_playing && is_udp_port_bound(8086)) {
             json::Value mcmd = json::Value::make_obj();
@@ -2047,7 +2058,16 @@ int main(int argc, char** argv) {
                     if (wyoming.is_streaming()) wyoming.stop_session();
                     else wyoming.trigger_button_session(6000);
                 } else if (act == "play_pause") {
-                    if (is_udp_port_bound(8086)) {
+                    bool is_sp = false;
+                    bool is_sp_playing = false;
+                    {
+                        std::lock_guard<std::mutex> lk(music_mu);
+                        is_sp = (music_state.source == "spotify");
+                        is_sp_playing = music_state.playing && !music_state.paused;
+                    }
+                    if (is_sp) {
+                        spotify_music.execute_simple_command(is_sp_playing ? "pause" : "resume");
+                    } else if (is_udp_port_bound(8086)) {
                         json::Value mcmd = json::Value::make_obj();
                         mcmd["cmd"] = json::Value::make_str("music_action");
                         mcmd["action"] = json::Value::make_str("PLAY_PAUSE");
@@ -2102,7 +2122,16 @@ int main(int argc, char** argv) {
                 if (c.input.remote_short == "next") {
                     next_track();
                 } else if (c.input.remote_short == "play_pause") {
-                    if (is_udp_port_bound(8086)) {
+                    bool is_sp = false;
+                    bool is_sp_playing = false;
+                    {
+                        std::lock_guard<std::mutex> lk(music_mu);
+                        is_sp = (music_state.source == "spotify");
+                        is_sp_playing = music_state.playing && !music_state.paused;
+                    }
+                    if (is_sp) {
+                        spotify_music.execute_simple_command(is_sp_playing ? "pause" : "resume");
+                    } else if (is_udp_port_bound(8086)) {
                         json::Value cmd = json::Value::make_obj();
                         cmd["cmd"] = json::Value::make_str("music_action");
                         cmd["action"] = json::Value::make_str("PLAY_PAUSE");
@@ -2683,6 +2712,7 @@ int main(int argc, char** argv) {
     acb.execute_tool = [&](const std::string& name, const json::Value& args) -> json::Value {
         using json::Value;
         Value res = Value::make_obj();
+        LOGI("Assistant", "execute_tool: %s(%s)", name.c_str(), args.dump(-1).c_str());
 
         // --- Live Internet Tools ---
         if (name == "web_search") {
@@ -3801,6 +3831,100 @@ int main(int argc, char** argv) {
                 return res;
             }
 
+            if (act == "open_spotify") {
+                spawn_detached({"/system/bin/am", "start", "-n", "com.spotify.tv.android/.SpotifyTVActivity"});
+                res["ok"] = Value::make_bool(true);
+                res["action"] = Value::make_str("open_spotify");
+                res["stopSession"] = Value::make_bool(true);
+                return res;
+            }
+
+            bool spotify_req = (act == "play_spotify") || (args.get("provider") && args.get("provider")->as_str() == "spotify");
+            if (!spotify_req && (act == "play" || act == "play_query" || !query.empty()) && spotify_music.provider() == "spotify" && act != "play_my_wave_ym") {
+                spotify_req = true;
+            }
+            if (!spotify_req && !query.empty()) {
+                std::string ql = query;
+                std::transform(ql.begin(), ql.end(), ql.begin(), [](unsigned char c) { return std::tolower(c); });
+                if (ql.find("spotify") != std::string::npos || ql.find("спотифай") != std::string::npos) {
+                    spotify_req = true;
+                }
+            }
+
+            if (spotify_req) {
+                send_udp_json(8086, "{\"cmd\":\"music_action\",\"action\":\"PAUSE\"}");
+                std::string clean_q = query;
+                auto remove_substr = [](std::string& str, const std::string& sub) {
+                    size_t p = 0;
+                    while ((p = str.find(sub, p)) != std::string::npos) {
+                        str.erase(p, sub.length());
+                    }
+                };
+                remove_substr(clean_q, "в спотифай");
+                remove_substr(clean_q, "на спотифай");
+                remove_substr(clean_q, "через спотифай");
+                remove_substr(clean_q, "в spotify");
+                remove_substr(clean_q, "на spotify");
+                remove_substr(clean_q, "через spotify");
+                remove_substr(clean_q, "спотифай");
+                remove_substr(clean_q, "spotify");
+                remove_substr(clean_q, "включи");
+                remove_substr(clean_q, "включить");
+                remove_substr(clean_q, "поставь");
+                remove_substr(clean_q, "сыграй");
+                remove_substr(clean_q, "играй");
+                remove_substr(clean_q, "запусти");
+                remove_substr(clean_q, "музыку");
+                remove_substr(clean_q, "песню");
+                remove_substr(clean_q, "трек");
+                remove_substr(clean_q, "группы");
+                remove_substr(clean_q, "группу");
+                remove_substr(clean_q, "исполнителя");
+                while (!clean_q.empty() && (clean_q.front() == ' ' || clean_q.front() == ',')) clean_q.erase(clean_q.begin());
+                while (!clean_q.empty() && (clean_q.back() == ' ' || clean_q.back() == ',')) clean_q.pop_back();
+
+                bool ok = spotify_music.play_query(clean_q);
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                json::Value pb = spotify_music.poll_playback();
+                bool is_p = pb.get("playing") ? pb.get("playing")->as_bool(false) : false;
+                std::string t = pb.get("title") ? pb.get("title")->as_str() : "";
+                std::string a = pb.get("detail") ? pb.get("detail")->as_str() : "";
+                std::string c_url = pb.get("cover") ? pb.get("cover")->as_str() : "";
+                std::string tid = pb.get("id") ? pb.get("id")->as_str() : "";
+                int64_t dur = pb.get("durationMs") ? pb.get("durationMs")->as_i64(0) : 0;
+                int64_t pos = pb.get("positionMs") ? pb.get("positionMs")->as_i64(0) : 0;
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    music_state.source = "spotify";
+                    music_state.source_label = "Spotify";
+                    music_state.playing = is_p || ok;
+                    music_state.paused = !music_state.playing;
+                    music_state.track_id = tid;
+                    music_state.title = t;
+                    music_state.artist = a;
+                    music_state.cover_url = c_url;
+                    music_state.duration_ms = dur;
+                    music_state.position_ms = pos;
+                    music_state.seq++;
+                    if (!t.empty()) {
+                        std::string full_banner = a.empty() ? t : (a + " - " + t);
+                        leds.set_music_track_title(full_banner);
+                        leds.trigger_music_track_banner(full_banner);
+                    }
+                }
+                update_led_music_playing();
+                res["ok"] = Value::make_bool(ok);
+                res["action"] = Value::make_str("play_spotify");
+                res["playing"] = Value::make_bool(music_state.playing);
+                res["source"] = Value::make_str("Spotify");
+                if (!t.empty()) {
+                    res["title"] = Value::make_str(t);
+                    res["artist"] = Value::make_str(a);
+                }
+                res["stopSession"] = Value::make_bool(true);
+                return res;
+            }
+
             if (act == "play_my_wave" || act == "play_query" || act == "play_liked") {
                 if (!ensure_launcher_service_udp(8086)) {
                     res["ok"] = Value::make_bool(false);
@@ -3916,6 +4040,53 @@ int main(int argc, char** argv) {
             } else {
                 res["ok"] = Value::make_bool(false);
                 res["error"] = Value::make_str("unknown music action");
+                return res;
+            }
+
+            bool is_spotify_active = false;
+            bool is_spotify_paused = false;
+            {
+                std::lock_guard<std::mutex> lk(music_mu);
+                is_spotify_active = (music_state.source == "spotify" && music_state.playing && !music_state.paused);
+                is_spotify_paused = (music_state.source == "spotify" && music_state.paused);
+            }
+            bool is_spotify_provider = (spotify_music.provider() == "spotify");
+
+            if ((act == "pause" || act == "stop") && (is_spotify_active || is_spotify_provider)) {
+                spotify_music.execute_simple_command("pause");
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    music_state.playing = false;
+                    music_state.paused = true;
+                    music_state.seq++;
+                }
+                update_led_music_playing();
+                res["ok"] = Value::make_bool(true);
+                res["action"] = Value::make_str(act);
+                res["stopSession"] = Value::make_bool(true);
+                return res;
+            }
+
+            if ((act == "play" || act == "play_pause") && (is_spotify_paused || is_spotify_provider)) {
+                spotify_music.execute_simple_command("resume");
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    music_state.playing = true;
+                    music_state.paused = false;
+                    music_state.seq++;
+                }
+                update_led_music_playing();
+                res["ok"] = Value::make_bool(true);
+                res["action"] = Value::make_str("play");
+                res["stopSession"] = Value::make_bool(true);
+                return res;
+            }
+
+            if ((act == "next" || act == "prev" || act == "previous") && (is_spotify_active || is_spotify_paused || is_spotify_provider)) {
+                spotify_music.execute_simple_command(act == "next" ? "next" : "previous");
+                res["ok"] = Value::make_bool(true);
+                res["action"] = Value::make_str(act);
+                res["stopSession"] = Value::make_bool(true);
                 return res;
             }
 
@@ -4561,7 +4732,6 @@ int main(int argc, char** argv) {
         return error;
     };
 
-    SpotifyMusic spotify_music(g_stop);
     http.start(
         start_cfg.web_port,
         [&](const HttpRequest& req) -> HttpResponse {
@@ -4575,7 +4745,7 @@ int main(int argc, char** argv) {
                     if (json::Parser::parse(req.body, input)) {
                         const auto* action = input.get("action");
                         if (action && (action->as_str() == "play" || action->as_str() == "resume"))
-                            send_udp_json(8086, "{\"cmd\":\"action\",\"action\":\"PAUSE\"}");
+                            send_udp_json(8086, "{\"cmd\":\"music_action\",\"action\":\"PAUSE\"}");
                     }
                 }
                 return response;
@@ -5778,10 +5948,38 @@ int main(int argc, char** argv) {
                 if (!json::Parser::parse(req.body, v)) {
                     return HttpResponse::json("{\"error\":\"invalid json\"}", 400);
                 }
+                std::string cur_source;
+                bool cur_playing = false;
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    cur_source = music_state.source;
+                    cur_playing = music_state.playing && !music_state.paused;
+                }
+                const auto* cmd = v.get("cmd");
+                std::string cmd_str = (cmd && cmd->is_str()) ? cmd->as_str() : "";
+                if (cur_source == "spotify" && cmd_str == "music_action") {
+                    const auto* act_val = v.get("action");
+                    std::string act = (act_val && act_val->is_str()) ? act_val->as_str() : "";
+                    bool sp_ok = false;
+                    if (act == "PLAY_PAUSE") {
+                        sp_ok = spotify_music.execute_simple_command(cur_playing ? "pause" : "resume");
+                    } else if (act == "PAUSE") {
+                        sp_ok = spotify_music.execute_simple_command("pause");
+                    } else if (act == "PLAY" || act == "RESUME") {
+                        sp_ok = spotify_music.execute_simple_command("resume");
+                    } else if (act == "NEXT") {
+                        sp_ok = spotify_music.execute_simple_command("next");
+                    } else if (act == "PREV") {
+                        sp_ok = spotify_music.execute_simple_command("previous");
+                    }
+                    if (sp_ok) {
+                        return HttpResponse::json("{\"ok\":true}");
+                    }
+                }
                 bool udp_ok = ensure_launcher_service_udp(8086);
                 std::string raw = v.dump(-1);
                 bool sent = udp_ok && send_udp_json(8086, raw);
-                if (const auto* cmd = v.get("cmd"); cmd && cmd->is_str() && cmd->as_str() == "launch_music") {
+                if (cmd_str == "launch_music") {
                     if (!sent) {
                         const auto* login = v.get("openLogin");
                         if (login && login->is_bool() && login->as_bool()) {
@@ -6387,6 +6585,7 @@ int main(int argc, char** argv) {
     auto last_voice_udp_tp = std::chrono::steady_clock::now() - std::chrono::seconds(1);
     auto last_ws_tp = std::chrono::steady_clock::now();
     auto last_mqtt_tp = std::chrono::steady_clock::now();
+    auto last_spotify_sync_tp = std::chrono::steady_clock::now();
 
     while (!g_stop.load()) {
         if (!initial_udp_synced && is_udp_port_bound(8086)) {
@@ -6487,6 +6686,61 @@ int main(int argc, char** argv) {
             msg["type"] = json::Value::make_str("telemetry");
             msg["data"] = build_status_json();
             http.broadcast_ws_text(msg.dump(-1));
+        }
+
+        if (spotify_music.is_linked() && (now - last_spotify_sync_tp) >= std::chrono::milliseconds(1800)) {
+            last_spotify_sync_tp = now;
+            bool ym_active = false;
+            {
+                std::lock_guard<std::mutex> lk(music_mu);
+                ym_active = (music_state.source != "spotify" && music_state.playing && !music_state.paused);
+            }
+            if (!ym_active) {
+                json::Value pb = spotify_music.poll_playback();
+                bool is_playing = pb.get("playing") ? pb.get("playing")->as_bool(false) : false;
+                std::string track_id = pb.get("id") ? pb.get("id")->as_str() : "";
+                std::string title = pb.get("title") ? pb.get("title")->as_str() : "";
+                std::string artist = pb.get("detail") ? pb.get("detail")->as_str() : "";
+                std::string cover = pb.get("cover") ? pb.get("cover")->as_str() : "";
+                int64_t pos_ms = pb.get("positionMs") ? pb.get("positionMs")->as_i64(0) : 0;
+                int64_t dur_ms = pb.get("durationMs") ? pb.get("durationMs")->as_i64(0) : 0;
+
+                bool notify_banner = false;
+                std::string full_track_title;
+                {
+                    std::lock_guard<std::mutex> lk(music_mu);
+                    if (is_playing) {
+                        full_track_title = artist.empty() ? title : (artist + " - " + title);
+                        const std::string key = (!track_id.empty() ? track_id : "") + "|" + full_track_title;
+                        if (key != last_announced_music_banner) {
+                            last_announced_music_banner = key;
+                            notify_banner = true;
+                        }
+                        music_state.playing = true;
+                        music_state.paused = false;
+                        music_state.track_id = track_id;
+                        music_state.title = title;
+                        music_state.artist = artist;
+                        music_state.cover_url = cover;
+                        music_state.position_ms = pos_ms;
+                        music_state.duration_ms = dur_ms;
+                        music_state.source_label = "Spotify";
+                        music_state.source = "spotify";
+                        music_state.seq++;
+                        leds.set_music_track_title(full_track_title);
+                    } else if (music_state.source == "spotify") {
+                        if (music_state.playing) {
+                            music_state.playing = false;
+                            music_state.paused = true;
+                            music_state.seq++;
+                        }
+                    }
+                }
+                update_led_music_playing();
+                if (notify_banner && !full_track_title.empty()) {
+                    leds.trigger_music_track_banner(full_track_title);
+                }
+            }
         }
 
         if ((now - last_mqtt_tp) >= std::chrono::seconds(5)) {
