@@ -4453,8 +4453,11 @@ int main(int argc, char** argv) {
         char build[PROP_VALUE_MAX] {}, sdk[PROP_VALUE_MAX] {};
         __system_property_get("ro.build.version.incremental", build);
         __system_property_get("ro.build.version.sdk", sdk);
-        if (strcmp(sdk, "28") != 0 || (strcmp(build, "5000000921") != 0 && strcmp(build, "2875769476") != 0))
-            return "AirPlay 2 доступен на сборках Android 9: 5000000921 и 2875769476";
+        if (strcmp(sdk, "28") != 0 ||
+            (strcmp(build, "5000000896") != 0 &&
+             strcmp(build, "5000000921") != 0 &&
+             strcmp(build, "2875769476") != 0))
+            return "AirPlay 2 доступен на сборках Android 9: 5000000896, 5000000921 и 2875769476";
         const auto mode = run_argv_with_timeout({"/system/bin/getenforce"}, 2, 64);
         if (mode.exit_code != 0 || trim_ws_copy(mode.output) != "Permissive")
             return "AirPlay 2 недоступен при текущих настройках системы";

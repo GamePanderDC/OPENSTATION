@@ -9,7 +9,7 @@
     "daemon": {
       "fileName": "openstationd",
       "size": 3390208,
-      "sha256": "623b9f1cd47eb3f40cf22566b356e28ecfbd7642902a27119adcf48f02f6c1ee",
+      "sha256": "00cf66fc1ff322ccc064474e831938c0765a20dd71fb5ca69c3b11725c06133e",
       "url": "https://github.com/Olegu621/OPENSTATION/releases/download/v1.6.32/openstationd"
     },
     "bootlogod": {

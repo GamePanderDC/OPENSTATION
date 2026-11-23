@@ -25,9 +25,10 @@ case "${1:-}" in
         if active_pid; then echo running; exit 0; fi
         mkdir -p "$root/cache"
         setsid "$root/librespot" --name 'OpenStation Max' --device-type speaker \
+            --zeroconf-port 8085 \
             --backend subprocess --device "$root/audiosink" --format S16 \
             --cache "$root/cache" --disable-audio-cache --quiet \
-            </dev/null >"$root/receiver.log" 2>&1 9>&- &
+            </dev/null >"$root/receiver.log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
         pid=$!
         printf '%s\n' "$pid" > "$root/receiver.pid"
         sleep 1

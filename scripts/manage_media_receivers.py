@@ -64,8 +64,8 @@ def main():
         raise RuntimeError("Нужен существующий root через ADB на Станции Макс (arm64).")
     if args.receiver == "airplay":
         build = shell("getprop ro.build.version.incremental; getprop ro.build.version.sdk; getenforce", quiet=True).split()
-        if build != ["5000000921", "28", "Permissive"]:
-            raise RuntimeError("Пакет AirPlay 2 поддерживает базу 5000000921, Android 9 и существующий режим Permissive.")
+        if len(build) != 3 or build[0] not in ("5000000896", "5000000921", "2875769476") or build[1] != "28" or build[2] != "Permissive":
+            raise RuntimeError("Пакет AirPlay 2 поддерживает базы 5000000896, 5000000921, 2875769476, Android 9 и существующий режим Permissive.")
     root = AIRPLAY if args.receiver == "airplay" else SPOTIFY
     script = "manage.sh" if args.receiver == "airplay" else "control.sh"
     if args.action != "install":
