@@ -24,6 +24,8 @@ case "${1:-}" in
     start)
         if active_pid; then echo running; exit 0; fi
         mkdir -p "$root/cache"
+        export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+        export SSL_CERT_DIR=/etc/ssl/certs
         setsid "$root/librespot" --name 'OpenStation Max' --device-type speaker \
             --ap-port 443 --zeroconf-port 8085 \
             --backend subprocess --device "$root/audiosink" --format S16 \
