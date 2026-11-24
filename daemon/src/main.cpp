@@ -3840,7 +3840,7 @@ int main(int argc, char** argv) {
             }
 
             bool spotify_req = (act == "play_spotify") || (args.get("provider") && args.get("provider")->as_str() == "spotify");
-            if (!spotify_req && (act == "play" || act == "play_query" || !query.empty()) && spotify_music.provider() == "spotify" && act != "play_my_wave_ym") {
+            if (!spotify_req && (act == "play" || act == "play_query" || act == "play_my_wave" || !query.empty()) && spotify_music.provider() == "spotify" && act != "play_my_wave_ym") {
                 spotify_req = true;
             }
             if (!spotify_req && !query.empty()) {
@@ -3854,34 +3854,28 @@ int main(int argc, char** argv) {
             if (spotify_req) {
                 send_udp_json(8086, "{\"cmd\":\"music_action\",\"action\":\"PAUSE\"}");
                 std::string clean_q = query;
-                auto remove_substr = [](std::string& str, const std::string& sub) {
-                    size_t p = 0;
-                    while ((p = str.find(sub, p)) != std::string::npos) {
-                        str.erase(p, sub.length());
+                auto remove_substr_ci = [](std::string& str, const std::string& sub_lower) {
+                    while (true) {
+                        std::string lower = openstation::utf8_to_lower_ru(str);
+                        size_t p = lower.find(sub_lower);
+                        if (p == std::string::npos) break;
+                        str.erase(p, sub_lower.length());
                     }
                 };
-                remove_substr(clean_q, "в спотифай");
-                remove_substr(clean_q, "на спотифай");
-                remove_substr(clean_q, "через спотифай");
-                remove_substr(clean_q, "в spotify");
-                remove_substr(clean_q, "на spotify");
-                remove_substr(clean_q, "через spotify");
-                remove_substr(clean_q, "спотифай");
-                remove_substr(clean_q, "spotify");
-                remove_substr(clean_q, "включи");
-                remove_substr(clean_q, "включить");
-                remove_substr(clean_q, "поставь");
-                remove_substr(clean_q, "сыграй");
-                remove_substr(clean_q, "играй");
-                remove_substr(clean_q, "запусти");
-                remove_substr(clean_q, "музыку");
-                remove_substr(clean_q, "песню");
-                remove_substr(clean_q, "трек");
-                remove_substr(clean_q, "группы");
-                remove_substr(clean_q, "группу");
-                remove_substr(clean_q, "исполнителя");
-                while (!clean_q.empty() && (clean_q.front() == ' ' || clean_q.front() == ',')) clean_q.erase(clean_q.begin());
-                while (!clean_q.empty() && (clean_q.back() == ' ' || clean_q.back() == ',')) clean_q.pop_back();
+                static const std::vector<std::string> subs_to_remove = {
+                    "в спотифай", "на спотифай", "через спотифай",
+                    "в spotify", "на spotify", "через spotify",
+                    "спотифай", "spotify",
+                    "алиса", "яндекс", "станция",
+                    "включи", "включить", "поставь", "сыграй", "играй", "запусти",
+                    "музыку", "песню", "трек", "группы", "группу", "исполнителя",
+                    "пожалуйста"
+                };
+                for (const auto& sub : subs_to_remove) {
+                    remove_substr_ci(clean_q, sub);
+                }
+                while (!clean_q.empty() && (clean_q.front() == ' ' || clean_q.front() == ',' || clean_q.front() == '.' || clean_q.front() == ':')) clean_q.erase(clean_q.begin());
+                while (!clean_q.empty() && (clean_q.back() == ' ' || clean_q.back() == ',' || clean_q.back() == '.' || clean_q.back() == ':')) clean_q.pop_back();
 
                 bool ok = spotify_music.play_query(clean_q);
                 std::this_thread::sleep_for(std::chrono::milliseconds(300));

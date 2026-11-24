@@ -90,39 +90,6 @@ bool contains_ci(const std::string& hay, const std::string& needle) {
     return it != hay.end();
 }
 
-static std::string utf8_to_lower_ru(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(s[i]);
-        if (c >= 'A' && c <= 'Z') {
-            out.push_back(static_cast<char>(c + 32));
-        } else if (c == 0xD0 && i + 1 < s.size()) {
-            unsigned char c2 = static_cast<unsigned char>(s[i + 1]);
-            if (c2 >= 0x90 && c2 <= 0xAF) {
-                if (c2 <= 0x9F) {
-                    out.push_back(static_cast<char>(0xD0));
-                    out.push_back(static_cast<char>(c2 + 0x20));
-                } else {
-                    out.push_back(static_cast<char>(0xD1));
-                    out.push_back(static_cast<char>(c2 - 0x20));
-                }
-                i++;
-                continue;
-            } else if (c2 == 0x81) {
-                out.push_back(static_cast<char>(0xD1));
-                out.push_back(static_cast<char>(0x91));
-                i++;
-                continue;
-            }
-            out.push_back(static_cast<char>(c));
-        } else {
-            out.push_back(static_cast<char>(c));
-        }
-    }
-    return out;
-}
-
 std::string trim_str(std::string s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
@@ -399,7 +366,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
             (cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()))) return;
 
         // Keep the words that immediately follow the wake phrase, also during a reply.
-        size_t max_pre = static_cast<size_t>(std::max(0, c.pre_roll_ms)) * 16U;
+        size_t max_pre = static_cast<size_t>(std::max(1200, c.pre_roll_ms)) * 16U;
         if (max_pre > 0) {
             std::lock_guard<std::mutex> lk(pre_mu_);
             if (pre_ring_.size() != max_pre) {
@@ -424,7 +391,7 @@ void AssistantManager::feed_audio_16k(const int16_t* samples, size_t count, floa
     }
 
     // Echo Guard still keeps the local wake audio out of the outgoing dialogue during TTS.
-    if (c.echo_guard && cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()) {
+    if (c.echo_guard && st == AssistantState::Speaking && cb_.is_playback_or_tail_active && cb_.is_playback_or_tail_active()) {
         return;
     }
 
@@ -520,10 +487,11 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
     if (clean.empty()) return false;
 
     std::string ul = utf8_to_lower_ru(clean);
-    if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
+    std::string ul_cmd = strip_wake_prefix(ul);
+    if (ul_cmd.find("спотифай") != std::string::npos || ul_cmd.find("spotify") != std::string::npos) {
         if (cb_.execute_tool) {
             json::Value margs = json::Value::make_obj();
-            if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
+            if (ul_cmd.find("открой") != std::string::npos || ul_cmd.find("запусти") != std::string::npos) {
                 margs["action"] = json::Value::make_str("open_spotify");
             } else {
                 margs["action"] = json::Value::make_str("play_spotify");
@@ -534,7 +502,7 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
             emit_event("message", "user", clean);
             return true;
         }
-    } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
+    } else if (ul_cmd == "пауза" || ul_cmd == "стоп" || ul_cmd == "останови" || ul_cmd == "останови музыку" || ul_cmd == "поставь на паузу") {
         if (cb_.execute_tool) {
             json::Value margs = json::Value::make_obj();
             margs["action"] = json::Value::make_str("pause");
@@ -543,7 +511,7 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
             emit_event("message", "user", clean);
             return true;
         }
-    } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
+    } else if (ul_cmd == "дальше" || ul_cmd == "следующий" || ul_cmd == "следующий трек" || ul_cmd == "переключи" || ul_cmd == "пропусти трек") {
         if (cb_.execute_tool) {
             json::Value margs = json::Value::make_obj();
             margs["action"] = json::Value::make_str("next");
@@ -552,7 +520,7 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
             emit_event("message", "user", clean);
             return true;
         }
-    } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
+    } else if (ul_cmd == "назад" || ul_cmd == "предыдущий" || ul_cmd == "предыдущий трек") {
         if (cb_.execute_tool) {
             json::Value margs = json::Value::make_obj();
             margs["action"] = json::Value::make_str("prev");
@@ -561,10 +529,20 @@ bool AssistantManager::send_text_prompt(const std::string& text) {
             emit_event("message", "user", clean);
             return true;
         }
-    } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
+    } else if (ul_cmd == "продолжи" || ul_cmd == "продолжи музыку" || ul_cmd == "возобнови" || ul_cmd == "играй") {
         if (cb_.execute_tool) {
             json::Value margs = json::Value::make_obj();
             margs["action"] = json::Value::make_str("play");
+            cb_.execute_tool("music_control", margs);
+            append_history("user", clean);
+            emit_event("message", "user", clean);
+            return true;
+        }
+    } else if (ul_cmd == "включи музыку" || ul_cmd == "включить музыку" || ul_cmd == "поставь музыку" ||
+               ul_cmd == "сыграй музыку" || ul_cmd == "давай музыку" || ul_cmd == "включи мою волну") {
+        if (cb_.execute_tool) {
+            json::Value margs = json::Value::make_obj();
+            margs["action"] = json::Value::make_str("play_my_wave");
             cb_.execute_tool("music_control", margs);
             append_history("user", clean);
             emit_event("message", "user", clean);
@@ -714,7 +692,21 @@ bool AssistantManager::start_session_internal(TriggerSource src,
     }
 
     if (src != TriggerSource::Text && interrupted_session == 0 && c.chime_enabled && cb_.play_wake_chime) {
-        cb_.play_wake_chime();
+        std::thread([this, sid]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (!running_.load() || session_abort_.load() || session_seq_.load() != sid) return;
+            const AssistantState st = state_.load();
+            if (st != AssistantState::Connecting && st != AssistantState::Listening) return;
+            int64_t speech_age = steady_now_ms() - last_speech_ms_.load();
+            if (speech_age >= 160) {
+                if (cb_.play_wake_chime) {
+                    cb_.play_wake_chime();
+                }
+            } else {
+                LOGI("Assistant", "Suppressed wake chime due to continuous speech (speech_age=%lld ms)",
+                     static_cast<long long>(speech_age));
+            }
+        }).detach();
     }
 
     set_state(AssistantState::Connecting);
@@ -1512,6 +1504,7 @@ void AssistantManager::session_worker(uint64_t sid,
     bool go_away_received = false;
     QuietSpeech quiet_speech;
     bool reply_started = false;
+    bool silent_turn = false;
 
     auto session_start_tp = std::chrono::steady_clock::now();
     auto setup_deadline_tp = session_start_tp + std::chrono::seconds(10);
@@ -1565,64 +1558,72 @@ void AssistantManager::session_worker(uint64_t sid,
             append_history("user", u);
             emit_event("message", "user", u);
 
-            // Fast local Bluetooth intent trigger
+            // Fast local Bluetooth & music intent trigger
             std::string ul = utf8_to_lower_ru(u);
+            std::string ul_cmd = strip_wake_prefix(ul);
             self_stop_requested = is_assistant_stop_request(ul);
             if (self_stop_requested) stop_after_turn = true;
-            if (ul.find("включи блютуз") != std::string::npos ||
-                ul.find("включить блютуз") != std::string::npos ||
-                ul.find("подключи телефон") != std::string::npos ||
-                ul.find("режим блютуз") != std::string::npos ||
-                ul.find("вруби блютуз") != std::string::npos ||
-                ul == "блютуз" || ul == "bluetooth") {
-                if (cb_.execute_tool) {
-                    json::Value bargs = json::Value::make_obj();
-                    bargs["action"] = json::Value::make_str("discoverable");
-                    cb_.execute_tool("bluetooth_control", bargs);
+
+            auto run_tool = [&](const std::string& name, const json::Value& args) {
+                if (!cb_.execute_tool) return;
+                json::Value res = cb_.execute_tool(name, args);
+                if (const auto* ss = res.get("stopSession"); ss && ss->as_bool(false)) {
+                    stop_after_turn = true;
                 }
-            } else if (ul.find("выключи блютуз") != std::string::npos ||
-                       ul.find("отключи блютуз") != std::string::npos ||
-                       ul.find("выруби блютуз") != std::string::npos) {
-                if (cb_.execute_tool) {
-                    json::Value bargs = json::Value::make_obj();
-                    bargs["action"] = json::Value::make_str("disable");
-                    cb_.execute_tool("bluetooth_control", bargs);
+                if (const auto* sl = res.get("silent"); sl && sl->as_bool(false)) {
+                    silent_turn = true;
+                    stop_after_turn = true;
+                    if (cb_.clear_playback) cb_.clear_playback();
                 }
-            } else if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
-                if (cb_.execute_tool) {
-                    json::Value margs = json::Value::make_obj();
-                    if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
-                        margs["action"] = json::Value::make_str("open_spotify");
-                    } else {
-                        margs["action"] = json::Value::make_str("play_spotify");
-                        margs["query"] = json::Value::make_str(u);
-                    }
-                    cb_.execute_tool("music_control", margs);
+            };
+
+            if (ul_cmd.find("включи блютуз") != std::string::npos ||
+                ul_cmd.find("включить блютуз") != std::string::npos ||
+                ul_cmd.find("подключи телефон") != std::string::npos ||
+                ul_cmd.find("режим блютуз") != std::string::npos ||
+                ul_cmd.find("вруби блютуз") != std::string::npos ||
+                ul_cmd == "блютуз" || ul_cmd == "bluetooth") {
+                json::Value bargs = json::Value::make_obj();
+                bargs["action"] = json::Value::make_str("discoverable");
+                run_tool("bluetooth_control", bargs);
+            } else if (ul_cmd.find("выключи блютуз") != std::string::npos ||
+                       ul_cmd.find("отключи блютуз") != std::string::npos ||
+                       ul_cmd.find("выруби блютуз") != std::string::npos) {
+                json::Value bargs = json::Value::make_obj();
+                bargs["action"] = json::Value::make_str("disable");
+                run_tool("bluetooth_control", bargs);
+            } else if (ul_cmd.find("спотифай") != std::string::npos || ul_cmd.find("spotify") != std::string::npos) {
+                json::Value margs = json::Value::make_obj();
+                if (ul_cmd.find("открой") != std::string::npos || ul_cmd.find("запусти") != std::string::npos) {
+                    margs["action"] = json::Value::make_str("open_spotify");
+                } else {
+                    margs["action"] = json::Value::make_str("play_spotify");
+                    margs["query"] = json::Value::make_str(u);
                 }
-            } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
-                if (cb_.execute_tool) {
-                    json::Value margs = json::Value::make_obj();
-                    margs["action"] = json::Value::make_str("pause");
-                    cb_.execute_tool("music_control", margs);
-                }
-            } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
-                if (cb_.execute_tool) {
-                    json::Value margs = json::Value::make_obj();
-                    margs["action"] = json::Value::make_str("next");
-                    cb_.execute_tool("music_control", margs);
-                }
-            } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
-                if (cb_.execute_tool) {
-                    json::Value margs = json::Value::make_obj();
-                    margs["action"] = json::Value::make_str("prev");
-                    cb_.execute_tool("music_control", margs);
-                }
-            } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
-                if (cb_.execute_tool) {
-                    json::Value margs = json::Value::make_obj();
-                    margs["action"] = json::Value::make_str("play");
-                    cb_.execute_tool("music_control", margs);
-                }
+                run_tool("music_control", margs);
+            } else if (ul_cmd == "пауза" || ul_cmd == "стоп" || ul_cmd == "останови" ||
+                       ul_cmd == "останови музыку" || ul_cmd == "поставь на паузу") {
+                json::Value margs = json::Value::make_obj();
+                margs["action"] = json::Value::make_str("pause");
+                run_tool("music_control", margs);
+            } else if (ul_cmd == "дальше" || ul_cmd == "следующий" || ul_cmd == "следующий трек" ||
+                       ul_cmd == "переключи" || ul_cmd == "пропусти трек") {
+                json::Value margs = json::Value::make_obj();
+                margs["action"] = json::Value::make_str("next");
+                run_tool("music_control", margs);
+            } else if (ul_cmd == "назад" || ul_cmd == "предыдущий" || ul_cmd == "предыдущий трек") {
+                json::Value margs = json::Value::make_obj();
+                margs["action"] = json::Value::make_str("prev");
+                run_tool("music_control", margs);
+            } else if (ul_cmd == "продолжи" || ul_cmd == "продолжи музыку" || ul_cmd == "возобнови" || ul_cmd == "играй") {
+                json::Value margs = json::Value::make_obj();
+                margs["action"] = json::Value::make_str("play");
+                run_tool("music_control", margs);
+            } else if (ul_cmd == "включи музыку" || ul_cmd == "включить музыку" || ul_cmd == "поставь музыку" ||
+                       ul_cmd == "сыграй музыку" || ul_cmd == "давай музыку" || ul_cmd == "включи мою волну") {
+                json::Value margs = json::Value::make_obj();
+                margs["action"] = json::Value::make_str("play_my_wave");
+                run_tool("music_control", margs);
             }
         }
     };
@@ -1692,7 +1693,7 @@ void AssistantManager::session_worker(uint64_t sid,
         bool retry_without_search = false;
         bool switch_voice_now = false;
         bool switch_persona_now = false;
-        bool silent_turn = false;
+        silent_turn = false;
         bool session_done = false;
         model_turn_done = false;
         awaiting_playback_drain = false;
@@ -2087,12 +2088,13 @@ void AssistantManager::session_worker(uint64_t sid,
                 model_turn_done = false;
                 awaiting_playback_drain = false;
                 std::string ul = utf8_to_lower_ru(trim_str(t));
+                std::string ul_cmd = strip_wake_prefix(ul);
                 self_stop_requested = is_assistant_stop_request(ul);
                 if (self_stop_requested) stop_after_turn = true;
-                if (ul.find("спотифай") != std::string::npos || ul.find("spotify") != std::string::npos) {
+                if (ul_cmd.find("спотифай") != std::string::npos || ul_cmd.find("spotify") != std::string::npos) {
                     if (cb_.execute_tool) {
                         json::Value margs = json::Value::make_obj();
-                        if (ul.find("открой") != std::string::npos || ul.find("запусти") != std::string::npos) {
+                        if (ul_cmd.find("открой") != std::string::npos || ul_cmd.find("запусти") != std::string::npos) {
                             margs["action"] = json::Value::make_str("open_spotify");
                         } else {
                             margs["action"] = json::Value::make_str("play_spotify");
@@ -2100,28 +2102,37 @@ void AssistantManager::session_worker(uint64_t sid,
                         }
                         cb_.execute_tool("music_control", margs);
                     }
-                } else if (ul == "пауза" || ul == "стоп" || ul == "останови музыку" || ul == "поставь на паузу") {
+                } else if (ul_cmd == "пауза" || ul_cmd == "стоп" || ul_cmd == "останови" ||
+                           ul_cmd == "останови музыку" || ul_cmd == "поставь на паузу") {
                     if (cb_.execute_tool) {
                         json::Value margs = json::Value::make_obj();
                         margs["action"] = json::Value::make_str("pause");
                         cb_.execute_tool("music_control", margs);
                     }
-                } else if (ul == "дальше" || ul == "следующий" || ul == "следующий трек" || ul == "переключи") {
+                } else if (ul_cmd == "дальше" || ul_cmd == "следующий" || ul_cmd == "следующий трек" ||
+                           ul_cmd == "переключи" || ul_cmd == "пропусти трек") {
                     if (cb_.execute_tool) {
                         json::Value margs = json::Value::make_obj();
                         margs["action"] = json::Value::make_str("next");
                         cb_.execute_tool("music_control", margs);
                     }
-                } else if (ul == "назад" || ul == "предыдущий" || ul == "предыдущий трек") {
+                } else if (ul_cmd == "назад" || ul_cmd == "предыдущий" || ul_cmd == "предыдущий трек") {
                     if (cb_.execute_tool) {
                         json::Value margs = json::Value::make_obj();
                         margs["action"] = json::Value::make_str("prev");
                         cb_.execute_tool("music_control", margs);
                     }
-                } else if (ul == "продолжи" || ul == "продолжи музыку" || ul == "возобнови" || ul == "играй") {
+                } else if (ul_cmd == "продолжи" || ul_cmd == "продолжи музыку" || ul_cmd == "возобнови" || ul_cmd == "играй") {
                     if (cb_.execute_tool) {
                         json::Value margs = json::Value::make_obj();
                         margs["action"] = json::Value::make_str("play");
+                        cb_.execute_tool("music_control", margs);
+                    }
+                } else if (ul_cmd == "включи музыку" || ul_cmd == "включить музыку" || ul_cmd == "поставь музыку" ||
+                           ul_cmd == "сыграй музыку" || ul_cmd == "давай музыку" || ul_cmd == "включи мою волну") {
+                    if (cb_.execute_tool) {
+                        json::Value margs = json::Value::make_obj();
+                        margs["action"] = json::Value::make_str("play_my_wave");
                         cb_.execute_tool("music_control", margs);
                     }
                 }
